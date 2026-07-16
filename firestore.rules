@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function myProfile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function myRole() { return signedIn() ? myProfile().data.role : null; }
+    function isOwner() { return myRole() == 'OWNER'; }
+    function isAdminOrOwner() { return myRole() == 'ADMIN' || myRole() == 'OWNER'; }
+
+    // Workspace-wide settings (auth config, notification config, restrictions)
+    match /settings/{settingId} {
+      allow read: if signedIn();
+      allow write: if isOwner();
+    }
+
+    // User profiles: everyone signed in can see the directory (needed to
+    // render names/roles in the UI); only the owner can create/edit/remove.
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow write: if isOwner();
+    }
+
+    // Groups: readable by anyone signed in, only the owner can manage them.
+    match /groups/{groupId} {
+      allow read: if signedIn();
+      allow write: if isOwner();
+    }
+
+    // Access requests: admins create them, owner resolves them.
+    match /requests/{requestId} {
+      allow read: if isAdminOrOwner();
+      allow create: if isAdminOrOwner();
+      allow update, delete: if isOwner();
+    }
+
+    // File metadata: everyone signed in can read (folder-level filtering
+    // happens in the UI); only non-clients can create/delete.
+    match /files/{fileId} {
+      allow read: if signedIn();
+      allow create, delete: if signedIn() && myRole() != 'CLIENT';
+      allow update: if isAdminOrOwner();
+    }
+  }
+}

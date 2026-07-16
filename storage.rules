@@ -1,0 +1,31 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() { return request.auth != null; }
+    function myRole() {
+      return signedIn()
+        ? firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role
+        : null;
+    }
+
+    // Mirrors SEED_FOLDERS in src/App.jsx — update both together if you
+    // add/rename folders. Owner and admin can reach every folder.
+    match /files/creative/{allPaths=**} {
+      allow read: if myRole() in ['OWNER', 'ADMIN', 'EMPLOYEE'];
+      allow write: if myRole() in ['OWNER', 'ADMIN', 'EMPLOYEE'];
+    }
+    match /files/data/{allPaths=**} {
+      allow read: if myRole() in ['OWNER', 'ADMIN', 'EMPLOYEE'];
+      allow write: if myRole() in ['OWNER', 'ADMIN', 'EMPLOYEE'];
+    }
+    match /files/finance/{allPaths=**} {
+      allow read: if myRole() in ['OWNER', 'ADMIN'];
+      allow write: if myRole() in ['OWNER', 'ADMIN'];
+    }
+    match /files/client-aurora/{allPaths=**} {
+      allow read: if myRole() in ['OWNER', 'ADMIN', 'CLIENT'];
+      allow write: if myRole() in ['OWNER', 'ADMIN'];
+    }
+  }
+}
