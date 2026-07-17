@@ -18,7 +18,7 @@ export async function driveUpload(file, folderKey) {
   const initData = await initRes.json();
   if (!initRes.ok) throw new Error(initData.error || "Could not start upload");
 
-  const putRes = await fetch(initData.uploadUrl, {
+  const putRes = await fetch(`/api/drive-upload-stream?uploadUrl=${encodeURIComponent(initData.uploadUrl)}`, {
     method: "PUT",
     headers: { "Content-Type": file.type || "application/octet-stream" },
     body: file,
