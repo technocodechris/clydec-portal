@@ -20,7 +20,7 @@ export async function driveUpload(file, folderKey, onProgress) {
   const initData = await initRes.json();
   if (!initRes.ok) throw new Error(initData.error || "Could not start upload");
 
-  const CHUNK_SIZE = 4.2 * 1024 * 1024; // a bit larger, still safely under Vercel's 4.5MB cap
+  const CHUNK_SIZE = Math.floor(4.2 * 1024 * 1024); // whole bytes only — fractional values break Content-Range
   const MAX_RETRIES = 5;
   const total = file.size;
   let start = 0;
