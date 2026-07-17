@@ -79,7 +79,7 @@ import {
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
 
-import { driveUpload, driveDownload, driveDelete, driveCheckMissing } from "./driveStorage";
+import { driveUpload, driveDownload, driveDelete, driveSyncFolder } from "./driveStorage";
 
 const STORAGE_PROVIDER = import.meta.env.VITE_STORAGE_PROVIDER === "drive" ? "drive" : "firebase";
 
@@ -392,7 +392,7 @@ function DashboardPage({ user, users, files, requests }) {
 /* ---------------------------------------------------------------- */
 /* Files page                                                         */
 /* ---------------------------------------------------------------- */
-function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, syncDriveFiles, notify }) {
+function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, syncDriveFolder, notify }) {
   const visibleFolders = folders.filter(f => f.access.includes(user.role));
   const [activeFolder, setActiveFolder] = useState(visibleFolders[0]?.id);
   const [query, setQuery] = useState("");
@@ -401,11 +401,11 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
   const fileInput = useRef(null);
   const canWrite = user.role !== "CLIENT";
 
-  useEffect(() => { syncDriveFiles(files); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (activeFolder) syncDriveFolder(activeFolder, files); }, [activeFolder]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleRefresh() {
     setSyncing(true);
-    await syncDriveFiles(files);
+    await syncDriveFolder(activeFolder, files);
     setSyncing(false);
   }
 
@@ -964,24 +964,39 @@ export default function App() {
       downloadFromUrl(f.url, f.name);
     }
   }
-  async function syncDriveFiles(currentFiles) {
-    const driveFiles = currentFiles.filter(f => f.provider === "drive");
-    if (driveFiles.length === 0) return currentFiles;
+  async function syncDriveFolder(folderId, currentFiles) {
+    if (STORAGE_PROVIDER !== "drive") return currentFiles;
+    const folderFiles = currentFiles.filter(f => f.folderId === folderId && f.provider === "drive");
     try {
-      const missing = await driveCheckMissing(driveFiles.map(f => f.driveFileId));
-      if (missing.length === 0) return currentFiles;
+      const { missing, added } = await driveSyncFolder(folderId, folderFiles.map(f => f.driveFileId));
+      if (missing.length === 0 && added.length === 0) return currentFiles;
+
       await Promise.all(
-        driveFiles
-          .filter(f => missing.includes(f.driveFileId))
-          .map(f => deleteDocIn("files", f.id))
+        folderFiles.filter(f => missing.includes(f.driveFileId)).map(f => deleteDocIn("files", f.id))
       );
-      const next = currentFiles.filter(f => !missing.includes(f.driveFileId));
+      const newRecords = await Promise.all(
+        added.map(async (a) => {
+          const record = {
+            id: a.id, driveFileId: a.id, provider: "drive", folderId,
+            name: a.name, mime: a.mimeType, size: Number(a.size || 0),
+            uploadedBy: "Google Drive", uploadedAt: a.createdTime ? new Date(a.createdTime).getTime() : Date.now(),
+          };
+          await setDocIn("files", a.id, record);
+          return record;
+        })
+      );
+
+      const next = [
+        ...newRecords,
+        ...currentFiles.filter(f => !missing.includes(f.driveFileId)),
+      ];
       setFiles(next);
-      notify(`Removed ${missing.length} file(s) no longer in Drive.`);
+      const parts = [];
+      if (added.length) parts.push(`${added.length} new file(s) found in Drive`);
+      if (missing.length) parts.push(`${missing.length} file(s) removed`);
+      if (parts.length) notify(parts.join(", ") + ".");
       return next;
     } catch (e) {
-      // Sync check failing silently is fine — it just means stale entries
-      // stick around until the next successful check, not a broken app.
       return currentFiles;
     }
   }
@@ -1076,7 +1091,7 @@ export default function App() {
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
               {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} />}
-              {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFiles={syncDriveFiles} notify={notify} />}
+              {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
               {page === "admin" && (
                 <AdminSettings
