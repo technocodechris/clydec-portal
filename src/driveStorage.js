@@ -5,10 +5,12 @@ async function authHeader() {
   return { Authorization: `Bearer ${token}` };
 }
 
-// Large-file-safe upload: our server only issues a resumable session URL —
-// the file bytes go straight from the browser to Google Drive and never
-// pass through our serverless function, which caps request bodies far
-// below what a multi-GB creative file needs.
+// Large-file-safe upload: sends the file through our own server in small
+// pieces (each safely under Vercel's ~4.5MB request-body cap), which
+// relays each piece to Google's resumable upload session. Neither a
+// single big request through our server nor a direct-to-Drive browser
+// upload works on this platform — this chunked relay is the combination
+// that does.
 export async function driveUpload(file, folderKey) {
   const initRes = await fetch("/api/drive-upload-init", {
     method: "POST",
@@ -18,14 +20,37 @@ export async function driveUpload(file, folderKey) {
   const initData = await initRes.json();
   if (!initRes.ok) throw new Error(initData.error || "Could not start upload");
 
-  const putRes = await fetch(initData.uploadUrl, {
-    method: "PUT",
-    headers: { "Content-Type": file.type || "application/octet-stream" },
-    body: file,
-  });
-  if (!putRes.ok) throw new Error("Upload to Drive failed");
-  const result = await putRes.json();
-  return { fileId: result.id, name: result.name || file.name, size: file.size, mime: file.type };
+  const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB — safely under Vercel's cap
+  const total = file.size;
+  let start = 0;
+  let finalResult = null;
+  const headers = await authHeader();
+
+  while (start < total) {
+    const end = Math.min(start + CHUNK_SIZE, total) - 1;
+    const chunk = file.slice(start, end + 1);
+    const params = new URLSearchParams({
+      uploadUrl: initData.uploadUrl,
+      start: String(start),
+      end: String(end),
+      total: String(total),
+    });
+    const res = await fetch(`/api/drive-upload-chunk?${params.toString()}`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/octet-stream" },
+      body: chunk,
+    });
+    if (res.status === 200 || res.status === 201) {
+      finalResult = await res.json();
+      break;
+    } else if (res.status === 308) {
+      start = end + 1;
+    } else {
+      const errText = await res.text();
+      throw new Error(`Upload failed at byte ${start}: ${errText}`);
+    }
+  }
+  return { fileId: finalResult.id, name: finalResult.name || file.name, size: total, mime: file.type };
 }
 
 // Large-file-safe download: get a short-lived access token, then let the
