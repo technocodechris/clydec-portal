@@ -398,6 +398,7 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
   const [query, setQuery] = useState("");
   const [uploading, setUploading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [progress, setProgress] = useState(null); // { name, uploaded, total, percent, speedBps }
   const fileInput = useRef(null);
   const canWrite = user.role !== "CLIENT";
 
@@ -419,8 +420,13 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
         continue;
       }
       const id = uid();
-      await addFile({ id, folderId: activeFolder, name: file.name, mime: file.type || "application/octet-stream", size: file.size, file, uploadedBy: user.name, uploadedAt: Date.now() });
+      setProgress({ name: file.name, uploaded: 0, total: file.size, percent: 0, speedBps: 0 });
+      await addFile(
+        { id, folderId: activeFolder, name: file.name, mime: file.type || "application/octet-stream", size: file.size, file, uploadedBy: user.name, uploadedAt: Date.now() },
+        (p) => setProgress({ name: file.name, ...p })
+      );
     }
+    setProgress(null);
     setUploading(false);
     notify("Files uploaded.");
   }
@@ -466,6 +472,20 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
             {syncing ? <Loader2 size={14} className="cly-spin" /> : <RefreshCw size={14} />}
           </button>
         </div>
+
+        {progress && (
+          <div className="cly-fade-in" style={{ marginBottom: 14, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }}>
+              <span style={{ fontWeight: 600 }}>{progress.name}</span>
+              <span style={{ color: COLORS.mute }}>
+                {formatBytes(progress.uploaded)} / {formatBytes(progress.total)} • {formatBytes(progress.speedBps)}/s
+              </span>
+            </div>
+            <div style={{ height: 6, borderRadius: 4, background: COLORS.cream, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${progress.percent}%`, background: COLORS.ink, transition: "width 0.2s" }} />
+            </div>
+          </div>
+        )}
 
         <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
           <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
@@ -931,10 +951,10 @@ export default function App() {
   function persistNotif(next) { setNotif(next); sset("notif-settings", next); }
   function persistRestrictions(next) { setRestrictions(next); sset("restrictions", next); }
 
-  async function addFile(f) {
+  async function addFile(f, onProgress) {
     const { file, id, ...meta } = f;
     if (STORAGE_PROVIDER === "drive") {
-      const result = await driveUpload(file, meta.folderId);
+      const result = await driveUpload(file, meta.folderId, onProgress);
       const record = { ...meta, id: result.fileId, driveFileId: result.fileId, provider: "drive" };
       await setDocIn("files", result.fileId, record);
       setFiles([record, ...files]);
