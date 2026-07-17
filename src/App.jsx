@@ -4,7 +4,7 @@ import {
   Bell, LogOut, Upload, Download, Trash2, Plus, X, Check, Clock,
   ChevronDown, Search, FileText, Settings, UserPlus, AlertCircle,
   Loader2, Building2, KeyRound, Image as ImageIcon, File as FileIcon,
-  ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle,
+  ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------- */
@@ -79,7 +79,7 @@ import {
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
 
-import { driveUpload, driveDownload, driveDelete } from "./driveStorage";
+import { driveUpload, driveDownload, driveDelete, driveCheckMissing } from "./driveStorage";
 
 const STORAGE_PROVIDER = import.meta.env.VITE_STORAGE_PROVIDER === "drive" ? "drive" : "firebase";
 
@@ -392,13 +392,22 @@ function DashboardPage({ user, users, files, requests }) {
 /* ---------------------------------------------------------------- */
 /* Files page                                                         */
 /* ---------------------------------------------------------------- */
-function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, notify }) {
+function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, syncDriveFiles, notify }) {
   const visibleFolders = folders.filter(f => f.access.includes(user.role));
   const [activeFolder, setActiveFolder] = useState(visibleFolders[0]?.id);
   const [query, setQuery] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const fileInput = useRef(null);
   const canWrite = user.role !== "CLIENT";
+
+  useEffect(() => { syncDriveFiles(files); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleRefresh() {
+    setSyncing(true);
+    await syncDriveFiles(files);
+    setSyncing(false);
+  }
 
   const folderFiles = files.filter(f => f.folderId === activeFolder && f.name.toLowerCase().includes(query.toLowerCase()));
 
@@ -451,6 +460,11 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, no
               </button>
             </>
           )}
+          <button onClick={handleRefresh} disabled={syncing} title="Check for files removed directly in Drive" className="cly-btn" style={{
+            display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, color: COLORS.text, padding: "9px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600,
+          }}>
+            {syncing ? <Loader2 size={14} className="cly-spin" /> : <RefreshCw size={14} />}
+          </button>
         </div>
 
         <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
@@ -950,6 +964,27 @@ export default function App() {
       downloadFromUrl(f.url, f.name);
     }
   }
+  async function syncDriveFiles(currentFiles) {
+    const driveFiles = currentFiles.filter(f => f.provider === "drive");
+    if (driveFiles.length === 0) return currentFiles;
+    try {
+      const missing = await driveCheckMissing(driveFiles.map(f => f.driveFileId));
+      if (missing.length === 0) return currentFiles;
+      await Promise.all(
+        driveFiles
+          .filter(f => missing.includes(f.driveFileId))
+          .map(f => deleteDocIn("files", f.id))
+      );
+      const next = currentFiles.filter(f => !missing.includes(f.driveFileId));
+      setFiles(next);
+      notify(`Removed ${missing.length} file(s) no longer in Drive.`);
+      return next;
+    } catch (e) {
+      // Sync check failing silently is fine — it just means stale entries
+      // stick around until the next successful check, not a broken app.
+      return currentFiles;
+    }
+  }
 
   async function addUserRequest(form, isOwner) {
     if (isOwner) {
@@ -1041,7 +1076,7 @@ export default function App() {
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
               {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} />}
-              {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} notify={notify} />}
+              {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFiles={syncDriveFiles} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
               {page === "admin" && (
                 <AdminSettings
