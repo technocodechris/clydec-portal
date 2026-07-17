@@ -45,6 +45,19 @@ export function getDriveClient() {
   return google.drive({ version: "v3", auth: oauth2Client });
 }
 
+// A short-lived (~1hr) access token, minted fresh from the refresh token.
+// Used to let the browser talk to Google directly for large file transfers,
+// instead of routing bytes through our serverless function.
+export async function getAccessToken() {
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GDRIVE_CLIENT_ID,
+    process.env.GDRIVE_CLIENT_SECRET
+  );
+  oauth2Client.setCredentials({ refresh_token: process.env.GDRIVE_REFRESH_TOKEN });
+  const { token } = await oauth2Client.getAccessToken();
+  return token;
+}
+
 // Mirrors SEED_FOLDERS access in src/App.jsx — keep both in sync.
 export const FOLDER_ACCESS = {
   creative: ["OWNER", "ADMIN", "EMPLOYEE"],
