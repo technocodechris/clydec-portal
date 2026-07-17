@@ -24,7 +24,6 @@ export async function driveUpload(file, folderKey) {
   const total = file.size;
   let start = 0;
   let finalResult = null;
-  const headers = await authHeader();
 
   while (start < total) {
     const end = Math.min(start + CHUNK_SIZE, total) - 1;
@@ -35,9 +34,11 @@ export async function driveUpload(file, folderKey) {
       end: String(end),
       total: String(total),
     });
+    // Fetched fresh each time — a token grabbed once at the start would go
+    // stale partway through a long upload (tokens expire after ~1hr).
     const res = await fetch(`/api/drive-upload-chunk?${params.toString()}`, {
       method: "POST",
-      headers: { ...headers, "Content-Type": "application/octet-stream" },
+      headers: { ...(await authHeader()), "Content-Type": "application/octet-stream" },
       body: chunk,
     });
     if (res.status === 200 || res.status === 201) {
@@ -69,4 +70,18 @@ export async function driveDownload(fileId, folderKey, filename) {
 export async function driveDelete(fileId, folderKey) {
   const res = await fetch(`/api/drive-delete?fileId=${fileId}&folderKey=${folderKey}`, { method: "DELETE", headers: await authHeader() });
   if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
+}
+
+// Checks a batch of Drive file IDs and returns the ones that no longer
+// exist — e.g. deleted directly in Drive, outside the portal.
+export async function driveCheckMissing(fileIds) {
+  if (!fileIds.length) return [];
+  const res = await fetch("/api/drive-sync", {
+    method: "POST",
+    headers: { ...(await authHeader()), "Content-Type": "application/json" },
+    body: JSON.stringify({ fileIds }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Sync check failed");
+  return data.missing;
 }
