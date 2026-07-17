@@ -31,9 +31,21 @@ export default async function handler(req, res) {
       },
       body,
     });
+
+    if (googleRes.status === 308) {
+      // "Got this chunk, send the next one." We deliberately do NOT relay
+      // Google's raw 308 to the browser — 308 is also the real HTTP
+      // "Permanent Redirect" status, and without a Location header (which
+      // this response has none of) the browser's fetch() treats it as a
+      // broken redirect and fails the request outright. Respond 200 with
+      // an explicit "not done yet" marker instead.
+      return res.status(200).json({ done: false });
+    }
     const text = await googleRes.text();
-    // 308 = "got this chunk, send the next one" — Google's normal response
-    // mid-upload, not an error. 200/201 = the file is complete.
+    if (googleRes.status === 200 || googleRes.status === 201) {
+      return res.status(200).json({ done: true, ...JSON.parse(text) });
+    }
+    // A genuine error from Google — pass it through as-is.
     res.status(googleRes.status).send(text);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
