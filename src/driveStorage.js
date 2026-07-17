@@ -11,7 +11,7 @@ async function authHeader() {
 // single big request through our server nor a direct-to-Drive browser
 // upload works on this platform — this chunked relay is the combination
 // that does.
-export async function driveUpload(file, folderKey) {
+export async function driveUpload(file, folderKey, onProgress) {
   const initRes = await fetch("/api/drive-upload-init", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
@@ -20,11 +20,13 @@ export async function driveUpload(file, folderKey) {
   const initData = await initRes.json();
   if (!initRes.ok) throw new Error(initData.error || "Could not start upload");
 
-  const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB — safely under Vercel's cap
+  const CHUNK_SIZE = 4.2 * 1024 * 1024; // a bit larger, still safely under Vercel's 4.5MB cap
   const MAX_RETRIES = 5;
   const total = file.size;
   let start = 0;
   let finalResult = null;
+  let lastTickTime = Date.now();
+  let lastTickBytes = 0;
 
   while (start < total) {
     const end = Math.min(start + CHUNK_SIZE, total) - 1;
@@ -59,12 +61,28 @@ export async function driveUpload(file, folderKey) {
 
       if (res.ok) {
         const data = await res.json();
+        const uploadedBytes = end + 1;
         if (data.done) {
           finalResult = data;
         } else {
           start = end + 1;
         }
         handled = true;
+
+        if (onProgress) {
+          const now = Date.now();
+          const elapsedSec = (now - lastTickTime) / 1000;
+          const bytesSinceTick = uploadedBytes - lastTickBytes;
+          const speedBps = elapsedSec > 0 ? bytesSinceTick / elapsedSec : 0;
+          lastTickTime = now;
+          lastTickBytes = uploadedBytes;
+          onProgress({
+            uploaded: Math.min(uploadedBytes, total),
+            total,
+            percent: Math.min(100, (uploadedBytes / total) * 100),
+            speedBps,
+          });
+        }
       } else if (res.status >= 500 || res.status === 429) {
         // Transient server-side/rate-limit error — retry this same chunk.
         attempt++;
