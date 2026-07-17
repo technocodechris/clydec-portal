@@ -1,4 +1,4 @@
-import { verifyUser } from "./_driveClient.js";
+import { verifyUserFast } from "./_driveClient.js";
 
 // We need the raw binary body, not JSON-parsed — this endpoint receives
 // pieces of a file, not structured data.
@@ -16,7 +16,7 @@ function readRawBody(req) {
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   try {
-    await verifyUser(req); // confirms the caller is a real, provisioned workspace user
+    await verifyUserFast(req); // confirms a valid session; full role check already happened once in drive-upload-init
     const { uploadUrl, start, end, total } = req.query;
     if (!uploadUrl || !uploadUrl.startsWith("https://www.googleapis.com/upload/drive/")) {
       return res.status(400).json({ error: "Invalid upload URL" });
