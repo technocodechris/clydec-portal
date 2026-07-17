@@ -57,11 +57,13 @@ export async function driveUpload(file, folderKey) {
         continue;
       }
 
-      if (res.status === 200 || res.status === 201) {
-        finalResult = await res.json();
-        handled = true;
-      } else if (res.status === 308) {
-        start = end + 1;
+      if (res.ok) {
+        const data = await res.json();
+        if (data.done) {
+          finalResult = data;
+        } else {
+          start = end + 1;
+        }
         handled = true;
       } else if (res.status >= 500 || res.status === 429) {
         // Transient server-side/rate-limit error — retry this same chunk.
