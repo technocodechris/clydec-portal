@@ -31,6 +31,20 @@ export async function verifyUser(req) {
   return { uid: decoded.uid, role: snap.data().role };
 }
 
+// A lighter check for high-frequency endpoints (the per-chunk upload
+// relay, called 1,000+ times for a large file) — confirms the token
+// itself is valid without the extra Firestore round-trip on every call.
+// Safe here because the full role/folder check already happened once in
+// drive-upload-init before this session URL was ever issued.
+export async function verifyUserFast(req) {
+  initAdmin();
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) throw Object.assign(new Error("Missing auth token"), { status: 401 });
+  const decoded = await admin.auth().verifyIdToken(token);
+  return { uid: decoded.uid };
+}
+
 // Files uploaded through this land directly in the founder's own Google
 // Drive (using the refresh token from the one-time OAuth authorization) —
 // not a service account, since personal Gmail accounts don't get Drive
