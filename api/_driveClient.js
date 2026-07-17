@@ -1,7 +1,7 @@
 // Shared by the /api/drive-* serverless functions. Runs server-side only —
 // never imported by src/ (browser) code. Holds the two secrets that must
 // never reach the client: the Firebase Admin service account and the
-// Google Drive service account.
+// Google OAuth client (delegated to the founder's own Drive).
 import admin from "firebase-admin";
 import { google } from "googleapis";
 
@@ -31,14 +31,18 @@ export async function verifyUser(req) {
   return { uid: decoded.uid, role: snap.data().role };
 }
 
+// Files uploaded through this land directly in the founder's own Google
+// Drive (using the refresh token from the one-time OAuth authorization) —
+// not a service account, since personal Gmail accounts don't get Drive
+// storage quota for service accounts. The googleapis client auto-refreshes
+// the access token from this refresh token as needed.
 export function getDriveClient() {
-  const auth = new google.auth.JWT(
-    process.env.GDRIVE_CLIENT_EMAIL,
-    null,
-    (process.env.GDRIVE_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
-    ["https://www.googleapis.com/auth/drive"]
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GDRIVE_CLIENT_ID,
+    process.env.GDRIVE_CLIENT_SECRET
   );
-  return google.drive({ version: "v3", auth });
+  oauth2Client.setCredentials({ refresh_token: process.env.GDRIVE_REFRESH_TOKEN });
+  return google.drive({ version: "v3", auth: oauth2Client });
 }
 
 // Mirrors SEED_FOLDERS access in src/App.jsx — keep both in sync.
@@ -49,8 +53,9 @@ export const FOLDER_ACCESS = {
   "client-aurora": ["OWNER", "ADMIN", "CLIENT"],
 };
 
-// Each value is the Drive folder ID you created and shared with the
-// service account (see README "Google Drive setup").
+// Each value is the Drive folder ID for a folder you created in your own
+// Drive (see README "Google Drive setup") — no sharing step needed since
+// it's all in your account already.
 export const FOLDER_DRIVE_IDS = {
   creative: process.env.GDRIVE_FOLDER_CREATIVE,
   data: process.env.GDRIVE_FOLDER_DATA,
