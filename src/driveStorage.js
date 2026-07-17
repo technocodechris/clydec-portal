@@ -21,6 +21,7 @@ export async function driveUpload(file, folderKey) {
   if (!initRes.ok) throw new Error(initData.error || "Could not start upload");
 
   const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB — safely under Vercel's cap
+  const MAX_RETRIES = 5;
   const total = file.size;
   let start = 0;
   let finalResult = null;
@@ -34,21 +35,46 @@ export async function driveUpload(file, folderKey) {
       end: String(end),
       total: String(total),
     });
-    // Fetched fresh each time — a token grabbed once at the start would go
-    // stale partway through a long upload (tokens expire after ~1hr).
-    const res = await fetch(`/api/drive-upload-chunk?${params.toString()}`, {
-      method: "POST",
-      headers: { ...(await authHeader()), "Content-Type": "application/octet-stream" },
-      body: chunk,
-    });
-    if (res.status === 200 || res.status === 201) {
-      finalResult = await res.json();
-      break;
-    } else if (res.status === 308) {
-      start = end + 1;
-    } else {
-      const errText = await res.text();
-      throw new Error(`Upload failed at byte ${start}: ${errText}`);
+
+    let attempt = 0;
+    let handled = false;
+    while (!handled) {
+      let res;
+      try {
+        // Fetched fresh each time — a token grabbed once at the start
+        // would go stale partway through a long upload (~1hr lifetime).
+        res = await fetch(`/api/drive-upload-chunk?${params.toString()}`, {
+          method: "POST",
+          headers: { ...(await authHeader()), "Content-Type": "application/octet-stream" },
+          body: chunk,
+        });
+      } catch (networkErr) {
+        // A raw network failure (dropped connection, blip, etc.) — retry
+        // rather than aborting a 1,000+ request upload over one hiccup.
+        attempt++;
+        if (attempt > MAX_RETRIES) throw new Error(`Upload failed at byte ${start} after ${MAX_RETRIES} retries: ${networkErr.message}`);
+        await new Promise(r => setTimeout(r, 1000 * attempt));
+        continue;
+      }
+
+      if (res.status === 200 || res.status === 201) {
+        finalResult = await res.json();
+        handled = true;
+      } else if (res.status === 308) {
+        start = end + 1;
+        handled = true;
+      } else if (res.status >= 500 || res.status === 429) {
+        // Transient server-side/rate-limit error — retry this same chunk.
+        attempt++;
+        if (attempt > MAX_RETRIES) {
+          const errText = await res.text();
+          throw new Error(`Upload failed at byte ${start} after ${MAX_RETRIES} retries: ${errText}`);
+        }
+        await new Promise(r => setTimeout(r, 1000 * attempt));
+      } else {
+        const errText = await res.text();
+        throw new Error(`Upload failed at byte ${start}: ${errText}`);
+      }
     }
   }
   return { fileId: finalResult.id, name: finalResult.name || file.name, size: total, mime: file.type };
@@ -68,7 +94,7 @@ export async function driveDownload(fileId, folderKey, filename) {
 }
 
 export async function driveDelete(fileId, folderKey) {
-  const res = await fetch(`/api/drive-delete?fileId=${fileId}&folderKey=${folderKey}`, { method: "DELETE", headers: await authHeader() });
+  const res = await fetch(`/api/drive-delete?fileId=${fileId}&folderKey=${folderKey}`, { method: "POST", headers: await authHeader() });
   if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
 }
 
