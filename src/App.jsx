@@ -405,8 +405,8 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, no
   async function handleFiles(fileList) {
     setUploading(true);
     for (const file of Array.from(fileList)) {
-      if (file.size > 50 * 1024 * 1024) {
-        notify(`${file.name} is over the 50 MB limit — skipped.`, "error");
+      if (file.size > 10 * 1024 * 1024 * 1024) {
+        notify(`${file.name} is over the 10 GB limit — skipped.`, "error");
         continue;
       }
       const id = uid();
@@ -430,7 +430,7 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, no
           </button>
         ))}
         <div style={{ marginTop: 18, fontSize: 11.5, color: COLORS.mute, lineHeight: 1.5, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 10 }}>
-          Files here are stored securely in {STORAGE_PROVIDER === "drive" ? "your connected Google Drive" : "Firebase Cloud Storage"}. Limit: 50 MB per file.
+          Files here are stored securely in {STORAGE_PROVIDER === "drive" ? "your connected Google Drive" : "Firebase Cloud Storage"}. Limit: 10 GB per file.
         </div>
       </div>
 
@@ -884,27 +884,12 @@ export default function App() {
   useEffect(() => {
     const unsub = watchAuth(async (fbUser) => {
       if (!fbUser) { setUser(null); setAuthChecked(true); return; }
-      // TEMP DIAGNOSTIC — remove once login is confirmed working.
-      // Prints the exact UID Firebase Auth gave us, so it can be
-      // character-compared against the Firestore document ID.
-      console.log("[diagnostic] Firebase Auth UID:", JSON.stringify(fbUser.uid));
-      try {
-        const snap = await getDoc(fsDoc(db, "users", fbUser.uid));
-        console.log("[diagnostic] users/" + fbUser.uid + " exists?", snap.exists());
-        if (snap.exists()) {
-          setUser({ id: fbUser.uid, email: fbUser.email, ...snap.data() });
-        } else {
-          // Signed in with Firebase Auth but no workspace profile yet —
-          // treat as not provisioned rather than guessing a role.
-          setLoginError("Your account isn't set up in this workspace yet. Contact your owner.");
-          await fbLogout();
-          setUser(null);
-        }
-      } catch (e) {
-        // TEMP DIAGNOSTIC — a permission-denied here means the Firestore
-        // rules aren't deployed/active the way we expect, which looks
-        // identical to "doc missing" from the UI's point of view otherwise.
-        console.error("[diagnostic] getDoc(users/" + fbUser.uid + ") threw:", e.code || e.message);
+      const snap = await getDoc(fsDoc(db, "users", fbUser.uid));
+      if (snap.exists()) {
+        setUser({ id: fbUser.uid, email: fbUser.email, ...snap.data() });
+      } else {
+        // Signed in with Firebase Auth but no workspace profile yet —
+        // treat as not provisioned rather than guessing a role.
         setLoginError("Your account isn't set up in this workspace yet. Contact your owner.");
         await fbLogout();
         setUser(null);
@@ -914,26 +899,19 @@ export default function App() {
     return unsub;
   }, []);
 
-  // Workspace data load — only runs once someone is actually signed in.
-  // The Firestore/Storage rules require auth to read any of this, so
-  // fetching it before login just stalls forever and blocks the app.
+  // workspace data load (runs once; re-run per section as needed)
   useEffect(() => {
-    if (!user) { setReady(false); return; }
-    let cancelled = false;
-    setReady(false);
     (async () => {
       const [u, g, r, a, n, res, fMeta] = await Promise.all([
         listCollection("users"), listCollection("groups").then(g => g.length ? g : SEED_GROUPS),
         listCollection("requests"), sget("auth-settings", SEED_AUTH), sget("notif-settings", SEED_NOTIF),
         sget("restrictions", SEED_RESTRICTIONS), listCollection("files"),
       ]);
-      if (cancelled) return;
       setUsers(u); setGroups(g); setRequests(r); setAuth(a); setNotif(n); setRestrictions(res);
       setFiles(fMeta.sort((x, y) => y.uploadedAt - x.uploadedAt));
       setReady(true);
     })();
-    return () => { cancelled = true; };
-  }, [user]);
+  }, []);
 
   function persistAuth(next) { setAuth(next); sset("auth-settings", next); }
   function persistNotif(next) { setNotif(next); sset("notif-settings", next); }
@@ -1038,11 +1016,7 @@ export default function App() {
     }
   }
 
-  // Only the auth check (fast, local) blocks the very first paint.
-  // Workspace data loading (which needs a signed-in user) is handled below,
-  // after the login screen, so it never keeps someone stuck on a blank spinner
-  // before they've had a chance to log in.
-  if (!authChecked) return (
+  if (!ready || !authChecked) return (
     <div className="cly" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 400, color: COLORS.mute }}>
       <Loader2 size={20} className="cly-spin" />
     </div>
@@ -1054,10 +1028,6 @@ export default function App() {
       <Toast toast={toast} />
       {!user ? (
         <LoginScreen onLogin={handleLogin} loading={loginLoading} error={loginError} onForgot={handleForgot} />
-      ) : !ready ? (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 400, color: COLORS.mute }}>
-          <Loader2 size={20} className="cly-spin" />
-        </div>
       ) : (
         <div style={{ display: "flex", minHeight: 640, borderRadius: 14, overflow: "hidden", border: `1px solid ${COLORS.line}`, boxShadow: "0 20px 50px rgba(0,0,0,0.1)" }}>
           <Sidebar user={user} page={page} setPage={setPage} pendingCount={requests.filter(r => r.status === "pending").length} />
