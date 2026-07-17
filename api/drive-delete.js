@@ -1,17 +1,27 @@
-import { verifyUser, getDriveClient, FOLDER_ACCESS } from "./_driveClient.js";
+import { verifyUser, getDriveClient } from "./_driveClient.js";
 
 export default async function handler(req, res) {
-  if (req.method !== "DELETE") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   try {
-    const user = await verifyUser(req);
-    const { fileId, folderKey } = req.query;
-    const allowed = FOLDER_ACCESS[folderKey];
-    if (!allowed || !allowed.includes(user.role) || user.role === "CLIENT") {
-      return res.status(403).json({ error: "Not allowed" });
-    }
+    await verifyUser(req);
+    const { fileIds } = req.body;
+    if (!Array.isArray(fileIds)) return res.status(400).json({ error: "fileIds must be an array" });
+
     const drive = getDriveClient();
-    await drive.files.delete({ fileId });
-    res.status(200).json({ deleted: true });
+    const missing = [];
+    await Promise.all(
+      fileIds.map(async (id) => {
+        try {
+          await drive.files.get({ fileId: id, fields: "id" });
+        } catch (e) {
+          const status = e.code || e.response?.status;
+          if (status === 404) missing.push(id);
+          // Other errors (rate limit, transient network) are left alone —
+          // we only want to prune files we're sure are actually gone.
+        }
+      })
+    );
+    res.status(200).json({ missing });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
