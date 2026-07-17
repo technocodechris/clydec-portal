@@ -72,16 +72,17 @@ export async function driveDelete(fileId, folderKey) {
   if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
 }
 
-// Checks a batch of Drive file IDs and returns the ones that no longer
-// exist — e.g. deleted directly in Drive, outside the portal.
-export async function driveCheckMissing(fileIds) {
-  if (!fileIds.length) return [];
+// Reconciles a folder's known files against what's actually in Drive —
+// reports files that vanished from Drive (missing) and files that exist
+// in Drive but the portal never recorded (added), e.g. dropped in
+// directly rather than uploaded through the portal.
+export async function driveSyncFolder(folderKey, knownFileIds) {
   const res = await fetch("/api/drive-sync", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
-    body: JSON.stringify({ fileIds }),
+    body: JSON.stringify({ folderKey, knownFileIds }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Sync check failed");
-  return data.missing;
+  return data; // { missing: [ids], added: [{id,name,mimeType,size,createdTime}] }
 }
