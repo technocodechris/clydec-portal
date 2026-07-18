@@ -21,10 +21,11 @@ export async function driveUpload(file, folderKey, onProgress) {
   if (!initRes.ok) throw new Error(initData.error || "Could not start upload");
 
   const CHUNK_SIZE = Math.floor(4.2 * 1024 * 1024); // whole bytes only — fractional values break Content-Range
-  const MAX_RETRIES = 5;
+  const MAX_CONSECUTIVE_FAILURES = 8;
   const total = file.size;
   let start = 0;
   let finalResult = null;
+  let consecutiveFailures = 0;
   let lastTickTime = Date.now();
   let lastTickBytes = 0;
 
@@ -45,7 +46,7 @@ export async function driveUpload(file, folderKey, onProgress) {
   }
 
   // Asks Google what it actually has, and corrects `start` to match —
-  // used after any failure so we never resend based on a stale guess.
+  // called after any failure so we never resend based on a stale guess.
   async function reconcileWithGoogle() {
     const res = await fetch("/api/drive-upload-status", {
       method: "POST",
@@ -60,9 +61,14 @@ export async function driveUpload(file, folderKey, onProgress) {
     } else {
       start = data.receivedBytes || 0;
     }
-    reportProgress(start);
   }
 
+  // One unified failure path — no split counters that can starve each
+  // other. Every failure (network error, 503, 400, anything) counts
+  // against the same budget, backs off, and reconciles position before
+  // the next attempt. A clean success resets the counter to zero, so a
+  // handful of blips scattered across a multi-GB upload never add up to
+  // a false "giving up."
   while (start < total) {
     const end = Math.min(start + CHUNK_SIZE, total) - 1;
     const chunk = file.slice(start, end + 1);
@@ -73,62 +79,44 @@ export async function driveUpload(file, folderKey, onProgress) {
       total: String(total),
     });
 
-    let attempt = 0;
-    let handled = false;
-    while (!handled) {
-      let res;
-      try {
-        // Fetched fresh each time — a token grabbed once at the start
-        // would go stale partway through a long upload (~1hr lifetime).
-        res = await fetch(`/api/drive-upload-chunk?${params.toString()}`, {
-          method: "POST",
-          headers: { ...(await authHeader()), "Content-Type": "application/octet-stream" },
-          body: chunk,
-        });
-      } catch (networkErr) {
-        attempt++;
-        if (attempt > MAX_RETRIES) throw new Error(`Upload failed near byte ${start} after ${MAX_RETRIES} retries: ${networkErr.message}`);
-        await new Promise(r => setTimeout(r, 500 * attempt));
-        continue; // plain retry of the same range — no reconcile needed for a raw network blip
-      }
-
-      if (res.ok) {
-        const data = await res.json();
-        const uploadedBytes = end + 1;
-        if (data.done) {
-          finalResult = data;
-          start = total;
-        } else {
-          start = end + 1;
-        }
-        handled = true;
-        reportProgress(uploadedBytes);
-      } else if (res.status >= 500 || res.status === 429) {
-        // Transient — Google's own guidance for 503 is simply "retry the
-        // same request." No position drift here, so no need for the
-        // heavier reconcile round-trip.
-        attempt++;
-        if (attempt > MAX_RETRIES) {
-          const errText = await res.text();
-          throw new Error(`Upload failed near byte ${start} after ${MAX_RETRIES} retries: ${errText}`);
-        }
-        await new Promise(r => setTimeout(r, 500 * attempt));
-      } else if (res.status === 400) {
-        // A real position mismatch (e.g. after a prior hiccup left our
-        // bookkeeping out of sync with Google's) — this is the one case
-        // that actually needs reconciling before retrying.
-        attempt++;
-        if (attempt > MAX_RETRIES) {
-          const errText = await res.text();
-          throw new Error(`Upload failed near byte ${start} after ${MAX_RETRIES} retries: ${errText}`);
-        }
-        await reconcileWithGoogle();
-        handled = true;
-      } else {
-        const errText = await res.text();
-        throw new Error(`Upload failed at byte ${start}: ${errText}`);
-      }
+    let res;
+    let networkFailed = false;
+    let networkErrMsg = "";
+    try {
+      // Fetched fresh each time — a token grabbed once at the start would
+      // go stale partway through a long upload (~1hr lifetime).
+      res = await fetch(`/api/drive-upload-chunk?${params.toString()}`, {
+        method: "POST",
+        headers: { ...(await authHeader()), "Content-Type": "application/octet-stream" },
+        body: chunk,
+      });
+    } catch (e) {
+      networkFailed = true;
+      networkErrMsg = e.message;
     }
+
+    if (!networkFailed && res.ok) {
+      const data = await res.json();
+      const uploadedBytes = end + 1;
+      if (data.done) {
+        finalResult = data;
+        start = total;
+      } else {
+        start = end + 1;
+      }
+      consecutiveFailures = 0;
+      reportProgress(uploadedBytes);
+      continue;
+    }
+
+    consecutiveFailures++;
+    if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
+      const detail = networkFailed ? networkErrMsg : await res.text();
+      throw new Error(`Upload failed near byte ${start} after ${MAX_CONSECUTIVE_FAILURES} consecutive failures: ${detail}`);
+    }
+    await new Promise(r => setTimeout(r, 500 * consecutiveFailures));
+    await reconcileWithGoogle();
+    reportProgress(start);
   }
   return { fileId: finalResult.id, name: finalResult.name || file.name, size: total, mime: file.type };
 }
