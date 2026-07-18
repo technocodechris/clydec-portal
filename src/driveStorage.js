@@ -32,7 +32,7 @@ export async function driveUpload(file, folderKey, onProgress) {
     if (!onProgress) return;
     const now = Date.now();
     const elapsedSec = (now - lastTickTime) / 1000;
-    const bytesSinceTick = uploadedBytes - lastTickBytes;
+    const bytesSinceTick = Math.max(0, uploadedBytes - lastTickBytes); // never negative, even right after a reconcile rewinds position
     const speedBps = elapsedSec > 0 ? bytesSinceTick / elapsedSec : 0;
     lastTickTime = now;
     lastTickBytes = uploadedBytes;
@@ -88,10 +88,8 @@ export async function driveUpload(file, folderKey, onProgress) {
       } catch (networkErr) {
         attempt++;
         if (attempt > MAX_RETRIES) throw new Error(`Upload failed near byte ${start} after ${MAX_RETRIES} retries: ${networkErr.message}`);
-        await new Promise(r => setTimeout(r, 1000 * attempt));
-        await reconcileWithGoogle(); // resync position before the next attempt
-        handled = true; // break out and let the outer loop re-slice from the corrected `start`
-        continue;
+        await new Promise(r => setTimeout(r, 500 * attempt));
+        continue; // plain retry of the same range — no reconcile needed for a raw network blip
       }
 
       if (res.ok) {
@@ -105,16 +103,25 @@ export async function driveUpload(file, folderKey, onProgress) {
         }
         handled = true;
         reportProgress(uploadedBytes);
-      } else if (res.status >= 500 || res.status === 429 || res.status === 400) {
-        // 5xx/429 = transient; 400 = likely a position drift after an
-        // earlier hiccup (exactly what caused the original bug) — in all
-        // these cases, resync with Google rather than guessing again.
+      } else if (res.status >= 500 || res.status === 429) {
+        // Transient — Google's own guidance for 503 is simply "retry the
+        // same request." No position drift here, so no need for the
+        // heavier reconcile round-trip.
         attempt++;
         if (attempt > MAX_RETRIES) {
           const errText = await res.text();
           throw new Error(`Upload failed near byte ${start} after ${MAX_RETRIES} retries: ${errText}`);
         }
-        await new Promise(r => setTimeout(r, 1000 * attempt));
+        await new Promise(r => setTimeout(r, 500 * attempt));
+      } else if (res.status === 400) {
+        // A real position mismatch (e.g. after a prior hiccup left our
+        // bookkeeping out of sync with Google's) — this is the one case
+        // that actually needs reconciling before retrying.
+        attempt++;
+        if (attempt > MAX_RETRIES) {
+          const errText = await res.text();
+          throw new Error(`Upload failed near byte ${start} after ${MAX_RETRIES} retries: ${errText}`);
+        }
         await reconcileWithGoogle();
         handled = true;
       } else {
