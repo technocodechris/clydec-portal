@@ -37,11 +37,14 @@ export async function driveUpload(file, folderKey, onProgress) {
     const speedBps = elapsedSec > 0 ? bytesSinceTick / elapsedSec : 0;
     lastTickTime = now;
     lastTickBytes = uploadedBytes;
+    const remainingBytes = Math.max(0, total - uploadedBytes);
+    const etaSec = speedBps > 0 ? remainingBytes / speedBps : null;
     onProgress({
       uploaded: Math.min(uploadedBytes, total),
       total,
       percent: Math.min(100, (uploadedBytes / total) * 100),
       speedBps,
+      etaSec,
     });
   }
 
