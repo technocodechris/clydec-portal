@@ -101,6 +101,13 @@ function downloadFromUrl(url, filename) {
   a.href = url; a.download = filename; a.target = "_blank";
   document.body.appendChild(a); a.click(); a.remove();
 }
+function formatDuration(sec) {
+  if (sec == null || !isFinite(sec)) return "calculating…";
+  const s = Math.round(sec);
+  if (s < 60) return `${s}s left`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s left`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m left`;
+}
 
 /* ---------------------------------------------------------------- */
 /* Seed data                                                          */
@@ -478,7 +485,7 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }}>
               <span style={{ fontWeight: 600 }}>{progress.name}</span>
               <span style={{ color: COLORS.mute }}>
-                {formatBytes(progress.uploaded)} / {formatBytes(progress.total)} • {formatBytes(progress.speedBps)}/s
+                {formatBytes(progress.uploaded)} / {formatBytes(progress.total)} • {formatBytes(progress.speedBps)}/s • {formatDuration(progress.etaSec)}
               </span>
             </div>
             <div style={{ height: 6, borderRadius: 4, background: COLORS.cream, overflow: "hidden" }}>
