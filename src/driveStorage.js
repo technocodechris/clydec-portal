@@ -28,6 +28,41 @@ export async function driveUpload(file, folderKey, onProgress) {
   let lastTickTime = Date.now();
   let lastTickBytes = 0;
 
+  function reportProgress(uploadedBytes) {
+    if (!onProgress) return;
+    const now = Date.now();
+    const elapsedSec = (now - lastTickTime) / 1000;
+    const bytesSinceTick = uploadedBytes - lastTickBytes;
+    const speedBps = elapsedSec > 0 ? bytesSinceTick / elapsedSec : 0;
+    lastTickTime = now;
+    lastTickBytes = uploadedBytes;
+    onProgress({
+      uploaded: Math.min(uploadedBytes, total),
+      total,
+      percent: Math.min(100, (uploadedBytes / total) * 100),
+      speedBps,
+    });
+  }
+
+  // Asks Google what it actually has, and corrects `start` to match —
+  // used after any failure so we never resend based on a stale guess.
+  async function reconcileWithGoogle() {
+    const res = await fetch("/api/drive-upload-status", {
+      method: "POST",
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
+      body: JSON.stringify({ uploadUrl: initData.uploadUrl, total }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.expired) throw new Error("Upload session expired or invalid — please retry the upload from the start.");
+    if (data.complete) {
+      finalResult = data;
+      start = total;
+    } else {
+      start = data.receivedBytes || 0;
+    }
+    reportProgress(start);
+  }
+
   while (start < total) {
     const end = Math.min(start + CHUNK_SIZE, total) - 1;
     const chunk = file.slice(start, end + 1);
@@ -51,11 +86,11 @@ export async function driveUpload(file, folderKey, onProgress) {
           body: chunk,
         });
       } catch (networkErr) {
-        // A raw network failure (dropped connection, blip, etc.) — retry
-        // rather than aborting a 1,000+ request upload over one hiccup.
         attempt++;
-        if (attempt > MAX_RETRIES) throw new Error(`Upload failed at byte ${start} after ${MAX_RETRIES} retries: ${networkErr.message}`);
+        if (attempt > MAX_RETRIES) throw new Error(`Upload failed near byte ${start} after ${MAX_RETRIES} retries: ${networkErr.message}`);
         await new Promise(r => setTimeout(r, 1000 * attempt));
+        await reconcileWithGoogle(); // resync position before the next attempt
+        handled = true; // break out and let the outer loop re-slice from the corrected `start`
         continue;
       }
 
@@ -64,33 +99,24 @@ export async function driveUpload(file, folderKey, onProgress) {
         const uploadedBytes = end + 1;
         if (data.done) {
           finalResult = data;
+          start = total;
         } else {
           start = end + 1;
         }
         handled = true;
-
-        if (onProgress) {
-          const now = Date.now();
-          const elapsedSec = (now - lastTickTime) / 1000;
-          const bytesSinceTick = uploadedBytes - lastTickBytes;
-          const speedBps = elapsedSec > 0 ? bytesSinceTick / elapsedSec : 0;
-          lastTickTime = now;
-          lastTickBytes = uploadedBytes;
-          onProgress({
-            uploaded: Math.min(uploadedBytes, total),
-            total,
-            percent: Math.min(100, (uploadedBytes / total) * 100),
-            speedBps,
-          });
-        }
-      } else if (res.status >= 500 || res.status === 429) {
-        // Transient server-side/rate-limit error — retry this same chunk.
+        reportProgress(uploadedBytes);
+      } else if (res.status >= 500 || res.status === 429 || res.status === 400) {
+        // 5xx/429 = transient; 400 = likely a position drift after an
+        // earlier hiccup (exactly what caused the original bug) — in all
+        // these cases, resync with Google rather than guessing again.
         attempt++;
         if (attempt > MAX_RETRIES) {
           const errText = await res.text();
-          throw new Error(`Upload failed at byte ${start} after ${MAX_RETRIES} retries: ${errText}`);
+          throw new Error(`Upload failed near byte ${start} after ${MAX_RETRIES} retries: ${errText}`);
         }
         await new Promise(r => setTimeout(r, 1000 * attempt));
+        await reconcileWithGoogle();
+        handled = true;
       } else {
         const errText = await res.text();
         throw new Error(`Upload failed at byte ${start}: ${errText}`);
