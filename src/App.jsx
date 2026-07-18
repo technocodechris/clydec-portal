@@ -407,6 +407,7 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
   const [syncing, setSyncing] = useState(false);
   const [progress, setProgress] = useState(null); // { name, uploaded, total, percent, speedBps }
   const fileInput = useRef(null);
+  const abortControllerRef = useRef(null);
   const canWrite = user.role !== "CLIENT";
 
   useEffect(() => { if (activeFolder) syncDriveFolder(activeFolder, files); }, [activeFolder]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -421,21 +422,40 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
 
   async function handleFiles(fileList) {
     setUploading(true);
+    let cancelled = false;
     for (const file of Array.from(fileList)) {
+      if (cancelled) break;
       if (file.size > 10 * 1024 * 1024 * 1024) {
         notify(`${file.name} is over the 10 GB limit — skipped.`, "error");
         continue;
       }
       const id = uid();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
       setProgress({ name: file.name, uploaded: 0, total: file.size, percent: 0, speedBps: 0 });
-      await addFile(
-        { id, folderId: activeFolder, name: file.name, mime: file.type || "application/octet-stream", size: file.size, file, uploadedBy: user.name, uploadedAt: Date.now() },
-        (p) => setProgress({ name: file.name, ...p })
-      );
+      try {
+        await addFile(
+          { id, folderId: activeFolder, name: file.name, mime: file.type || "application/octet-stream", size: file.size, file, uploadedBy: user.name, uploadedAt: Date.now() },
+          (p) => setProgress({ name: file.name, ...p }),
+          controller.signal
+        );
+      } catch (e) {
+        if (e.name === "AbortError") {
+          notify(`${file.name} upload cancelled.`);
+          cancelled = true;
+        } else {
+          notify(`${file.name} failed to upload: ${e.message}`, "error");
+        }
+      }
     }
+    abortControllerRef.current = null;
     setProgress(null);
     setUploading(false);
-    notify("Files uploaded.");
+    if (!cancelled) notify("Files uploaded.");
+  }
+
+  function handleCancelUpload() {
+    abortControllerRef.current?.abort();
   }
 
   return (
@@ -482,11 +502,16 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
 
         {progress && (
           <div className="cly-fade-in" style={{ marginBottom: 14, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, marginBottom: 6 }}>
               <span style={{ fontWeight: 600 }}>{progress.name}</span>
-              <span style={{ color: COLORS.mute }}>
-                {formatBytes(progress.uploaded)} / {formatBytes(progress.total)} • {formatBytes(progress.speedBps)}/s • {formatDuration(progress.etaSec)}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ color: COLORS.mute }}>
+                  {formatBytes(progress.uploaded)} / {formatBytes(progress.total)} • {formatBytes(progress.speedBps)}/s • {formatDuration(progress.etaSec)}
+                </span>
+                <button onClick={handleCancelUpload} title="Cancel upload" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, display: "flex" }}>
+                  <X size={15} />
+                </button>
+              </div>
             </div>
             <div style={{ height: 6, borderRadius: 4, background: COLORS.cream, overflow: "hidden" }}>
               <div style={{ height: "100%", width: `${progress.percent}%`, background: COLORS.ink, transition: "width 0.2s" }} />
@@ -958,10 +983,10 @@ export default function App() {
   function persistNotif(next) { setNotif(next); sset("notif-settings", next); }
   function persistRestrictions(next) { setRestrictions(next); sset("restrictions", next); }
 
-  async function addFile(f, onProgress) {
+  async function addFile(f, onProgress, signal) {
     const { file, id, ...meta } = f;
     if (STORAGE_PROVIDER === "drive") {
-      const result = await driveUpload(file, meta.folderId, onProgress);
+      const result = await driveUpload(file, meta.folderId, onProgress, signal);
       const record = { ...meta, id: result.fileId, driveFileId: result.fileId, provider: "drive" };
       await setDocIn("files", result.fileId, record);
       setFiles([record, ...files]);
