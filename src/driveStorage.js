@@ -5,13 +5,65 @@ async function authHeader() {
   return { Authorization: `Bearer ${token}` };
 }
 
-// Large-file-safe upload: sends the file through our own server in small
-// pieces (each safely under Vercel's ~4.5MB request-body cap), which
-// relays each piece to Google's resumable upload session. Neither a
-// single big request through our server nor a direct-to-Drive browser
-// upload works on this platform — this chunked relay is the combination
-// that does.
-export async function driveUpload(file, folderKey, onProgress) {
+// FAST PATH: ask our server for a token, then have the browser handle
+// everything else directly with Google in just two requests total — no
+// per-chunk relay round trips. This only works because a single-request
+// upload never triggers Google's mid-transfer 308 "continue" response
+// (that only happens between chunks), which is the specific thing that
+// breaks a plain browser fetch(). Falls through to the proven chunked
+// relay below if anything about this path fails.
+async function directUpload(file, folderKey, onProgress) {
+  const tokenRes = await fetch("/api/drive-upload-token", {
+    method: "POST",
+    headers: { ...(await authHeader()), "Content-Type": "application/json" },
+    body: JSON.stringify({ folderKey }),
+  });
+  const tokenData = await tokenRes.json();
+  if (!tokenRes.ok) throw new Error(tokenData.error || "Could not get upload token");
+
+  const initRes = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,size,mimeType",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${tokenData.accessToken}`,
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": file.type || "application/octet-stream",
+        "X-Upload-Content-Length": String(file.size),
+      },
+      body: JSON.stringify({ name: file.name, parents: [tokenData.folderId] }),
+    }
+  );
+  if (!initRes.ok) throw new Error(`Direct upload init failed (${initRes.status})`);
+  const uploadUrl = initRes.headers.get("location");
+  if (!uploadUrl) throw new Error("No session URL returned — falling back");
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", uploadUrl, true);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress({ uploaded: e.loaded, total: e.total, percent: (e.loaded / e.total) * 100, speedBps: null, etaSec: null });
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const data = JSON.parse(xhr.responseText);
+        resolve({ fileId: data.id, name: data.name || file.name, size: Number(data.size || file.size), mime: data.mimeType });
+      } else {
+        reject(new Error(`Direct upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Direct upload failed — network or CORS error"));
+    xhr.send(file);
+  });
+}
+
+// FALLBACK PATH (proven, always works): sends the file through our own
+// server in small pieces (each safely under Vercel's ~4.5MB request-body
+// cap), which relays each piece to Google's resumable upload session.
+async function chunkedRelayUpload(file, folderKey, onProgress) {
   const initRes = await fetch("/api/drive-upload-init", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
@@ -122,6 +174,17 @@ export async function driveUpload(file, folderKey, onProgress) {
     reportProgress(start);
   }
   return { fileId: finalResult.id, name: finalResult.name || file.name, size: total, mime: file.type };
+}
+
+export async function driveUpload(file, folderKey, onProgress) {
+  try {
+    const result = await directUpload(file, folderKey, onProgress);
+    console.info("[upload] used direct fast path");
+    return result;
+  } catch (e) {
+    console.warn("[upload] direct fast path failed, falling back to relay:", e.message);
+    return chunkedRelayUpload(file, folderKey, onProgress);
+  }
 }
 
 // Large-file-safe download: get a short-lived access token, then let the
