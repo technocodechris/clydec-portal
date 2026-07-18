@@ -42,10 +42,18 @@ async function directUpload(file, folderKey, onProgress) {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", uploadUrl, true);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    let lastTickTime = Date.now();
+    let lastTickBytes = 0;
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress({ uploaded: e.loaded, total: e.total, percent: (e.loaded / e.total) * 100, speedBps: null, etaSec: null });
-      }
+      if (!e.lengthComputable || !onProgress) return;
+      const now = Date.now();
+      const elapsedSec = (now - lastTickTime) / 1000;
+      const bytesSinceTick = Math.max(0, e.loaded - lastTickBytes);
+      const speedBps = elapsedSec > 0.15 ? bytesSinceTick / elapsedSec : null; // skip too-frequent ticks for a stabler reading
+      if (speedBps !== null) { lastTickTime = now; lastTickBytes = e.loaded; }
+      const remainingBytes = Math.max(0, e.total - e.loaded);
+      const etaSec = speedBps ? remainingBytes / speedBps : null;
+      onProgress({ uploaded: e.loaded, total: e.total, percent: (e.loaded / e.total) * 100, speedBps, etaSec });
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
