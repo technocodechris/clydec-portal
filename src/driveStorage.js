@@ -12,11 +12,12 @@ async function authHeader() {
 // (that only happens between chunks), which is the specific thing that
 // breaks a plain browser fetch(). Falls through to the proven chunked
 // relay below if anything about this path fails.
-async function directUpload(file, folderKey, onProgress) {
+async function directUpload(file, folderKey, onProgress, signal) {
   const tokenRes = await fetch("/api/drive-upload-token", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
     body: JSON.stringify({ folderKey }),
+    signal,
   });
   const tokenData = await tokenRes.json();
   if (!tokenRes.ok) throw new Error(tokenData.error || "Could not get upload token");
@@ -32,6 +33,7 @@ async function directUpload(file, folderKey, onProgress) {
         "X-Upload-Content-Length": String(file.size),
       },
       body: JSON.stringify({ name: file.name, parents: [tokenData.folderId] }),
+      signal,
     }
   );
   if (!initRes.ok) throw new Error(`Direct upload init failed (${initRes.status})`);
@@ -42,6 +44,10 @@ async function directUpload(file, folderKey, onProgress) {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", uploadUrl, true);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    if (signal) {
+      if (signal.aborted) { xhr.abort(); return reject(new DOMException("Upload cancelled", "AbortError")); }
+      signal.addEventListener("abort", () => xhr.abort());
+    }
     let lastTickTime = Date.now();
     let lastTickBytes = 0;
     xhr.upload.onprogress = (e) => {
@@ -64,6 +70,7 @@ async function directUpload(file, folderKey, onProgress) {
       }
     };
     xhr.onerror = () => reject(new Error("Direct upload failed — network or CORS error"));
+    xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
     xhr.send(file);
   });
 }
@@ -71,11 +78,12 @@ async function directUpload(file, folderKey, onProgress) {
 // FALLBACK PATH (proven, always works): sends the file through our own
 // server in small pieces (each safely under Vercel's ~4.5MB request-body
 // cap), which relays each piece to Google's resumable upload session.
-async function chunkedRelayUpload(file, folderKey, onProgress) {
+async function chunkedRelayUpload(file, folderKey, onProgress, signal) {
   const initRes = await fetch("/api/drive-upload-init", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
     body: JSON.stringify({ folderKey, name: file.name, mimeType: file.type, size: file.size }),
+    signal,
   });
   const initData = await initRes.json();
   if (!initRes.ok) throw new Error(initData.error || "Could not start upload");
@@ -133,6 +141,7 @@ async function chunkedRelayUpload(file, folderKey, onProgress) {
   // handful of blips scattered across a multi-GB upload never add up to
   // a false "giving up."
   while (start < total) {
+    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
     const end = Math.min(start + CHUNK_SIZE, total) - 1;
     const chunk = file.slice(start, end + 1);
     const params = new URLSearchParams({
@@ -152,8 +161,10 @@ async function chunkedRelayUpload(file, folderKey, onProgress) {
         method: "POST",
         headers: { ...(await authHeader()), "Content-Type": "application/octet-stream" },
         body: chunk,
+        signal,
       });
     } catch (e) {
+      if (e.name === "AbortError") throw e;
       networkFailed = true;
       networkErrMsg = e.message;
     }
@@ -184,28 +195,55 @@ async function chunkedRelayUpload(file, folderKey, onProgress) {
   return { fileId: finalResult.id, name: finalResult.name || file.name, size: total, mime: file.type };
 }
 
-export async function driveUpload(file, folderKey, onProgress) {
+export async function driveUpload(file, folderKey, onProgress, signal) {
   try {
-    const result = await directUpload(file, folderKey, onProgress);
+    const result = await directUpload(file, folderKey, onProgress, signal);
     console.info("[upload] used direct fast path");
     return result;
   } catch (e) {
+    if (e.name === "AbortError") throw e; // a real cancel — don't fall back, just stop
     console.warn("[upload] direct fast path failed, falling back to relay:", e.message);
-    return chunkedRelayUpload(file, folderKey, onProgress);
+    return chunkedRelayUpload(file, folderKey, onProgress, signal);
   }
 }
 
 // Large-file-safe download: get a short-lived access token, then let the
 // browser navigate to Drive directly so it streams to disk the normal way
 // instead of buffering the whole file in page memory first.
+// Large-file-safe download: get a short-lived access token, then fetch
+// the file with it in an Authorization header (never as a URL query
+// param — Google's abuse-detection systems specifically flag that
+// pattern, since tokens-in-URLs are insecure and increasingly blocked).
+// Streams straight to disk in browsers that support it, avoiding
+// buffering multi-GB files fully in page memory; falls back to a
+// Blob-based download elsewhere.
 export async function driveDownload(fileId, folderKey, filename) {
   const res = await fetch(`/api/drive-download-init?folderKey=${folderKey}`, { headers: await authHeader() });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Download failed");
-  const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&access_token=${encodeURIComponent(data.accessToken)}`;
+
+  const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers: { Authorization: `Bearer ${data.accessToken}` },
+  });
+  if (!driveRes.ok) throw new Error(`Download failed (${driveRes.status})`);
+
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: filename });
+      const writable = await handle.createWritable();
+      await driveRes.body.pipeTo(writable);
+      return;
+    } catch (e) {
+      if (e.name === "AbortError") return; // user cancelled the save dialog — not an error
+      // any other failure here falls through to the Blob method below
+    }
+  }
+  const blob = await driveRes.blob();
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = filename; a.target = "_blank";
+  a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 
 export async function driveDelete(fileId, folderKey) {
