@@ -89,3 +89,34 @@ export const FOLDER_DRIVE_IDS = {
   finance: process.env.GDRIVE_FOLDER_FINANCE,
   "client-aurora": process.env.GDRIVE_FOLDER_CLIENT_AURORA,
 };
+
+// Accepts either one of the 4 fixed Wing keys ("creative") or a raw Drive
+// folder ID (a subfolder created inside a Wing), and resolves both the
+// actual Drive folder ID to operate on and which Wing's role list governs
+// it — by walking Drive's own parent chain rather than maintaining a
+// separate folder database that could drift out of sync. A subfolder's
+// access is always inherited from whichever Wing it's nested under,
+// however deep; there's no separate per-subfolder permission to manage.
+export async function resolveFolder(folderParam, drive) {
+  if (!folderParam) return null;
+  if (FOLDER_DRIVE_IDS[folderParam]) {
+    return { driveId: FOLDER_DRIVE_IDS[folderParam], rootKey: folderParam };
+  }
+  let currentId = folderParam;
+  for (let i = 0; i < 20; i++) { // safety cap against pathological/cyclic parent chains
+    let meta;
+    try {
+      meta = await drive.files.get({ fileId: currentId, fields: "id, parents" });
+    } catch (e) {
+      return null; // folder doesn't exist / no access
+    }
+    const parents = meta.data.parents || [];
+    if (parents.length === 0) return null;
+    const parentId = parents[0];
+    for (const [key, id] of Object.entries(FOLDER_DRIVE_IDS)) {
+      if (id === parentId) return { driveId: folderParam, rootKey: key };
+    }
+    currentId = parentId;
+  }
+  return null; // too deep, or not actually under any known Wing
+}

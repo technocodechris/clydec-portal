@@ -1,11 +1,14 @@
-import { verifyUser, getAccessToken, FOLDER_ACCESS, FOLDER_DRIVE_IDS } from "./_driveClient.js";
+import { verifyUser, getAccessToken, getDriveClient, resolveFolder, FOLDER_ACCESS } from "./_driveClient.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   try {
     const user = await verifyUser(req);
-    const { folderKey, name, mimeType, size } = req.body;
-    const allowed = FOLDER_ACCESS[folderKey];
+    const { folder, name, mimeType, size } = req.body;
+    const drive = getDriveClient();
+    const resolved = await resolveFolder(folder, drive);
+    if (!resolved) return res.status(400).json({ error: "Folder not found" });
+    const allowed = FOLDER_ACCESS[resolved.rootKey];
     if (!allowed || !allowed.includes(user.role)) return res.status(403).json({ error: "Not allowed in this folder" });
     if (user.role === "CLIENT") return res.status(403).json({ error: "Clients can't upload" });
 
@@ -20,7 +23,7 @@ export default async function handler(req, res) {
           "X-Upload-Content-Type": mimeType || "application/octet-stream",
           "X-Upload-Content-Length": String(size),
         },
-        body: JSON.stringify({ name, parents: [FOLDER_DRIVE_IDS[folderKey]] }),
+        body: JSON.stringify({ name, parents: [resolved.driveId] }),
       }
     );
     if (!initRes.ok) {
