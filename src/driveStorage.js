@@ -99,6 +99,74 @@ async function directUpload(file, folderKey, onProgress, signal, onSessionReady)
   });
 }
 
+// FAST RESUME PATH: for continuing an upload after a reload, this asks
+// Google directly how many bytes it already has, then sends only the
+// remaining bytes in one direct request — same speed characteristics as
+// a fresh direct upload, instead of unconditionally dropping to the slow
+// chunked relay just because this is a resume rather than a fresh start.
+async function directResumeUpload(file, folderKey, uploadUrl, onProgress, signal) {
+  const tokenRes = await fetch("/api/drive-upload-token", {
+    method: "POST",
+    headers: { ...(await authHeader()), "Content-Type": "application/json" },
+    body: JSON.stringify({ folderKey }),
+    signal,
+  });
+  const tokenData = await tokenRes.json();
+  if (!tokenRes.ok) throw new Error(tokenData.error || "Could not get upload token");
+
+  const statusRes = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${tokenData.accessToken}`, "Content-Range": `bytes */${file.size}` },
+    signal,
+  });
+  let receivedBytes = 0;
+  if (statusRes.status === 200 || statusRes.status === 201) {
+    const data = await statusRes.json();
+    return { fileId: data.id, name: data.name || file.name, size: Number(data.size || file.size), mime: data.mimeType };
+  } else if (statusRes.status === 308) {
+    const range = statusRes.headers.get("range");
+    receivedBytes = range ? parseInt(range.split("-")[1], 10) + 1 : 0;
+  } else {
+    throw new Error(`Could not resume session (${statusRes.status})`);
+  }
+
+  const remaining = file.slice(receivedBytes);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", uploadUrl, true);
+    xhr.setRequestHeader("Content-Range", `bytes ${receivedBytes}-${file.size - 1}/${file.size}`);
+    if (signal) {
+      if (signal.aborted) { xhr.abort(); return reject(new DOMException("Upload cancelled", "AbortError")); }
+      signal.addEventListener("abort", () => xhr.abort());
+    }
+    let lastTickTime = Date.now();
+    let lastTickBytes = receivedBytes;
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable || !onProgress) return;
+      const now = Date.now();
+      const uploadedSoFar = receivedBytes + e.loaded;
+      const elapsedSec = (now - lastTickTime) / 1000;
+      const bytesSinceTick = Math.max(0, uploadedSoFar - lastTickBytes);
+      const speedBps = elapsedSec > 0.15 ? bytesSinceTick / elapsedSec : null;
+      if (speedBps !== null) { lastTickTime = now; lastTickBytes = uploadedSoFar; }
+      const remainingBytes = Math.max(0, file.size - uploadedSoFar);
+      const etaSec = speedBps ? remainingBytes / speedBps : null;
+      onProgress({ uploaded: uploadedSoFar, total: file.size, percent: (uploadedSoFar / file.size) * 100, speedBps, etaSec });
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const data = JSON.parse(xhr.responseText);
+        resolve({ fileId: data.id, name: data.name || file.name, size: Number(data.size || file.size), mime: data.mimeType });
+      } else {
+        reject(new Error(`Resume upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Resume upload failed — network or CORS error"));
+    xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
+    xhr.send(remaining);
+  });
+}
+
 // FALLBACK PATH (proven, always works): sends the file through our own
 // server in small pieces (each safely under Vercel's ~4.5MB request-body
 // cap), which relays each piece to Google's resumable upload session.
@@ -257,12 +325,21 @@ export async function driveUpload(file, folderKey, onProgress, signal, resumeInf
 
   if (resumeInfo) {
     try {
-      const result = await chunkedRelayUpload(file, folderKey, onProgress, signal, resumeInfo.uploadUrl, onSessionReady);
+      const result = await directResumeUpload(file, folderKey, resumeInfo.uploadUrl, onProgress, signal);
+      console.info("[upload] resumed via direct fast path");
       clearPendingUpload();
       return result;
     } catch (e) {
-      if (e.name === "AbortError") clearPendingUpload();
-      throw e;
+      if (e.name === "AbortError") { clearPendingUpload(); throw e; }
+      console.warn("[upload] direct resume failed, falling back to relay:", e.message);
+      try {
+        const result = await chunkedRelayUpload(file, folderKey, onProgress, signal, resumeInfo.uploadUrl, onSessionReady);
+        clearPendingUpload();
+        return result;
+      } catch (e2) {
+        if (e2.name === "AbortError") clearPendingUpload();
+        throw e2;
+      }
     }
   }
 
