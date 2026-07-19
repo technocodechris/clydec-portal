@@ -5,6 +5,26 @@ async function authHeader() {
   return { Authorization: `Bearer ${token}` };
 }
 
+/* ------------------------------------------------------------------ */
+/* Persisting an in-progress upload so a page reload doesn't lose it   */
+/* ------------------------------------------------------------------ */
+const PENDING_KEY = "clydec-pending-upload";
+
+function savePendingUpload(record) {
+  try { localStorage.setItem(PENDING_KEY, JSON.stringify(record)); } catch (e) { /* storage full/unavailable — non-fatal */ }
+}
+export function getPendingUpload() {
+  try {
+    const raw = localStorage.getItem(PENDING_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+export function clearPendingUpload() {
+  try { localStorage.removeItem(PENDING_KEY); } catch (e) { /* non-fatal */ }
+}
+
 // FAST PATH: ask our server for a token, then have the browser handle
 // everything else directly with Google in just two requests total — no
 // per-chunk relay round trips. This only works because a single-request
@@ -12,7 +32,7 @@ async function authHeader() {
 // (that only happens between chunks), which is the specific thing that
 // breaks a plain browser fetch(). Falls through to the proven chunked
 // relay below if anything about this path fails.
-async function directUpload(file, folderKey, onProgress, signal) {
+async function directUpload(file, folderKey, onProgress, signal, onSessionReady) {
   const tokenRes = await fetch("/api/drive-upload-token", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
@@ -39,6 +59,10 @@ async function directUpload(file, folderKey, onProgress, signal) {
   if (!initRes.ok) throw new Error(`Direct upload init failed (${initRes.status})`);
   const uploadUrl = initRes.headers.get("location");
   if (!uploadUrl) throw new Error("No session URL returned — falling back");
+
+  // The session now exists on Google's side regardless of what happens
+  // next — record it so a reload can still recover and resume.
+  onSessionReady?.(uploadUrl);
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -78,15 +102,23 @@ async function directUpload(file, folderKey, onProgress, signal) {
 // FALLBACK PATH (proven, always works): sends the file through our own
 // server in small pieces (each safely under Vercel's ~4.5MB request-body
 // cap), which relays each piece to Google's resumable upload session.
-async function chunkedRelayUpload(file, folderKey, onProgress, signal) {
-  const initRes = await fetch("/api/drive-upload-init", {
-    method: "POST",
-    headers: { ...(await authHeader()), "Content-Type": "application/json" },
-    body: JSON.stringify({ folderKey, name: file.name, mimeType: file.type, size: file.size }),
-    signal,
-  });
-  const initData = await initRes.json();
-  if (!initRes.ok) throw new Error(initData.error || "Could not start upload");
+// If `existingUploadUrl` is passed (resuming after a reload), skips
+// starting a new session and instead asks Google where the old one left
+// off before continuing.
+async function chunkedRelayUpload(file, folderKey, onProgress, signal, existingUploadUrl, onSessionReady) {
+  let uploadUrl = existingUploadUrl;
+  if (!uploadUrl) {
+    const initRes = await fetch("/api/drive-upload-init", {
+      method: "POST",
+      headers: { ...(await authHeader()), "Content-Type": "application/json" },
+      body: JSON.stringify({ folderKey, name: file.name, mimeType: file.type, size: file.size }),
+      signal,
+    });
+    const initData = await initRes.json();
+    if (!initRes.ok) throw new Error(initData.error || "Could not start upload");
+    uploadUrl = initData.uploadUrl;
+    onSessionReady?.(uploadUrl);
+  }
 
   const CHUNK_SIZE = 262144 * 17; // 4,456,448 bytes — must be a clean multiple of 256KB per Google's resumable upload spec, and this is the largest such multiple that still fits safely under Vercel's 4.5MB body cap
   const MAX_CONSECUTIVE_FAILURES = 8;
@@ -117,21 +149,27 @@ async function chunkedRelayUpload(file, folderKey, onProgress, signal) {
   }
 
   // Asks Google what it actually has, and corrects `start` to match —
-  // called after any failure so we never resend based on a stale guess.
+  // called after any failure (or right away, when resuming from a
+  // reload) so we never resend based on a stale guess.
   async function reconcileWithGoogle() {
     const res = await fetch("/api/drive-upload-status", {
       method: "POST",
       headers: { ...(await authHeader()), "Content-Type": "application/json" },
-      body: JSON.stringify({ uploadUrl: initData.uploadUrl, total }),
+      body: JSON.stringify({ uploadUrl, total }),
     });
     const data = await res.json();
-    if (!res.ok || data.expired) throw new Error("Upload session expired or invalid — please retry the upload from the start.");
+    if (!res.ok || data.expired) throw new Error("Upload session expired or invalid — please start this upload over.");
     if (data.complete) {
       finalResult = data;
       start = total;
     } else {
       start = data.receivedBytes || 0;
     }
+  }
+
+  if (existingUploadUrl) {
+    await reconcileWithGoogle();
+    reportProgress(start);
   }
 
   // One unified failure path — no split counters that can starve each
@@ -145,7 +183,7 @@ async function chunkedRelayUpload(file, folderKey, onProgress, signal) {
     const end = Math.min(start + CHUNK_SIZE, total) - 1;
     const chunk = file.slice(start, end + 1);
     const params = new URLSearchParams({
-      uploadUrl: initData.uploadUrl,
+      uploadUrl,
       start: String(start),
       end: String(end),
       total: String(total),
@@ -195,21 +233,44 @@ async function chunkedRelayUpload(file, folderKey, onProgress, signal) {
   return { fileId: finalResult.id, name: finalResult.name || file.name, size: total, mime: file.type };
 }
 
-export async function driveUpload(file, folderKey, onProgress, signal) {
+// `resumeInfo`, when provided (after finding a pending record left over
+// from before a reload), skips straight to the relay path using the
+// already-open session instead of starting fresh.
+export async function driveUpload(file, folderKey, onProgress, signal, resumeInfo) {
+  const onSessionReady = (uploadUrl) => {
+    savePendingUpload({ uploadUrl, folderKey, fileName: file.name, fileSize: file.size, mimeType: file.type, startedAt: Date.now() });
+  };
+
+  if (resumeInfo) {
+    try {
+      const result = await chunkedRelayUpload(file, folderKey, onProgress, signal, resumeInfo.uploadUrl, onSessionReady);
+      clearPendingUpload();
+      return result;
+    } catch (e) {
+      if (e.name === "AbortError") clearPendingUpload();
+      throw e;
+    }
+  }
+
   try {
-    const result = await directUpload(file, folderKey, onProgress, signal);
+    const result = await directUpload(file, folderKey, onProgress, signal, onSessionReady);
     console.info("[upload] used direct fast path");
+    clearPendingUpload();
     return result;
   } catch (e) {
-    if (e.name === "AbortError") throw e; // a real cancel — don't fall back, just stop
+    if (e.name === "AbortError") { clearPendingUpload(); throw e; } // a real cancel — don't fall back, just stop
     console.warn("[upload] direct fast path failed, falling back to relay:", e.message);
-    return chunkedRelayUpload(file, folderKey, onProgress, signal);
+    try {
+      const result = await chunkedRelayUpload(file, folderKey, onProgress, signal, undefined, onSessionReady);
+      clearPendingUpload();
+      return result;
+    } catch (e2) {
+      if (e2.name === "AbortError") clearPendingUpload();
+      throw e2;
+    }
   }
 }
 
-// Large-file-safe download: get a short-lived access token, then let the
-// browser navigate to Drive directly so it streams to disk the normal way
-// instead of buffering the whole file in page memory first.
 // Large-file-safe download: get a short-lived access token, then fetch
 // the file with it in an Authorization header (never as a URL query
 // param — Google's abuse-detection systems specifically flag that
