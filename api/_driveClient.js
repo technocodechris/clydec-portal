@@ -99,8 +99,16 @@ export const FOLDER_DRIVE_IDS = {
 // however deep; there's no separate per-subfolder permission to manage.
 export async function resolveFolder(folderParam, drive) {
   if (!folderParam) return null;
-  if (FOLDER_DRIVE_IDS[folderParam]) {
-    return { driveId: FOLDER_DRIVE_IDS[folderParam], rootKey: folderParam };
+  if (Object.prototype.hasOwnProperty.call(FOLDER_ACCESS, folderParam)) {
+    // It's meant to be one of the 4 fixed Wings.
+    const driveId = FOLDER_DRIVE_IDS[folderParam];
+    if (!driveId) {
+      throw Object.assign(
+        new Error(`Server misconfiguration: no Drive folder ID is set for "${folderParam}" — check the matching GDRIVE_FOLDER_* environment variable in Vercel.`),
+        { status: 500 }
+      );
+    }
+    return { driveId, rootKey: folderParam };
   }
   let currentId = folderParam;
   for (let i = 0; i < 20; i++) { // safety cap against pathological/cyclic parent chains

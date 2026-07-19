@@ -60,6 +60,18 @@ export default async function handler(req, res) {
       return res.status(200).json({ missing, added });
     }
 
+    if (action === "quota") {
+      if (user.role !== "OWNER") return res.status(403).json({ error: "Owner only" });
+      const about = await drive.about.get({ fields: "storageQuota" });
+      const q = about.data.storageQuota || {};
+      return res.status(200).json({
+        limit: q.limit != null ? Number(q.limit) : null, // null = unlimited plan
+        usage: Number(q.usage || 0),
+        usageInDrive: Number(q.usageInDrive || 0),
+        usageInDriveTrash: Number(q.usageInDriveTrash || 0),
+      });
+    }
+
     return res.status(400).json({ error: "Unknown action" });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
