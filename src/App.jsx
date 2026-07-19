@@ -79,7 +79,7 @@ import {
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
 
-import { driveUpload, driveDownload, driveDelete, driveSyncFolder } from "./driveStorage";
+import { driveUpload, driveDownload, driveDelete, driveSyncFolder, getPendingUpload, clearPendingUpload } from "./driveStorage";
 
 const STORAGE_PROVIDER = import.meta.env.VITE_STORAGE_PROVIDER === "drive" ? "drive" : "firebase";
 
@@ -406,7 +406,9 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
   const [uploading, setUploading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [progress, setProgress] = useState(null); // { name, uploaded, total, percent, speedBps }
+  const [pendingUpload, setPendingUpload] = useState(() => getPendingUpload());
   const fileInput = useRef(null);
+  const resumeFileInput = useRef(null);
   const abortControllerRef = useRef(null);
   const canWrite = user.role !== "CLIENT";
 
@@ -416,6 +418,43 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
     setSyncing(true);
     await syncDriveFolder(activeFolder, files);
     setSyncing(false);
+  }
+
+  function handleDiscardPending() {
+    clearPendingUpload();
+    setPendingUpload(null);
+  }
+
+  async function handleResumeFileSelect(file) {
+    if (!pendingUpload) return;
+    if (file.name !== pendingUpload.fileName || file.size !== pendingUpload.fileSize) {
+      notify(`That doesn't match "${pendingUpload.fileName}" — select the exact same file to resume.`, "error");
+      return;
+    }
+    setUploading(true);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    setProgress({ name: file.name, uploaded: 0, total: file.size, percent: 0, speedBps: 0 });
+    try {
+      await addFile(
+        { id: uid(), folderId: pendingUpload.folderKey, name: file.name, mime: file.type || pendingUpload.mimeType || "application/octet-stream", size: file.size, file, uploadedBy: user.name, uploadedAt: Date.now() },
+        (p) => setProgress({ name: file.name, ...p }),
+        controller.signal,
+        pendingUpload
+      );
+      setPendingUpload(null);
+      notify("Upload resumed and completed.");
+    } catch (e) {
+      if (e.name === "AbortError") {
+        notify("Resume cancelled.");
+        setPendingUpload(null);
+      } else {
+        notify(`Resume failed: ${e.message}`, "error");
+      }
+    }
+    abortControllerRef.current = null;
+    setProgress(null);
+    setUploading(false);
   }
 
   const folderFiles = files.filter(f => f.folderId === activeFolder && f.name.toLowerCase().includes(query.toLowerCase()));
@@ -499,6 +538,24 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
             {syncing ? <Loader2 size={14} className="cly-spin" /> : <RefreshCw size={14} />}
           </button>
         </div>
+
+        {pendingUpload && !progress && (
+          <div className="cly-fade-in" style={{ marginBottom: 14, background: "#FFF8E8", border: `1px solid #E8D9A8`, borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div style={{ fontSize: 12.5 }}>
+              <span style={{ fontWeight: 600 }}>Unfinished upload: {pendingUpload.fileName}</span>
+              <span style={{ color: COLORS.mute }}> ({formatBytes(pendingUpload.fileSize)}) — reload interrupted it. Select the same file again to pick up where it left off.</span>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              <input ref={resumeFileInput} type="file" hidden onChange={e => e.target.files.length && handleResumeFileSelect(e.target.files[0])} />
+              <button onClick={() => resumeFileInput.current.click()} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "7px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600 }}>
+                Select file to resume
+              </button>
+              <button onClick={handleDiscardPending} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "7px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600 }}>
+                Discard
+              </button>
+            </div>
+          </div>
+        )}
 
         {progress && (
           <div className="cly-fade-in" style={{ marginBottom: 14, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: "10px 12px" }}>
@@ -983,10 +1040,10 @@ export default function App() {
   function persistNotif(next) { setNotif(next); sset("notif-settings", next); }
   function persistRestrictions(next) { setRestrictions(next); sset("restrictions", next); }
 
-  async function addFile(f, onProgress, signal) {
+  async function addFile(f, onProgress, signal, resumeInfo) {
     const { file, id, ...meta } = f;
     if (STORAGE_PROVIDER === "drive") {
-      const result = await driveUpload(file, meta.folderId, onProgress, signal);
+      const result = await driveUpload(file, meta.folderId, onProgress, signal, resumeInfo);
       const record = { ...meta, id: result.fileId, driveFileId: result.fileId, provider: "drive" };
       await setDocIn("files", result.fileId, record);
       setFiles([record, ...files]);
