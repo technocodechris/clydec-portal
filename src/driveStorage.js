@@ -33,7 +33,7 @@ export function clearPendingUpload() {
 // breaks a plain browser fetch(). Falls through to the proven chunked
 // relay below if anything about this path fails.
 async function directUpload(file, folder, onProgress, signal, onSessionReady) {
-  const tokenRes = await fetch("/api/drive-upload-token", {
+  const tokenRes = await fetch("/api/drive-upload-manage?action=token", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
     body: JSON.stringify({ folder }),
@@ -105,7 +105,7 @@ async function directUpload(file, folder, onProgress, signal, onSessionReady) {
 // a fresh direct upload, instead of unconditionally dropping to the slow
 // chunked relay just because this is a resume rather than a fresh start.
 async function directResumeUpload(file, folder, uploadUrl, onProgress, signal) {
-  const tokenRes = await fetch("/api/drive-upload-token", {
+  const tokenRes = await fetch("/api/drive-upload-manage?action=token", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
     body: JSON.stringify({ folder }),
@@ -176,7 +176,7 @@ async function directResumeUpload(file, folder, uploadUrl, onProgress, signal) {
 async function chunkedRelayUpload(file, folder, onProgress, signal, existingUploadUrl, onSessionReady) {
   let uploadUrl = existingUploadUrl;
   if (!uploadUrl) {
-    const initRes = await fetch("/api/drive-upload-init", {
+    const initRes = await fetch("/api/drive-upload-manage?action=init", {
       method: "POST",
       headers: { ...(await authHeader()), "Content-Type": "application/json" },
       body: JSON.stringify({ folder, name: file.name, mimeType: file.type, size: file.size }),
@@ -225,7 +225,7 @@ async function chunkedRelayUpload(file, folder, onProgress, signal, existingUplo
     let lastErr;
     for (let i = 0; i < 3; i++) {
       try {
-        const res = await fetch("/api/drive-upload-status", {
+        const res = await fetch("/api/drive-upload-manage?action=status", {
           method: "POST",
           headers: { ...(await authHeader()), "Content-Type": "application/json" },
           body: JSON.stringify({ uploadUrl, total }),
@@ -277,7 +277,7 @@ async function chunkedRelayUpload(file, folder, onProgress, signal, existingUplo
     try {
       // Fetched fresh each time — a token grabbed once at the start would
       // go stale partway through a long upload (~1hr lifetime).
-      res = await fetch(`/api/drive-upload-chunk?${params.toString()}`, {
+      res = await fetch(`/api/drive-upload-manage?action=chunk&${params.toString()}`, {
         method: "POST",
         headers: { ...(await authHeader()), "Content-Type": "application/octet-stream" },
         body: chunk,
@@ -370,7 +370,7 @@ export async function driveUpload(file, folder, onProgress, signal, resumeInfo) 
 // buffering multi-GB files fully in page memory; falls back to a
 // Blob-based download elsewhere.
 export async function driveDownload(fileId, folder, filename) {
-  const res = await fetch(`/api/drive-download-init?folder=${folder}`, { headers: await authHeader() });
+  const res = await fetch(`/api/drive-file-manage?action=download-token&folder=${folder}`, { headers: await authHeader() });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Download failed");
 
@@ -399,7 +399,7 @@ export async function driveDownload(fileId, folder, filename) {
 }
 
 export async function driveDelete(fileId, folder) {
-  const res = await fetch(`/api/drive-delete?fileId=${fileId}&folder=${folder}`, { method: "POST", headers: await authHeader() });
+  const res = await fetch(`/api/drive-file-manage?action=delete&fileId=${fileId}&folder=${folder}`, { method: "POST", headers: await authHeader() });
   if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
 }
 
@@ -408,7 +408,7 @@ export async function driveDelete(fileId, folder) {
 // in Drive but the portal never recorded (added), e.g. dropped in
 // directly rather than uploaded through the portal.
 export async function driveSyncFolder(folder, knownFileIds) {
-  const res = await fetch("/api/drive-sync", {
+  const res = await fetch("/api/drive-file-manage?action=sync", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
     body: JSON.stringify({ folder, knownFileIds }),
@@ -421,7 +421,7 @@ export async function driveSyncFolder(folder, knownFileIds) {
 // `folder` is either a root Wing key ("creative") or a subfolder's own
 // Drive ID — lists that folder's immediate subfolders (not files).
 export async function driveListFolders(folder) {
-  const res = await fetch("/api/drive-folder-list", {
+  const res = await fetch("/api/drive-folder-manage?action=list", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
     body: JSON.stringify({ folder }),
@@ -432,7 +432,7 @@ export async function driveListFolders(folder) {
 }
 
 export async function driveCreateFolder(folder, name) {
-  const res = await fetch("/api/drive-folder-create", {
+  const res = await fetch("/api/drive-folder-manage?action=create", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
     body: JSON.stringify({ folder, name }),
@@ -443,7 +443,7 @@ export async function driveCreateFolder(folder, name) {
 }
 
 export async function driveRenameFolder(folderId, newName) {
-  const res = await fetch("/api/drive-folder-rename", {
+  const res = await fetch("/api/drive-folder-manage?action=rename", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
     body: JSON.stringify({ folderId, newName }),
@@ -454,7 +454,7 @@ export async function driveRenameFolder(folderId, newName) {
 }
 
 export async function driveDeleteFolder(folderId) {
-  const res = await fetch("/api/drive-folder-delete", {
+  const res = await fetch("/api/drive-folder-manage?action=delete", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
     body: JSON.stringify({ folderId }),
