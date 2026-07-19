@@ -150,21 +150,35 @@ async function chunkedRelayUpload(file, folderKey, onProgress, signal, existingU
 
   // Asks Google what it actually has, and corrects `start` to match —
   // called after any failure (or right away, when resuming from a
-  // reload) so we never resend based on a stale guess.
+  // reload) so we never resend based on a stale guess. Has its own small
+  // retry budget — a hiccup on this one specific call shouldn't be able
+  // to kill an otherwise-recoverable upload.
   async function reconcileWithGoogle() {
-    const res = await fetch("/api/drive-upload-status", {
-      method: "POST",
-      headers: { ...(await authHeader()), "Content-Type": "application/json" },
-      body: JSON.stringify({ uploadUrl, total }),
-    });
-    const data = await res.json();
-    if (!res.ok || data.expired) throw new Error("Upload session expired or invalid — please start this upload over.");
-    if (data.complete) {
-      finalResult = data;
-      start = total;
-    } else {
-      start = data.receivedBytes || 0;
+    let lastErr;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const res = await fetch("/api/drive-upload-status", {
+          method: "POST",
+          headers: { ...(await authHeader()), "Content-Type": "application/json" },
+          body: JSON.stringify({ uploadUrl, total }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Status check failed");
+        if (data.expired) throw new Error("Upload session expired or invalid — please start this upload over.");
+        if (data.complete) {
+          finalResult = data;
+          start = total;
+        } else {
+          start = data.receivedBytes || 0;
+        }
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (e.message.includes("expired")) throw e; // no point retrying a truly dead session
+        await new Promise(r => setTimeout(r, 800 * (i + 1)));
+      }
     }
+    throw lastErr;
   }
 
   if (existingUploadUrl) {
