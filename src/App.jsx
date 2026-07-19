@@ -79,7 +79,7 @@ import {
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
 
-import { driveUpload, driveDownload, driveDelete, driveSyncFolder, getPendingUpload, clearPendingUpload } from "./driveStorage";
+import { driveUpload, driveDownload, driveDelete, driveSyncFolder, getPendingUpload, clearPendingUpload, driveListFolders, driveCreateFolder, driveRenameFolder, driveDeleteFolder } from "./driveStorage";
 
 const STORAGE_PROVIDER = import.meta.env.VITE_STORAGE_PROVIDER === "drive" ? "drive" : "firebase";
 
@@ -402,6 +402,13 @@ function DashboardPage({ user, users, files, requests }) {
 function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, syncDriveFolder, notify }) {
   const visibleFolders = folders.filter(f => f.access.includes(user.role));
   const [activeFolder, setActiveFolder] = useState(visibleFolders[0]?.id);
+  const [path, setPath] = useState([]); // [{id, name}] — subfolder trail within the active Wing
+  const [subfolders, setSubfolders] = useState([]);
+  const [loadingFolders, setLoadingFolders] = useState(false);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
   const [query, setQuery] = useState("");
   const [uploading, setUploading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -412,12 +419,76 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
   const abortControllerRef = useRef(null);
   const canWrite = user.role !== "CLIENT";
 
-  useEffect(() => { if (activeFolder) syncDriveFolder(activeFolder, files); }, [activeFolder]); // eslint-disable-line react-hooks/exhaustive-deps
+  const currentFolderId = path.length ? path[path.length - 1].id : activeFolder;
+  const currentWingName = visibleFolders.find(f => f.id === activeFolder)?.name;
+
+  function goToWing(wingId) {
+    setActiveFolder(wingId);
+    setPath([]);
+  }
+  function goToPathIndex(i) {
+    setPath(path.slice(0, i + 1));
+  }
+
+  async function loadFolderContents() {
+    if (!currentFolderId) return;
+    setLoadingFolders(true);
+    try {
+      const [subs] = await Promise.all([
+        driveListFolders(currentFolderId),
+        syncDriveFolder(currentFolderId, files),
+      ]);
+      setSubfolders(subs);
+    } catch (e) {
+      notify(`Could not load folder: ${e.message}`, "error");
+    }
+    setLoadingFolders(false);
+  }
+  useEffect(() => { loadFolderContents(); }, [currentFolderId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleRefresh() {
     setSyncing(true);
-    await syncDriveFolder(activeFolder, files);
+    await loadFolderContents();
     setSyncing(false);
+  }
+
+  async function handleCreateFolder() {
+    if (!newFolderName.trim()) return;
+    try {
+      const created = await driveCreateFolder(currentFolderId, newFolderName.trim());
+      setSubfolders([...subfolders, created].sort((a, b) => a.name.localeCompare(b.name)));
+      setNewFolderName("");
+      setNewFolderOpen(false);
+      notify(`Folder "${created.name}" created.`);
+    } catch (e) {
+      notify(`Could not create folder: ${e.message}`, "error");
+    }
+  }
+
+  function startRename(folder) {
+    setRenamingId(folder.id);
+    setRenameValue(folder.name);
+  }
+  async function submitRename(folder) {
+    if (!renameValue.trim() || renameValue.trim() === folder.name) { setRenamingId(null); return; }
+    try {
+      const updated = await driveRenameFolder(folder.id, renameValue.trim());
+      setSubfolders(subfolders.map(f => f.id === folder.id ? updated : f));
+      notify(`Renamed to "${updated.name}".`);
+    } catch (e) {
+      notify(`Could not rename: ${e.message}`, "error");
+    }
+    setRenamingId(null);
+  }
+  async function handleDeleteFolder(folder) {
+    if (!window.confirm(`Delete "${folder.name}" and everything inside it? This moves it to Drive's Trash (recoverable for 30 days).`)) return;
+    try {
+      await driveDeleteFolder(folder.id);
+      setSubfolders(subfolders.filter(f => f.id !== folder.id));
+      notify(`"${folder.name}" deleted.`);
+    } catch (e) {
+      notify(`Could not delete: ${e.message}`, "error");
+    }
   }
 
   function handleDiscardPending() {
@@ -437,7 +508,7 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
     setProgress({ name: file.name, uploaded: 0, total: file.size, percent: 0, speedBps: 0 });
     try {
       await addFile(
-        { id: uid(), folderId: pendingUpload.folderKey, name: file.name, mime: file.type || pendingUpload.mimeType || "application/octet-stream", size: file.size, file, uploadedBy: user.name, uploadedAt: Date.now() },
+        { id: uid(), folderId: pendingUpload.folder, name: file.name, mime: file.type || pendingUpload.mimeType || "application/octet-stream", size: file.size, file, uploadedBy: user.name, uploadedAt: Date.now() },
         (p) => setProgress({ name: file.name, ...p }),
         controller.signal,
         pendingUpload
@@ -457,7 +528,7 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
     setUploading(false);
   }
 
-  const folderFiles = files.filter(f => f.folderId === activeFolder && f.name.toLowerCase().includes(query.toLowerCase()));
+  const folderFiles = files.filter(f => f.folderId === currentFolderId && f.name.toLowerCase().includes(query.toLowerCase()));
 
   async function handleFiles(fileList) {
     setUploading(true);
@@ -474,7 +545,7 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
       setProgress({ name: file.name, uploaded: 0, total: file.size, percent: 0, speedBps: 0 });
       try {
         await addFile(
-          { id, folderId: activeFolder, name: file.name, mime: file.type || "application/octet-stream", size: file.size, file, uploadedBy: user.name, uploadedAt: Date.now() },
+          { id, folderId: currentFolderId, name: file.name, mime: file.type || "application/octet-stream", size: file.size, file, uploadedBy: user.name, uploadedAt: Date.now() },
           (p) => setProgress({ name: file.name, ...p }),
           controller.signal
         );
@@ -502,7 +573,7 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
       <div style={{ width: 200, flexShrink: 0 }}>
         <div style={{ fontSize: 11.5, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Folders</div>
         {visibleFolders.map(f => (
-          <button key={f.id} onClick={() => setActiveFolder(f.id)} className="cly-btn" style={{
+          <button key={f.id} onClick={() => goToWing(f.id)} className="cly-btn" style={{
             display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "9px 10px", borderRadius: 8, marginBottom: 3,
             background: activeFolder === f.id ? COLORS.cream : "transparent", fontSize: 13, fontWeight: 500, color: COLORS.text,
           }}>
@@ -516,6 +587,20 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, fontSize: 13, color: COLORS.mute, flexWrap: "wrap" }}>
+          <button onClick={() => goToWing(activeFolder)} className="cly-btn" style={{ background: "none", border: "none", padding: 0, fontWeight: path.length === 0 ? 700 : 500, color: path.length === 0 ? COLORS.text : COLORS.mute, cursor: "pointer" }}>
+            {currentWingName}
+          </button>
+          {path.map((p, i) => (
+            <span key={p.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <ChevronRight size={13} />
+              <button onClick={() => goToPathIndex(i)} className="cly-btn" style={{ background: "none", border: "none", padding: 0, fontWeight: i === path.length - 1 ? 700 : 500, color: i === path.length - 1 ? COLORS.text : COLORS.mute, cursor: "pointer" }}>
+                {p.name}
+              </button>
+            </span>
+          ))}
+        </div>
+
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
           <div style={{ position: "relative", flex: 1 }}>
             <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: COLORS.mute }} />
@@ -524,6 +609,11 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
           </div>
           {canWrite && (
             <>
+              <button onClick={() => setNewFolderOpen(!newFolderOpen)} className="cly-btn" style={{
+                display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, color: COLORS.text, padding: "9px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600,
+              }}>
+                <Plus size={14} /> Folder
+              </button>
               <input ref={fileInput} type="file" multiple hidden onChange={e => e.target.files.length && handleFiles(e.target.files)} />
               <button onClick={() => fileInput.current.click()} disabled={uploading} className="cly-btn" style={{
                 display: "flex", alignItems: "center", gap: 6, background: COLORS.ink, color: "#fff", padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
@@ -532,12 +622,23 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
               </button>
             </>
           )}
-          <button onClick={handleRefresh} disabled={syncing} title="Check for files removed directly in Drive" className="cly-btn" style={{
+          <button onClick={handleRefresh} disabled={syncing} title="Check for changes made directly in Drive" className="cly-btn" style={{
             display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, color: COLORS.text, padding: "9px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600,
           }}>
             {syncing ? <Loader2 size={14} className="cly-spin" /> : <RefreshCw size={14} />}
           </button>
         </div>
+
+        {newFolderOpen && (
+          <div className="cly-fade-in" style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            <input autoFocus value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleCreateFolder()}
+              placeholder="New folder name…"
+              style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: `1px solid ${COLORS.line}`, fontSize: 13 }} />
+            <button onClick={handleCreateFolder} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Create</button>
+            <button onClick={() => { setNewFolderOpen(false); setNewFolderName(""); }} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
+          </div>
+        )}
 
         {pendingUpload && !progress && (
           <div className="cly-fade-in" style={{ marginBottom: 14, background: "#FFF8E8", border: `1px solid #E8D9A8`, borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
@@ -580,7 +681,37 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
           <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
             <span style={{ flex: 1 }}>Name</span><span style={{ width: 90 }}>Size</span><span style={{ width: 110 }}>Uploaded</span><span style={{ width: 70 }}></span>
           </div>
-          {folderFiles.length === 0 ? <EmptyState icon={FolderOpen} title="Nothing here yet" body={canWrite ? "Upload a file to get started." : "Files shared with you will appear here."} /> :
+
+          {subfolders.map(sf => (
+            <div key={sf.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+              {renamingId === sf.id ? (
+                <span style={{ flex: 1, display: "flex", gap: 6 }}>
+                  <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && submitRename(sf)}
+                    style={{ flex: 1, padding: "4px 8px", borderRadius: 6, border: `1px solid ${COLORS.line}`, fontSize: 13 }} />
+                  <button onClick={() => submitRename(sf)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Save</button>
+                  <button onClick={() => setRenamingId(null)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Cancel</button>
+                </span>
+              ) : (
+                <button onClick={() => setPath([...path, { id: sf.id, name: sf.name }])} className="cly-btn" style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0, background: "none", border: "none", textAlign: "left", cursor: "pointer", fontSize: 13, color: COLORS.text }}>
+                  <FolderOpen size={15} color={COLORS.data} />
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sf.name}</span>
+                </button>
+              )}
+              <span style={{ width: 90 }}></span>
+              <span style={{ width: 110 }}></span>
+              <span style={{ width: 70, display: "flex", gap: 8 }}>
+                {canWrite && renamingId !== sf.id && (
+                  <>
+                    <button title="Rename" onClick={() => startRename(sf)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><Settings size={14} /></button>
+                    <button title="Delete" onClick={() => handleDeleteFolder(sf)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger }}><Trash2 size={15} /></button>
+                  </>
+                )}
+              </span>
+            </div>
+          ))}
+
+          {subfolders.length === 0 && folderFiles.length === 0 ? <EmptyState icon={FolderOpen} title="Nothing here yet" body={canWrite ? "Upload a file or create a folder to get started." : "Files shared with you will appear here."} /> :
             folderFiles.map(f => (
               <div key={f.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
                 <span style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>

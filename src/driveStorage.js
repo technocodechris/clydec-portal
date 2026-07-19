@@ -32,11 +32,11 @@ export function clearPendingUpload() {
 // (that only happens between chunks), which is the specific thing that
 // breaks a plain browser fetch(). Falls through to the proven chunked
 // relay below if anything about this path fails.
-async function directUpload(file, folderKey, onProgress, signal, onSessionReady) {
+async function directUpload(file, folder, onProgress, signal, onSessionReady) {
   const tokenRes = await fetch("/api/drive-upload-token", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
-    body: JSON.stringify({ folderKey }),
+    body: JSON.stringify({ folder }),
     signal,
   });
   const tokenData = await tokenRes.json();
@@ -104,11 +104,11 @@ async function directUpload(file, folderKey, onProgress, signal, onSessionReady)
 // remaining bytes in one direct request — same speed characteristics as
 // a fresh direct upload, instead of unconditionally dropping to the slow
 // chunked relay just because this is a resume rather than a fresh start.
-async function directResumeUpload(file, folderKey, uploadUrl, onProgress, signal) {
+async function directResumeUpload(file, folder, uploadUrl, onProgress, signal) {
   const tokenRes = await fetch("/api/drive-upload-token", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
-    body: JSON.stringify({ folderKey }),
+    body: JSON.stringify({ folder }),
     signal,
   });
   const tokenData = await tokenRes.json();
@@ -173,13 +173,13 @@ async function directResumeUpload(file, folderKey, uploadUrl, onProgress, signal
 // If `existingUploadUrl` is passed (resuming after a reload), skips
 // starting a new session and instead asks Google where the old one left
 // off before continuing.
-async function chunkedRelayUpload(file, folderKey, onProgress, signal, existingUploadUrl, onSessionReady) {
+async function chunkedRelayUpload(file, folder, onProgress, signal, existingUploadUrl, onSessionReady) {
   let uploadUrl = existingUploadUrl;
   if (!uploadUrl) {
     const initRes = await fetch("/api/drive-upload-init", {
       method: "POST",
       headers: { ...(await authHeader()), "Content-Type": "application/json" },
-      body: JSON.stringify({ folderKey, name: file.name, mimeType: file.type, size: file.size }),
+      body: JSON.stringify({ folder, name: file.name, mimeType: file.type, size: file.size }),
       signal,
     });
     const initData = await initRes.json();
@@ -318,14 +318,14 @@ async function chunkedRelayUpload(file, folderKey, onProgress, signal, existingU
 // `resumeInfo`, when provided (after finding a pending record left over
 // from before a reload), skips straight to the relay path using the
 // already-open session instead of starting fresh.
-export async function driveUpload(file, folderKey, onProgress, signal, resumeInfo) {
+export async function driveUpload(file, folder, onProgress, signal, resumeInfo) {
   const onSessionReady = (uploadUrl) => {
-    savePendingUpload({ uploadUrl, folderKey, fileName: file.name, fileSize: file.size, mimeType: file.type, startedAt: Date.now() });
+    savePendingUpload({ uploadUrl, folder, fileName: file.name, fileSize: file.size, mimeType: file.type, startedAt: Date.now() });
   };
 
   if (resumeInfo) {
     try {
-      const result = await directResumeUpload(file, folderKey, resumeInfo.uploadUrl, onProgress, signal);
+      const result = await directResumeUpload(file, folder, resumeInfo.uploadUrl, onProgress, signal);
       console.info("[upload] resumed via direct fast path");
       clearPendingUpload();
       return result;
@@ -333,7 +333,7 @@ export async function driveUpload(file, folderKey, onProgress, signal, resumeInf
       if (e.name === "AbortError") { clearPendingUpload(); throw e; }
       console.warn("[upload] direct resume failed, falling back to relay:", e.message);
       try {
-        const result = await chunkedRelayUpload(file, folderKey, onProgress, signal, resumeInfo.uploadUrl, onSessionReady);
+        const result = await chunkedRelayUpload(file, folder, onProgress, signal, resumeInfo.uploadUrl, onSessionReady);
         clearPendingUpload();
         return result;
       } catch (e2) {
@@ -344,7 +344,7 @@ export async function driveUpload(file, folderKey, onProgress, signal, resumeInf
   }
 
   try {
-    const result = await directUpload(file, folderKey, onProgress, signal, onSessionReady);
+    const result = await directUpload(file, folder, onProgress, signal, onSessionReady);
     console.info("[upload] used direct fast path");
     clearPendingUpload();
     return result;
@@ -352,7 +352,7 @@ export async function driveUpload(file, folderKey, onProgress, signal, resumeInf
     if (e.name === "AbortError") { clearPendingUpload(); throw e; } // a real cancel — don't fall back, just stop
     console.warn("[upload] direct fast path failed, falling back to relay:", e.message);
     try {
-      const result = await chunkedRelayUpload(file, folderKey, onProgress, signal, undefined, onSessionReady);
+      const result = await chunkedRelayUpload(file, folder, onProgress, signal, undefined, onSessionReady);
       clearPendingUpload();
       return result;
     } catch (e2) {
@@ -369,8 +369,8 @@ export async function driveUpload(file, folderKey, onProgress, signal, resumeInf
 // Streams straight to disk in browsers that support it, avoiding
 // buffering multi-GB files fully in page memory; falls back to a
 // Blob-based download elsewhere.
-export async function driveDownload(fileId, folderKey, filename) {
-  const res = await fetch(`/api/drive-download-init?folderKey=${folderKey}`, { headers: await authHeader() });
+export async function driveDownload(fileId, folder, filename) {
+  const res = await fetch(`/api/drive-download-init?folder=${folder}`, { headers: await authHeader() });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Download failed");
 
@@ -398,8 +398,8 @@ export async function driveDownload(fileId, folderKey, filename) {
   URL.revokeObjectURL(url);
 }
 
-export async function driveDelete(fileId, folderKey) {
-  const res = await fetch(`/api/drive-delete?fileId=${fileId}&folderKey=${folderKey}`, { method: "POST", headers: await authHeader() });
+export async function driveDelete(fileId, folder) {
+  const res = await fetch(`/api/drive-delete?fileId=${fileId}&folder=${folder}`, { method: "POST", headers: await authHeader() });
   if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
 }
 
@@ -407,13 +407,59 @@ export async function driveDelete(fileId, folderKey) {
 // reports files that vanished from Drive (missing) and files that exist
 // in Drive but the portal never recorded (added), e.g. dropped in
 // directly rather than uploaded through the portal.
-export async function driveSyncFolder(folderKey, knownFileIds) {
+export async function driveSyncFolder(folder, knownFileIds) {
   const res = await fetch("/api/drive-sync", {
     method: "POST",
     headers: { ...(await authHeader()), "Content-Type": "application/json" },
-    body: JSON.stringify({ folderKey, knownFileIds }),
+    body: JSON.stringify({ folder, knownFileIds }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Sync check failed");
   return data; // { missing: [ids], added: [{id,name,mimeType,size,createdTime}] }
+}
+
+// `folder` is either a root Wing key ("creative") or a subfolder's own
+// Drive ID — lists that folder's immediate subfolders (not files).
+export async function driveListFolders(folder) {
+  const res = await fetch("/api/drive-folder-list", {
+    method: "POST",
+    headers: { ...(await authHeader()), "Content-Type": "application/json" },
+    body: JSON.stringify({ folder }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Could not list folders");
+  return data.folders; // [{id, name}]
+}
+
+export async function driveCreateFolder(folder, name) {
+  const res = await fetch("/api/drive-folder-create", {
+    method: "POST",
+    headers: { ...(await authHeader()), "Content-Type": "application/json" },
+    body: JSON.stringify({ folder, name }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Could not create folder");
+  return data; // {id, name}
+}
+
+export async function driveRenameFolder(folderId, newName) {
+  const res = await fetch("/api/drive-folder-rename", {
+    method: "POST",
+    headers: { ...(await authHeader()), "Content-Type": "application/json" },
+    body: JSON.stringify({ folderId, newName }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Could not rename folder");
+  return data; // {id, name}
+}
+
+export async function driveDeleteFolder(folderId) {
+  const res = await fetch("/api/drive-folder-delete", {
+    method: "POST",
+    headers: { ...(await authHeader()), "Content-Type": "application/json" },
+    body: JSON.stringify({ folderId }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Could not delete folder");
+  return data;
 }
