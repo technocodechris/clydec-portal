@@ -403,6 +403,13 @@ export async function driveDelete(fileId, folder) {
   if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
 }
 
+export async function driveGetStorageQuota() {
+  const res = await fetch("/api/drive-file-manage?action=quota", { headers: await authHeader() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Could not fetch storage info");
+  return data; // { limit, usage, usageInDrive, usageInDriveTrash }
+}
+
 // Reconciles a folder's known files against what's actually in Drive —
 // reports files that vanished from Drive (missing) and files that exist
 // in Drive but the portal never recorded (added), e.g. dropped in

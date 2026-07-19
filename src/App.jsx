@@ -79,7 +79,7 @@ import {
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
 
-import { driveUpload, driveDownload, driveDelete, driveSyncFolder, getPendingUpload, clearPendingUpload, driveListFolders, driveCreateFolder, driveRenameFolder, driveDeleteFolder } from "./driveStorage";
+import { driveUpload, driveDownload, driveDelete, driveSyncFolder, getPendingUpload, clearPendingUpload, driveListFolders, driveCreateFolder, driveRenameFolder, driveDeleteFolder, driveGetStorageQuota } from "./driveStorage";
 
 const STORAGE_PROVIDER = import.meta.env.VITE_STORAGE_PROVIDER === "drive" ? "drive" : "firebase";
 
@@ -129,7 +129,7 @@ const SEED_FOLDERS = [
   { id: "creative", name: "Creative Wing", wing: "creative", access: ["OWNER", "ADMIN", "EMPLOYEE"] },
   { id: "data", name: "Data Wing", wing: "data", access: ["OWNER", "ADMIN", "EMPLOYEE"] },
   { id: "finance", name: "Admin & Finance", wing: "data", access: ["OWNER", "ADMIN"] },
-  { id: "client-aurora", name: "Client — Project Aurora", wing: "creative", access: ["OWNER", "ADMIN", "CLIENT"] },
+  { id: "client-aurora", name: "Clients", wing: "creative", access: ["OWNER", "ADMIN", "CLIENT"] },
 ];
 
 const SEED_AUTH = {
@@ -354,7 +354,18 @@ function Topbar({ user, onLogout, title, subtitle }) {
 /* ---------------------------------------------------------------- */
 /* Dashboard page                                                     */
 /* ---------------------------------------------------------------- */
-function DashboardPage({ user, users, files, requests }) {
+function DashboardPage({ user, users, files, requests, folders, syncAllVisibleFolders }) {
+  const [quota, setQuota] = useState(null);
+  const [quotaError, setQuotaError] = useState(null);
+
+  useEffect(() => {
+    const visible = folders.filter(f => f.access.includes(user.role));
+    syncAllVisibleFolders(visible);
+    if (user.role === "OWNER" && STORAGE_PROVIDER === "drive") {
+      driveGetStorageQuota().then(setQuota).catch(e => setQuotaError(e.message));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const meta = ROLE_META[user.role];
   const stats = [
     { label: "Total files", value: files.length },
@@ -378,6 +389,29 @@ function DashboardPage({ user, users, files, requests }) {
           </div>
         ))}
       </div>
+
+      {user.role === "OWNER" && STORAGE_PROVIDER === "drive" && (
+        <div style={{ marginTop: 22, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: "16px 18px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Google Drive storage</div>
+          {quotaError ? (
+            <div style={{ fontSize: 12.5, color: COLORS.mute }}>Could not load storage info: {quotaError}</div>
+          ) : !quota ? (
+            <div style={{ fontSize: 12.5, color: COLORS.mute, display: "flex", alignItems: "center", gap: 6 }}><Loader2 size={13} className="cly-spin" /> Loading…</div>
+          ) : quota.limit == null ? (
+            <div style={{ fontSize: 13 }}>{formatBytes(quota.usage)} used <span style={{ color: COLORS.mute }}>(unlimited plan)</span></div>
+          ) : (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 8 }}>
+                <span>{formatBytes(quota.usage)} used of {formatBytes(quota.limit)}</span>
+                <span style={{ color: COLORS.mute }}>{formatBytes(Math.max(0, quota.limit - quota.usage))} left</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 4, background: COLORS.cream, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${Math.min(100, (quota.usage / quota.limit) * 100)}%`, background: (quota.usage / quota.limit) > 0.9 ? COLORS.danger : COLORS.ink }} />
+              </div>
+            </>
+          )}
+        </div>
+      )}
       <div style={{ marginTop: 22 }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Recent files</div>
         <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
@@ -1241,6 +1275,14 @@ export default function App() {
     }
   }
 
+  async function syncAllVisibleFolders(rootFolders) {
+    if (STORAGE_PROVIDER !== "drive") return;
+    let current = files;
+    for (const f of rootFolders) {
+      current = await syncDriveFolder(f.id, current);
+    }
+  }
+
   async function addUserRequest(form, isOwner) {
     if (isOwner) {
       const tempPassword = "Cly" + Math.random().toString(36).slice(2, 10) + "!";
@@ -1330,7 +1372,7 @@ export default function App() {
               page === "requests" ? "Owner approval queue." : "Authentication, users, groups, and restrictions."
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
-              {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} />}
+              {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} syncAllVisibleFolders={syncAllVisibleFolders} />}
               {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
               {page === "admin" && (
