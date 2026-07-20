@@ -302,11 +302,13 @@ function Sidebar({ user, page, setPage, pendingCount }) {
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, show: true },
     { key: "files", label: "Files", icon: FolderOpen, show: true },
   ];
-  const otherItems = [
+  const portalItems = [
     { key: "requests", label: "Access requests", icon: Inbox, show: user.role === "OWNER" || user.role === "ADMIN", badge: user.role === "OWNER" ? pendingCount : 0 },
     { key: "admin", label: "Admin settings", icon: Settings, show: user.role === "OWNER" || user.role === "ADMIN" },
   ];
   const [storageOpen, setStorageOpen] = useState(true);
+  const [portalOpen, setPortalOpen] = useState(true);
+  const showPortalGroup = portalItems.some(i => i.show);
   return (
     <div className="cly-scan" style={{ width: 216, flexShrink: 0, background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 8px 22px" }}>
@@ -335,16 +337,32 @@ function Sidebar({ user, page, setPage, pendingCount }) {
             ))}
           </div>
         )}
-        {otherItems.filter(i => i.show).map(i => (
-          <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
-            display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
-            color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
-          }}>
-            <i.icon size={16} style={{ opacity: 0.85 }} />
-            <span style={{ flex: 1 }}>{i.label}</span>
-            {!!i.badge && <span style={{ background: COLORS.creative, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
-          </button>
-        ))}
+        {showPortalGroup && (
+          <>
+            <button onClick={() => setPortalOpen(o => !o)} className="cly-navitem cly-btn" style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
+              color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left", marginTop: 6,
+            }}>
+              <Shield size={16} style={{ opacity: 0.85 }} />
+              <span style={{ flex: 1 }}>Portal Settings</span>
+              <ChevronDown size={14} style={{ opacity: 0.7, transform: portalOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
+            </button>
+            {portalOpen && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
+                {portalItems.filter(i => i.show).map(i => (
+                  <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
+                    color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
+                  }}>
+                    <i.icon size={16} style={{ opacity: 0.85 }} />
+                    <span style={{ flex: 1 }}>{i.label}</span>
+                    {!!i.badge && <span style={{ background: COLORS.creative, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </div>
       <div style={{ flex: 1 }} />
       <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 12, padding: "12px 8px 0" }}>
