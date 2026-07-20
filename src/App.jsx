@@ -5,6 +5,7 @@ import {
   ChevronDown, Search, FileText, Settings, UserPlus, AlertCircle,
   Loader2, Building2, KeyRound, Image as ImageIcon, File as FileIcon,
   ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
+  Database,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------- */
@@ -297,12 +298,15 @@ function LoginScreen({ onLogin, loading, error, onForgot }) {
 /* ---------------------------------------------------------------- */
 function Sidebar({ user, page, setPage, pendingCount }) {
   const meta = ROLE_META[user.role];
-  const items = [
+  const storageItems = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, show: true },
     { key: "files", label: "Files", icon: FolderOpen, show: true },
+  ];
+  const otherItems = [
     { key: "requests", label: "Access requests", icon: Inbox, show: user.role === "OWNER" || user.role === "ADMIN", badge: user.role === "OWNER" ? pendingCount : 0 },
     { key: "admin", label: "Admin settings", icon: Settings, show: user.role === "OWNER" || user.role === "ADMIN" },
   ];
+  const [storageOpen, setStorageOpen] = useState(true);
   return (
     <div className="cly-scan" style={{ width: 216, flexShrink: 0, background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 8px 22px" }}>
@@ -310,7 +314,28 @@ function Sidebar({ user, page, setPage, pendingCount }) {
         <span className="cly-serif" style={{ fontSize: 13.5, letterSpacing: 0.5 }}><b>CLYDEC</b> STUDIO</span>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        {items.filter(i => i.show).map(i => (
+        <button onClick={() => setStorageOpen(o => !o)} className="cly-navitem cly-btn" style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
+          color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left",
+        }}>
+          <Database size={16} style={{ opacity: 0.85 }} />
+          <span style={{ flex: 1 }}>Storage Settings</span>
+          <ChevronDown size={14} style={{ opacity: 0.7, transform: storageOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
+        </button>
+        {storageOpen && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
+            {storageItems.filter(i => i.show).map(i => (
+              <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
+                color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
+              }}>
+                <i.icon size={16} style={{ opacity: 0.85 }} />
+                <span style={{ flex: 1 }}>{i.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {otherItems.filter(i => i.show).map(i => (
           <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
             display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
             color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
