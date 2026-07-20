@@ -5,7 +5,7 @@ import {
   ChevronDown, Search, FileText, Settings, UserPlus, AlertCircle,
   Loader2, Building2, KeyRound, Image as ImageIcon, File as FileIcon,
   ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
-  Database,
+  Database, Smile, CalendarCheck,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------- */
@@ -306,9 +306,16 @@ function Sidebar({ user, page, setPage, pendingCount }) {
     { key: "requests", label: "Access requests", icon: Inbox, show: user.role === "OWNER" || user.role === "ADMIN", badge: user.role === "OWNER" ? pendingCount : 0 },
     { key: "admin", label: "Admin settings", icon: Settings, show: user.role === "OWNER" || user.role === "ADMIN" },
   ];
+  const peopleItems = [
+    { key: "people-info", label: "People Information", icon: Smile, show: true },
+    { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: true },
+    { key: "attendance", label: "Attendance", icon: CalendarCheck, show: true },
+  ];
   const [storageOpen, setStorageOpen] = useState(true);
   const [portalOpen, setPortalOpen] = useState(true);
+  const [peopleOpen, setPeopleOpen] = useState(true);
   const showPortalGroup = portalItems.some(i => i.show);
+  const showPeopleGroup = peopleItems.some(i => i.show);
   return (
     <div className="cly-scan" style={{ width: 216, flexShrink: 0, background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 8px 22px" }}>
@@ -357,6 +364,31 @@ function Sidebar({ user, page, setPage, pendingCount }) {
                     <i.icon size={16} style={{ opacity: 0.85 }} />
                     <span style={{ flex: 1 }}>{i.label}</span>
                     {!!i.badge && <span style={{ background: COLORS.creative, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {showPeopleGroup && (
+          <>
+            <button onClick={() => setPeopleOpen(o => !o)} className="cly-navitem cly-btn" style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
+              color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left", marginTop: 6,
+            }}>
+              <Users size={16} style={{ opacity: 0.85 }} />
+              <span style={{ flex: 1 }}>People Management</span>
+              <ChevronDown size={14} style={{ opacity: 0.7, transform: peopleOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
+            </button>
+            {peopleOpen && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
+                {peopleItems.filter(i => i.show).map(i => (
+                  <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
+                    color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
+                  }}>
+                    <i.icon size={16} style={{ opacity: 0.85 }} />
+                    <span style={{ flex: 1 }}>{i.label}</span>
                   </button>
                 ))}
               </div>
@@ -859,7 +891,37 @@ function RequestsPage({ user, requests, resolveRequest }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Admin settings — Authentication tab                                */
+/* People Management pages                                           */
+/* ---------------------------------------------------------------- */
+function PeopleInfoPage() {
+  return (
+    <div className="cly-fade-in" style={{ padding: 28 }}>
+      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <EmptyState icon={Smile} title="No people records yet" body="Team member profiles and details will appear here once this section is built out." />
+      </div>
+    </div>
+  );
+}
+
+function TimeInOutPage() {
+  return (
+    <div className="cly-fade-in" style={{ padding: 28 }}>
+      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <EmptyState icon={Clock} title="No time logs yet" body="Clock-in and clock-out records will appear here once this section is built out." />
+      </div>
+    </div>
+  );
+}
+
+function AttendancePage() {
+  return (
+    <div className="cly-fade-in" style={{ padding: 28 }}>
+      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <EmptyState icon={CalendarCheck} title="No attendance records yet" body="Daily attendance summaries will appear here once this section is built out." />
+      </div>
+    </div>
+  );
+}
 /* ---------------------------------------------------------------- */
 function AuthTab({ auth, setAuth, canEdit }) {
   const patch = (k, v) => canEdit && setAuth({ ...auth, [k]: v });
@@ -1431,16 +1493,24 @@ export default function App() {
           <Sidebar user={user} page={page} setPage={setPage} pendingCount={requests.filter(r => r.status === "pending").length} />
           <div style={{ flex: 1, background: COLORS.cream, minWidth: 0, display: "flex", flexDirection: "column" }}>
             <Topbar user={user} onLogout={() => fbLogout()} title={
-              page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" : "Admin settings"
+              page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" :
+              page === "people-info" ? "People Information" : page === "time-inout" ? "Time in/Time out information" :
+              page === "attendance" ? "Attendance" : "Admin settings"
             } subtitle={
               page === "dashboard" ? "Your workspace at a glance." :
               page === "files" ? "Shared storage for your team and clients." :
-              page === "requests" ? "Owner approval queue." : "Authentication, users, groups, and restrictions."
+              page === "requests" ? "Owner approval queue." :
+              page === "people-info" ? "Team member profiles and details." :
+              page === "time-inout" ? "Clock-in and clock-out records." :
+              page === "attendance" ? "Daily attendance summaries." : "Authentication, users, groups, and restrictions."
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
               {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
               {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
+              {page === "people-info" && <PeopleInfoPage />}
+              {page === "time-inout" && <TimeInOutPage />}
+              {page === "attendance" && <AttendancePage />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} addUserRequest={addUserRequest} removeUser={removeUser}
