@@ -42,21 +42,32 @@ async function directUpload(file, folder, onProgress, signal, onSessionReady) {
   const tokenData = await tokenRes.json();
   if (!tokenRes.ok) throw new Error(tokenData.error || "Could not get upload token");
 
-  const initRes = await fetch(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,size,mimeType",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${tokenData.accessToken}`,
-        "Content-Type": "application/json; charset=UTF-8",
-        "X-Upload-Content-Type": file.type || "application/octet-stream",
-        "X-Upload-Content-Length": String(file.size),
-      },
-      body: JSON.stringify({ name: file.name, parents: [tokenData.folderId] }),
-      signal,
+  const initHeaders = {
+    Authorization: `Bearer ${tokenData.accessToken}`,
+    "Content-Type": "application/json; charset=UTF-8",
+    "X-Upload-Content-Type": file.type || "application/octet-stream",
+    "X-Upload-Content-Length": String(file.size),
+  };
+  const initBody = JSON.stringify({ name: file.name, parents: [tokenData.folderId] });
+  const initUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,size,mimeType";
+
+  // This specific call fails intermittently (Google's CORS behavior on
+  // this endpoint is inconsistent, not a hard block) — worth a couple of
+  // quick retries before conceding to the slower fallback.
+  let initRes, lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      initRes = await fetch(initUrl, { method: "POST", headers: initHeaders, body: initBody, signal });
+      if (initRes.ok) break;
+      lastErr = new Error(`Direct upload init failed (${initRes.status})`);
+    } catch (e) {
+      if (e.name === "AbortError") throw e;
+      lastErr = e;
+      initRes = null;
     }
-  );
-  if (!initRes.ok) throw new Error(`Direct upload init failed (${initRes.status})`);
+    if (attempt < 2) await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+  }
+  if (!initRes || !initRes.ok) throw lastErr || new Error("Direct upload init failed");
   const uploadUrl = initRes.headers.get("location");
   if (!uploadUrl) throw new Error("No session URL returned — falling back");
 
@@ -114,11 +125,23 @@ async function directResumeUpload(file, folder, uploadUrl, onProgress, signal) {
   const tokenData = await tokenRes.json();
   if (!tokenRes.ok) throw new Error(tokenData.error || "Could not get upload token");
 
-  const statusRes = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${tokenData.accessToken}`, "Content-Range": `bytes */${file.size}` },
-    signal,
-  });
+  let statusRes, lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      statusRes = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${tokenData.accessToken}`, "Content-Range": `bytes */${file.size}` },
+        signal,
+      });
+      break;
+    } catch (e) {
+      if (e.name === "AbortError") throw e;
+      lastErr = e;
+      statusRes = null;
+    }
+    if (attempt < 2) await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+  }
+  if (!statusRes) throw lastErr || new Error("Could not reach Drive to resume");
   let receivedBytes = 0;
   if (statusRes.status === 200 || statusRes.status === 201) {
     const data = await statusRes.json();
