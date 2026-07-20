@@ -79,7 +79,7 @@ import {
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
 
-import { driveUpload, driveDownload, driveDelete, driveSyncFolder, getPendingUpload, clearPendingUpload, driveListFolders, driveCreateFolder, driveRenameFolder, driveDeleteFolder, driveGetStorageQuota } from "./driveStorage";
+import { driveUpload, driveDownload, driveDelete, driveSyncFolder, getPendingUpload, clearPendingUpload, driveListFolders, driveCreateFolder, driveRenameFolder, driveDeleteFolder, driveGetStorageQuota, driveVerifyFiles } from "./driveStorage";
 
 const STORAGE_PROVIDER = import.meta.env.VITE_STORAGE_PROVIDER === "drive" ? "drive" : "firebase";
 
@@ -354,13 +354,14 @@ function Topbar({ user, onLogout, title, subtitle }) {
 /* ---------------------------------------------------------------- */
 /* Dashboard page                                                     */
 /* ---------------------------------------------------------------- */
-function DashboardPage({ user, users, files, requests, folders, syncAllVisibleFolders }) {
+function DashboardPage({ user, users, files, requests, folders, syncAllVisibleFolders, verifyAllFiles }) {
   const [quota, setQuota] = useState(null);
   const [quotaError, setQuotaError] = useState(null);
 
   useEffect(() => {
     const visible = folders.filter(f => f.access.includes(user.role));
     syncAllVisibleFolders(visible);
+    verifyAllFiles();
     if (user.role === "OWNER" && STORAGE_PROVIDER === "drive") {
       driveGetStorageQuota().then(setQuota).catch(e => setQuotaError(e.message));
     }
@@ -462,6 +463,12 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
   }
   function goToPathIndex(i) {
     setPath(path.slice(0, i + 1));
+  }
+  function goIntoFolder(sf) {
+    setPath(prev => {
+      if (prev.length && prev[prev.length - 1].id === sf.id) return prev; // a double-click fires two click events — don't push the same folder twice
+      return [...prev, { id: sf.id, name: sf.name }];
+    });
   }
 
   async function loadFolderContents() {
@@ -727,7 +734,7 @@ function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, sy
                   <button onClick={() => setRenamingId(null)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Cancel</button>
                 </span>
               ) : (
-                <button onClick={() => setPath([...path, { id: sf.id, name: sf.name }])} className="cly-btn" style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0, background: "none", border: "none", textAlign: "left", cursor: "pointer", fontSize: 13, color: COLORS.text }}>
+                <button onClick={() => goIntoFolder(sf)} className="cly-btn" style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0, background: "none", border: "none", textAlign: "left", cursor: "pointer", fontSize: 13, color: COLORS.text }}>
                   <FolderOpen size={15} color={COLORS.data} />
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sf.name}</span>
                 </button>
@@ -1283,6 +1290,22 @@ export default function App() {
     }
   }
 
+  async function verifyAllFiles() {
+    if (STORAGE_PROVIDER !== "drive") return;
+    const driveFiles = files.filter(f => f.provider === "drive");
+    if (driveFiles.length === 0) return;
+    try {
+      const missing = await driveVerifyFiles(driveFiles.map(f => f.driveFileId));
+      if (missing.length === 0) return;
+      await Promise.all(
+        driveFiles.filter(f => missing.includes(f.driveFileId)).map(f => deleteDocIn("files", f.id))
+      );
+      setFiles(files.filter(f => !missing.includes(f.driveFileId)));
+    } catch (e) {
+      // Silent — stale entries just persist until the next successful check.
+    }
+  }
+
   async function addUserRequest(form, isOwner) {
     if (isOwner) {
       const tempPassword = "Cly" + Math.random().toString(36).slice(2, 10) + "!";
@@ -1372,7 +1395,7 @@ export default function App() {
               page === "requests" ? "Owner approval queue." : "Authentication, users, groups, and restrictions."
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
-              {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} syncAllVisibleFolders={syncAllVisibleFolders} />}
+              {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
               {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
               {page === "admin" && (

@@ -403,6 +403,18 @@ export async function driveDelete(fileId, folder) {
   if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
 }
 
+export async function driveVerifyFiles(fileIds) {
+  if (!fileIds.length) return [];
+  const res = await fetch("/api/drive-file-manage?action=verify-files", {
+    method: "POST",
+    headers: { ...(await authHeader()), "Content-Type": "application/json" },
+    body: JSON.stringify({ fileIds }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Verify failed");
+  return data.missing;
+}
+
 export async function driveGetStorageQuota() {
   const res = await fetch("/api/drive-file-manage?action=quota", { headers: await authHeader() });
   const data = await res.json();
