@@ -217,7 +217,7 @@ function LoginScreen({ onLogin, loading, error, onForgot }) {
   const [showPw, setShowPw] = useState(false);
 
   return (
-    <div className="cly" style={{ display: "flex", minHeight: 640, borderRadius: 14, overflow: "hidden", border: `1px solid ${COLORS.line}`, boxShadow: "0 20px 50px rgba(0,0,0,0.12)" }}>
+    <div className="cly" style={{ display: "flex", minHeight: "100vh" }}>
       {/* left */}
       <div className="cly-scan" style={{ flex: "1 1 46%", background: `linear-gradient(160deg, ${COLORS.ink} 0%, #0E2A33 100%)`, color: "#fff", padding: "40px 44px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1483,13 +1483,13 @@ export default function App() {
   );
 
   return (
-    <div className="cly" style={{ position: "relative" }}>
+    <div className="cly" style={{ position: "relative", minHeight: "100vh" }}>
       <style>{CSS}</style>
       <Toast toast={toast} />
       {!user ? (
         <LoginScreen onLogin={handleLogin} loading={loginLoading} error={loginError} onForgot={handleForgot} />
       ) : (
-        <div style={{ display: "flex", minHeight: 640, borderRadius: 14, overflow: "hidden", border: `1px solid ${COLORS.line}`, boxShadow: "0 20px 50px rgba(0,0,0,0.1)" }}>
+        <div style={{ display: "flex", minHeight: "100vh" }}>
           <Sidebar user={user} page={page} setPage={setPage} pendingCount={requests.filter(r => r.status === "pending").length} />
           <div style={{ flex: 1, background: COLORS.cream, minWidth: 0, display: "flex", flexDirection: "column" }}>
             <Topbar user={user} onLogout={() => fbLogout()} title={
