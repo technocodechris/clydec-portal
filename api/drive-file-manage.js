@@ -72,6 +72,23 @@ export default async function handler(req, res) {
       });
     }
 
+    if (action === "verify-files") {
+      const { fileIds } = req.body;
+      if (!Array.isArray(fileIds)) return res.status(400).json({ error: "fileIds must be an array" });
+      const missing = [];
+      await Promise.all(
+        fileIds.map(async (id) => {
+          try {
+            const meta = await drive.files.get({ fileId: id, fields: "id, trashed" });
+            if (meta.data.trashed) missing.push(id);
+          } catch (e) {
+            missing.push(id); // not found / no access — treat as gone
+          }
+        })
+      );
+      return res.status(200).json({ missing });
+    }
+
     return res.status(400).json({ error: "Unknown action" });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
