@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   Lock, Mail, Eye, EyeOff, LayoutDashboard, FolderOpen, Users, Shield,
   Bell, LogOut, Upload, Download, Trash2, Plus, X, Check, Clock,
@@ -1522,7 +1523,17 @@ function Field({ label, children }) {
   return <label style={{ display: "block" }}><div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 5 }}>{label}</div>{children}</label>;
 }
 function Modal({ title, onClose, children, width = 360 }) {
-  return (
+  // Rendered via a portal straight into <body> so it always centers on the
+  // real viewport — nesting it inside a page's own scrollable container
+  // (as plain JSX would) let that ancestor's scroll position clip/offset
+  // the modal, which is what caused it to render cut off at the top.
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prevOverflow; };
+  }, []);
+
+  return createPortal(
     <div style={{ position: "fixed", inset: 0, background: "rgba(20,24,28,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} className="cly-fade-in" style={{ background: "#fff", borderRadius: 14, padding: 22, width, maxWidth: "92vw", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 50px rgba(0,0,0,0.2)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -1531,7 +1542,8 @@ function Modal({ title, onClose, children, width = 360 }) {
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
