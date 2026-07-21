@@ -168,10 +168,14 @@ const SEED_PEOPLE_CONFIG = {
 };
 const SEED_TIME_SETTINGS = {
   workStartTime: "09:00",   // expected clock-in time (24h "HH:MM")
+  workEndTime: "18:00",     // expected clock-out time (24h "HH:MM")
   lateThresholdMinutes: 15, // grace period after workStartTime before "Late"
   fullDayHours: 8,          // hours worked to count as a full "Present" day
   halfDayHours: 4,          // hours worked to count as a "Half day"
 };
+// index 0 = Sunday ... 6 = Saturday. Weekdays are working days by default,
+// weekends are days off — the owner can edit this per team member.
+const DEFAULT_WEEKLY_WORK_DAYS = [false, true, true, true, true, true, false];
 
 /* ---------------------------------------------------------------- */
 /* Small shared UI                                                   */
@@ -1244,22 +1248,114 @@ function formatWorkedDuration(ms) {
 function attendanceStatusMeta(status) {
   if (status === "Present") return { soft: COLORS.successSoft, text: COLORS.success };
   if (status === "Late") return { soft: COLORS.warningSoft, text: COLORS.warning };
+  if (status === "Left early") return { soft: COLORS.warningSoft, text: COLORS.warning };
   if (status === "Half day") return { soft: COLORS.dataSoft, text: COLORS.dataText };
   if (status === "In progress") return { soft: COLORS.goldSoft, text: "#6B4A1A" };
-  return { soft: COLORS.dangerSoft, text: COLORS.danger }; // "Incomplete"
+  if (status === "Absent") return { soft: COLORS.dangerSoft, text: COLORS.danger };
+  return { soft: COLORS.line, text: COLORS.mute }; // "Incomplete"
 }
-// Groups raw clock-in/out entries into one attendance row per person per
-// day, then derives Present / Late / Half day / Incomplete from the
-// workspace's configurable attendance rules (time-settings).
-function computeDailyAttendance(entries, timeSettings) {
-  const ts = timeSettings || SEED_TIME_SETTINGS;
+// Merge a user's saved attendance rules with sensible defaults, so users
+// created before this feature (or with partial data) still work.
+function getAttendanceRules(u) {
+  const r = (u && u.attendanceRules) || {};
+  return {
+    workStartTime: r.workStartTime || SEED_TIME_SETTINGS.workStartTime,
+    workEndTime: r.workEndTime || SEED_TIME_SETTINGS.workEndTime,
+    lateThresholdMinutes: r.lateThresholdMinutes ?? SEED_TIME_SETTINGS.lateThresholdMinutes,
+    fullDayHours: r.fullDayHours ?? SEED_TIME_SETTINGS.fullDayHours,
+    halfDayHours: r.halfDayHours ?? SEED_TIME_SETTINGS.halfDayHours,
+    weeklyWorkDays: r.weeklyWorkDays || DEFAULT_WEEKLY_WORK_DAYS,
+    dateOverrides: r.dateOverrides || {}, // "YYYY-MM-DD" -> "work" | "off"
+  };
+}
+// Whether a given date is a working day for someone, honoring their weekly
+// pattern (weekdays on / weekends off by default) plus any specific-date
+// overrides (holidays marked off, or an off-day flipped to a working day).
+function isWorkingDay(dateStr, rules) {
+  const override = rules.dateOverrides?.[dateStr];
+  if (override === "off") return false;
+  if (override === "work") return true;
+  const dow = new Date(dateStr + "T00:00:00").getDay();
+  return !!rules.weeklyWorkDays[dow];
+}
+function toDateStr(y, m, d) {
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+// Weeks (arrays of 7 cells, null = padding outside the month) for a
+// month-grid calendar view.
+function getMonthMatrix(year, month) {
+  const startWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const WEEKDAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
+
+// Computes one attendance row per person per working day within a month,
+// for people who have a personal calendar (everyone except the Owner —
+// see AttendancePage). Days off (weekends/holidays) are skipped entirely;
+// a working day with no clock-in that has already passed becomes "Absent".
+function computeAttendanceForRange(entries, calendarUsers, year, month, todayStr) {
+  const entriesByUser = {};
+  entries.forEach(e => {
+    if (!entriesByUser[e.userId]) entriesByUser[e.userId] = {};
+    if (!entriesByUser[e.userId][e.date]) entriesByUser[e.userId][e.date] = [];
+    entriesByUser[e.userId][e.date].push(e);
+  });
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const rows = [];
+  calendarUsers.forEach(u => {
+    const rules = getAttendanceRules(u);
+    const [wsH, wsM] = rules.workStartTime.split(":").map(Number);
+    const [weH, weM] = rules.workEndTime.split(":").map(Number);
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = toDateStr(year, month, d);
+      if (dateStr > todayStr) continue; // don't judge the future
+      if (!isWorkingDay(dateStr, rules)) continue; // weekend/holiday/day off
+      const dayEntries = (entriesByUser[u.id] || {})[dateStr];
+      if (!dayEntries || dayEntries.length === 0) {
+        if (dateStr === todayStr) continue; // today isn't over yet — not absent (yet)
+        rows.push({ key: `${u.id}__${dateStr}`, userId: u.id, userName: u.name, date: dateStr, clockIn: null, clockOut: null, hours: 0, status: "Absent", isLate: false });
+        continue;
+      }
+      const sorted = [...dayEntries].sort((a, b) => a.clockIn - b.clockIn);
+      const earliest = sorted[0].clockIn;
+      const stillOpen = sorted.some(e => !e.clockOut);
+      const latestOut = stillOpen ? null : Math.max(...sorted.map(e => e.clockOut));
+      const totalMs = sorted.reduce((sum, e) => sum + ((e.clockOut || Date.now()) - e.clockIn), 0);
+      const hours = totalMs / 3_600_000;
+      const expectedIn = new Date(earliest);
+      expectedIn.setHours(wsH || 0, (wsM || 0) + (rules.lateThresholdMinutes || 0), 0, 0);
+      const isLate = new Date(earliest) > expectedIn;
+      const expectedOut = new Date(earliest);
+      expectedOut.setHours(weH || 0, (weM || 0) - (rules.lateThresholdMinutes || 0), 0, 0);
+      const leftEarly = !stillOpen && new Date(latestOut) < expectedOut;
+      let status;
+      if (stillOpen) status = "In progress";
+      else if (hours < rules.halfDayHours) status = "Incomplete";
+      else if (hours < rules.fullDayHours) status = "Half day";
+      else status = isLate ? "Late" : leftEarly ? "Left early" : "Present";
+      rows.push({ key: `${u.id}__${dateStr}`, userId: u.id, userName: u.name, date: dateStr, clockIn: earliest, clockOut: latestOut, hours, status, isLate });
+    }
+  });
+  return rows.sort((a, b) => b.date.localeCompare(a.date) || (a.userName || "").localeCompare(b.userName || ""));
+}
+// Simple entries-only attendance (no calendar/absence) — used for the
+// Owner's own rows, since the owner doesn't have a personal calendar.
+function computeSimpleAttendance(entries, rules) {
   const groups = {};
   entries.forEach(e => {
     const k = `${e.userId}__${e.date}`;
     if (!groups[k]) groups[k] = { key: k, userId: e.userId, userName: e.userName, date: e.date, entries: [] };
     groups[k].entries.push(e);
   });
-  const [wsH, wsM] = (ts.workStartTime || "09:00").split(":").map(Number);
+  const [wsH, wsM] = rules.workStartTime.split(":").map(Number);
   return Object.values(groups).map(g => {
     const sorted = [...g.entries].sort((a, b) => a.clockIn - b.clockIn);
     const earliest = sorted[0].clockIn;
@@ -1268,23 +1364,24 @@ function computeDailyAttendance(entries, timeSettings) {
     const totalMs = sorted.reduce((sum, e) => sum + ((e.clockOut || Date.now()) - e.clockIn), 0);
     const hours = totalMs / 3_600_000;
     const expected = new Date(earliest);
-    expected.setHours(wsH || 0, (wsM || 0) + (ts.lateThresholdMinutes || 0), 0, 0);
+    expected.setHours(wsH || 0, (wsM || 0) + (rules.lateThresholdMinutes || 0), 0, 0);
     const isLate = new Date(earliest) > expected;
     let status;
     if (stillOpen) status = "In progress";
-    else if (hours >= (ts.fullDayHours || 8)) status = isLate ? "Late" : "Present";
-    else if (hours >= (ts.halfDayHours || 4)) status = "Half day";
-    else status = "Incomplete";
-    return { ...g, clockIn: earliest, clockOut: latestOut, totalMs, hours, status, isLate };
-  }).sort((a, b) => b.date.localeCompare(a.date) || b.clockIn - a.clockIn);
+    else if (hours < rules.halfDayHours) status = "Incomplete";
+    else if (hours < rules.fullDayHours) status = "Half day";
+    else status = isLate ? "Late" : "Present";
+    return { ...g, clockIn: earliest, clockOut: latestOut, hours, status, isLate };
+  });
 }
 
-function TimeTrackingPage({ user, users, timeEntries, timeSettings, clockIn, clockOut, setUserTimeTrackingEnabled, saveTimeSettings }) {
+function TimeTrackingPage({ user, users, timeEntries, clockIn, clockOut, setUserTimeTrackingEnabled, saveUserAttendanceRules }) {
   const isOwner = user.role === "OWNER";
   const enabled = isOwner || !!user.timeTrackingEnabled;
   const myOpenEntry = timeEntries.find(e => e.userId === user.id && !e.clockOut);
   const [busy, setBusy] = useState(false);
   const [, forceTick] = useState(0);
+  const [expandedId, setExpandedId] = useState(null);
 
   useEffect(() => {
     if (!myOpenEntry) return;
@@ -1302,7 +1399,10 @@ function TimeTrackingPage({ user, users, timeEntries, timeSettings, clockIn, clo
   }
 
   const elapsedMs = myOpenEntry ? Date.now() - myOpenEntry.clockIn : 0;
-  const eligibleUsers = users.filter(u => u.role !== "CLIENT");
+  // Team members whose schedule the owner can configure — everyone except
+  // the owner (always on, no personal calendar needed) and clients (who
+  // never get this feature at all).
+  const teamMembers = users.filter(u => u.role !== "CLIENT" && u.role !== "OWNER");
   const activeNow = isOwner ? timeEntries.filter(e => !e.clockOut).sort((a, b) => a.clockIn - b.clockIn) : [];
 
   return (
@@ -1360,59 +1460,154 @@ function TimeTrackingPage({ user, users, timeEntries, timeSettings, clockIn, clo
 
           <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Who can use time tracking</div>
-            <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14 }}>Clients never get this feature. Turn it on for anyone else who needs to clock in/out — everyone starts off without it.</div>
+            <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14 }}>Clients never get this feature. Turn it on for anyone else who needs to clock in/out, and set their hours and work calendar.</div>
             <div style={{ display: "flex", flexDirection: "column" }}>
-              {eligibleUsers.map(u => {
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${COLORS.line}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontWeight: 600, fontSize: 13.5 }}>{user.name}</span>
+                  <Badge color={ROLE_META.OWNER.color} soft={ROLE_META.OWNER.soft} text={ROLE_META.OWNER.text}>Owner</Badge>
+                </div>
+                <span style={{ fontSize: 12, color: COLORS.mute }}>Always on</span>
+              </div>
+              {teamMembers.map(u => {
                 const meta = ROLE_META[u.role];
+                const isExpanded = expandedId === u.id;
                 return (
-                  <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${COLORS.line}` }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontWeight: 600, fontSize: 13.5 }}>{u.name}</span>
-                      <Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge>
+                  <div key={u.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontWeight: 600, fontSize: 13.5 }}>{u.name}</span>
+                        <Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                        <button onClick={() => setExpandedId(isExpanded ? null : u.id)} className="cly-btn" style={{ background: "none", color: COLORS.data, fontSize: 12, fontWeight: 700 }}>
+                          {isExpanded ? "Close" : "Edit hours & calendar"}
+                        </button>
+                        <Toggle checked={!!u.timeTrackingEnabled} onChange={(v) => setUserTimeTrackingEnabled(u.id, v)} />
+                      </div>
                     </div>
-                    {u.role === "OWNER" ? (
-                      <span style={{ fontSize: 12, color: COLORS.mute }}>Always on</span>
-                    ) : (
-                      <Toggle checked={!!u.timeTrackingEnabled} onChange={(v) => setUserTimeTrackingEnabled(u.id, v)} />
+                    {isExpanded && (
+                      <div style={{ paddingBottom: 18 }}>
+                        <AttendanceRulesEditor user={u} onSave={(rules) => saveUserAttendanceRules(u.id, rules)} />
+                      </div>
                     )}
                   </div>
                 );
               })}
+              {teamMembers.length === 0 && (
+                <div style={{ color: COLORS.mute, fontSize: 13, padding: "10px 0" }}>No other team members yet — add people from Admin settings → Users.</div>
+              )}
             </div>
           </div>
-
-          <TimeSettingsPanel timeSettings={timeSettings} saveTimeSettings={saveTimeSettings} />
         </>
       )}
     </div>
   );
 }
 
-function TimeSettingsPanel({ timeSettings, saveTimeSettings }) {
-  const [form, setForm] = useState(timeSettings);
-  useEffect(() => { setForm(timeSettings); }, [timeSettings]);
-  const dirty = JSON.stringify(form) !== JSON.stringify(timeSettings);
+// Per-person hours (start/end time, grace period, full/half-day thresholds)
+// plus a work calendar (weekly pattern + specific-date overrides for
+// holidays/leave). Used inside each team member's expanded row above.
+function AttendanceRulesEditor({ user, onSave }) {
+  const initial = getAttendanceRules(user);
+  const [rules, setRules] = useState(initial);
+  const [today] = useState(new Date());
+  const [viewYear, setViewYear] = useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(today.getMonth());
+  const dirty = JSON.stringify(rules) !== JSON.stringify(initial);
+
+  function patch(k, v) { setRules(r => ({ ...r, [k]: v })); }
+  function toggleWeekday(i) {
+    const next = [...rules.weeklyWorkDays];
+    next[i] = !next[i];
+    patch("weeklyWorkDays", next);
+  }
+  function cycleDate(dateStr) {
+    const current = rules.dateOverrides[dateStr];
+    const defaultsToWork = rules.weeklyWorkDays[new Date(dateStr + "T00:00:00").getDay()];
+    const next = { ...rules.dateOverrides };
+    // Cycle: default -> forced opposite -> back to default.
+    if (current === undefined) next[dateStr] = defaultsToWork ? "off" : "work";
+    else delete next[dateStr];
+    patch("dateOverrides", next);
+  }
+
+  const weeks = getMonthMatrix(viewYear, viewMonth);
+  const overrideCount = Object.keys(rules.dateOverrides).length;
+
   return (
-    <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
-      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Attendance rules</div>
-      <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14 }}>These control how the Attendance page labels each day — Present, Late, or Half day.</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 480 }}>
-        <label style={{ fontSize: 12.5, fontWeight: 600 }}>Work start time
-          <input type="time" className="cly-input" value={form.workStartTime} onChange={e => setForm({ ...form, workStartTime: e.target.value })} style={{ ...inputStyle, marginTop: 5 }} />
-        </label>
-        <label style={{ fontSize: 12.5, fontWeight: 600 }}>Grace period (minutes)
-          <input type="number" min={0} className="cly-input" value={form.lateThresholdMinutes} onChange={e => setForm({ ...form, lateThresholdMinutes: Number(e.target.value) })} style={{ ...inputStyle, marginTop: 5 }} />
-        </label>
-        <label style={{ fontSize: 12.5, fontWeight: 600 }}>Full day hours
-          <input type="number" min={0} step={0.5} className="cly-input" value={form.fullDayHours} onChange={e => setForm({ ...form, fullDayHours: Number(e.target.value) })} style={{ ...inputStyle, marginTop: 5 }} />
-        </label>
-        <label style={{ fontSize: 12.5, fontWeight: 600 }}>Half day hours
-          <input type="number" min={0} step={0.5} className="cly-input" value={form.halfDayHours} onChange={e => setForm({ ...form, halfDayHours: Number(e.target.value) })} style={{ ...inputStyle, marginTop: 5 }} />
-        </label>
+    <div style={{ background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", gap: 18 }}>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Hours</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, maxWidth: 460 }}>
+          <label style={{ fontSize: 12, fontWeight: 600 }}>Work start time
+            <input type="time" className="cly-input" value={rules.workStartTime} onChange={e => patch("workStartTime", e.target.value)} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+          </label>
+          <label style={{ fontSize: 12, fontWeight: 600 }}>Work end time
+            <input type="time" className="cly-input" value={rules.workEndTime} onChange={e => patch("workEndTime", e.target.value)} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+          </label>
+          <label style={{ fontSize: 12, fontWeight: 600 }}>Grace period (minutes)
+            <input type="number" min={0} className="cly-input" value={rules.lateThresholdMinutes} onChange={e => patch("lateThresholdMinutes", Number(e.target.value))} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+          </label>
+          <label style={{ fontSize: 12, fontWeight: 600 }}>Full day hours
+            <input type="number" min={0} step={0.5} className="cly-input" value={rules.fullDayHours} onChange={e => patch("fullDayHours", Number(e.target.value))} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+          </label>
+          <label style={{ fontSize: 12, fontWeight: 600 }}>Half day hours
+            <input type="number" min={0} step={0.5} className="cly-input" value={rules.halfDayHours} onChange={e => patch("halfDayHours", Number(e.target.value))} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+          </label>
+        </div>
       </div>
-      <button disabled={!dirty} onClick={() => saveTimeSettings(form)} className="cly-btn"
-        style={{ marginTop: 16, padding: "9px 18px", borderRadius: 8, fontWeight: 700, fontSize: 13, background: dirty ? COLORS.ink : COLORS.line, color: dirty ? "#fff" : COLORS.mute }}>
-        Save rules
+
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Weekly pattern</div>
+        <div style={{ color: COLORS.mute, fontSize: 11.5, marginBottom: 8 }}>Default working days for this person. Specific dates can still be overridden below.</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {WEEKDAY_LETTERS.map((letter, i) => (
+            <button key={i} onClick={() => toggleWeekday(i)} className="cly-btn" style={{
+              width: 32, height: 32, borderRadius: 8, fontSize: 12, fontWeight: 700,
+              background: rules.weeklyWorkDays[i] ? COLORS.ink : "#fff",
+              color: rules.weeklyWorkDays[i] ? "#fff" : COLORS.mute,
+              border: `1px solid ${rules.weeklyWorkDays[i] ? COLORS.ink : COLORS.line}`,
+            }}>{letter}</button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>Work calendar</div>
+            <div style={{ color: COLORS.mute, fontSize: 11.5 }}>Click a date to mark it a day off (e.g. a holiday) or a working day. {overrideCount > 0 && `${overrideCount} custom date${overrideCount === 1 ? "" : "s"} set.`}</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 26, height: 26 }}>‹</button>
+            <span style={{ fontSize: 12.5, fontWeight: 700, minWidth: 110, textAlign: "center" }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
+            <button onClick={() => setViewMonth(m => { if (m === 11) { setViewYear(y => y + 1); return 0; } return m + 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 26, height: 26 }}>›</button>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, maxWidth: 380 }}>
+          {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
+          {weeks.flat().map((d, i) => {
+            if (d === null) return <div key={i} />;
+            const dateStr = toDateStr(viewYear, viewMonth, d);
+            const working = isWorkingDay(dateStr, rules);
+            const isOverride = rules.dateOverrides[dateStr] !== undefined;
+            const isToday = dateStr === today.toISOString().slice(0, 10);
+            return (
+              <button key={i} onClick={() => cycleDate(dateStr)} className="cly-btn" title={working ? "Working day — click to mark as day off" : "Day off — click to mark as working day"} style={{
+                aspectRatio: "1", borderRadius: 6, fontSize: 11.5, fontWeight: 600,
+                background: working ? COLORS.successSoft : "#fff",
+                color: working ? COLORS.success : COLORS.mute,
+                border: isToday ? `1.5px solid ${COLORS.ink}` : isOverride ? `1.5px dashed ${COLORS.gold}` : `1px solid ${COLORS.line}`,
+              }}>{d}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      <button disabled={!dirty} onClick={() => onSave(rules)} className="cly-btn"
+        style={{ alignSelf: "flex-start", padding: "9px 18px", borderRadius: 8, fontWeight: 700, fontSize: 13, background: dirty ? COLORS.ink : COLORS.line, color: dirty ? "#fff" : COLORS.mute }}>
+        Save
       </button>
     </div>
   );
@@ -1472,27 +1667,47 @@ function TimeInOutPage({ user, users, timeEntries }) {
   );
 }
 
-function AttendancePage({ user, users, timeEntries, timeSettings }) {
+function AttendancePage({ user, users, timeEntries }) {
   const isOwner = user.role === "OWNER";
   const [filterUser, setFilterUser] = useState("all");
+  const [today] = useState(new Date());
+  const [viewYear, setViewYear] = useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(today.getMonth());
+  const todayStr = today.toISOString().slice(0, 10);
   const eligibleUsers = users.filter(u => u.role !== "CLIENT");
 
-  const scopedEntries = timeEntries.filter(e => isOwner ? (filterUser === "all" || e.userId === filterUser) : e.userId === user.id);
-  const rows = computeDailyAttendance(scopedEntries, timeSettings);
+  const calendarUsers = eligibleUsers.filter(u => u.role !== "OWNER" && (filterUser === "all" || u.id === filterUser));
+  const ownerInScope = eligibleUsers.find(u => u.role === "OWNER" && (filterUser === "all" || u.id === filterUser));
+
+  const monthEntries = timeEntries.filter(e => {
+    const [y, m] = e.date.split("-").map(Number);
+    return y === viewYear && (m - 1) === viewMonth;
+  });
+
+  let rows = computeAttendanceForRange(monthEntries, calendarUsers, viewYear, viewMonth, todayStr);
+  if (ownerInScope) {
+    rows = [...rows, ...computeSimpleAttendance(monthEntries.filter(e => e.userId === ownerInScope.id), getAttendanceRules(ownerInScope))];
+  }
+  rows.sort((a, b) => b.date.localeCompare(a.date) || (a.userName || "").localeCompare(b.userName || ""));
 
   return (
     <div className="cly-fade-in" style={{ padding: 28 }}>
-      {isOwner && (
-        <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+        {isOwner ? (
           <select value={filterUser} onChange={e => setFilterUser(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 220 }}>
             <option value="all">All team members</option>
             {eligibleUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
+        ) : <div />}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 28, height: 28 }}>‹</button>
+          <span style={{ fontSize: 13, fontWeight: 700, minWidth: 130, textAlign: "center" }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
+          <button onClick={() => setViewMonth(m => { if (m === 11) { setViewYear(y => y + 1); return 0; } return m + 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 28, height: 28 }}>›</button>
         </div>
-      )}
+      </div>
       <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
         {rows.length === 0 ? (
-          <EmptyState icon={CalendarCheck} title="No attendance records yet" body="Attendance is calculated automatically from Time Tracking sessions — it'll fill in once people start clocking in." />
+          <EmptyState icon={CalendarCheck} title="No attendance records for this month" body="Attendance is calculated automatically from Time Tracking sessions and each person's work calendar." />
         ) : (
           <>
             <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
@@ -1515,8 +1730,8 @@ function AttendancePage({ user, users, timeEntries, timeSettings }) {
                     </span>
                   )}
                   <span style={{ width: 120 }}>{formatPeopleDate(r.date)}</span>
-                  <span style={{ width: 110 }}>{formatClockTime(r.clockIn)}{r.isLate && r.status !== "In progress" ? " ⚠" : ""}</span>
-                  <span style={{ width: 90 }}>{r.hours.toFixed(1)}h</span>
+                  <span style={{ width: 110 }}>{r.clockIn ? formatClockTime(r.clockIn) : "—"}</span>
+                  <span style={{ width: 90 }}>{r.hours ? `${r.hours.toFixed(1)}h` : "—"}</span>
                   <span style={{ width: 110 }}><Badge soft={sm.soft} text={sm.text}>{r.status}</Badge></span>
                 </div>
               );
@@ -1889,7 +2104,6 @@ export default function App() {
   const [people, setPeople] = useState([]);
   const [peopleConfig, setPeopleConfig] = useState(SEED_PEOPLE_CONFIG);
   const [timeEntries, setTimeEntries] = useState([]);
-  const [timeSettings, setTimeSettings] = useState(SEED_TIME_SETTINGS);
   const [requests, setRequests] = useState([]);
   const [auth, setAuth] = useState(SEED_AUTH);
   const [notif, setNotif] = useState(SEED_NOTIF);
@@ -1943,7 +2157,6 @@ export default function App() {
         // Only the Owner can read every user's time entries (per firestore.rules);
         // everyone else's query is scoped to their own uid so it isn't denied.
         { key: "timeEntries", run: () => (user.role === "OWNER" ? listCollection("time-entries") : listCollectionWhere("time-entries", "userId", user.id)), fallback: [] },
-        { key: "timeSettings", run: () => sget("time-settings", SEED_TIME_SETTINGS), fallback: SEED_TIME_SETTINGS },
       ];
       const results = await Promise.allSettled(jobs.map(j => j.run()));
       const values = {};
@@ -1962,7 +2175,7 @@ export default function App() {
       setAuth(values.auth); setNotif(values.notif); setRestrictions(values.restrictions);
       setFiles([...values.files].sort((x, y) => y.uploadedAt - x.uploadedAt));
       setPeople(values.people); setPeopleConfig(values.peopleConfig);
-      setTimeEntries(values.timeEntries); setTimeSettings(values.timeSettings);
+      setTimeEntries(values.timeEntries);
       if (failed.length) {
         // Most common cause: a Firestore security rule for one of these
         // collections hasn't been deployed yet (committing firestore.rules
@@ -2186,13 +2399,13 @@ export default function App() {
       throw e;
     }
   }
-  async function saveTimeSettings(next) {
+  async function saveUserAttendanceRules(userId, rules) {
     try {
-      await sset("time-settings", next);
-      setTimeSettings(next);
-      notify("Attendance rules saved.");
+      await updateDocIn("users", userId, { attendanceRules: rules });
+      setUsers(users.map(u => u.id === userId ? { ...u, attendanceRules: rules } : u));
+      notify("Attendance settings saved.");
     } catch (e) {
-      console.error("Failed to save attendance rules:", e);
+      console.error("Failed to save attendance settings:", e);
       notify("Couldn't save — check your connection or permissions and try again.", "error");
       throw e;
     }
@@ -2263,9 +2476,9 @@ export default function App() {
               {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
               {page === "people-info" && <PeopleInfoPage user={user} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
-              {page === "time-tracking" && <TimeTrackingPage user={user} users={users} timeEntries={timeEntries} timeSettings={timeSettings} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveTimeSettings={saveTimeSettings} />}
+              {page === "time-tracking" && <TimeTrackingPage user={user} users={users} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
               {page === "time-inout" && <TimeInOutPage user={user} users={users} timeEntries={timeEntries} />}
-              {page === "attendance" && <AttendancePage user={user} users={users} timeEntries={timeEntries} timeSettings={timeSettings} />}
+              {page === "attendance" && <AttendancePage user={user} users={users} timeEntries={timeEntries} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} addUserRequest={addUserRequest} removeUser={removeUser}
