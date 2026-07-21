@@ -958,13 +958,23 @@ function peopleStatusMeta(status) {
   if (status === "On leave") return { soft: COLORS.warningSoft, text: COLORS.warning };
   return { soft: COLORS.line, text: COLORS.mute };
 }
+// People Information (HR records) and Users (portal logins) are separate
+// collections — this is the link between them. A Person can optionally be
+// linked to a portal account, which is how Time Tracking/Attendance (which
+// only know about logged-in Users) can show that person's department/title.
+function personForUser(people, userId) {
+  return people.find(p => p.linkedUserId === userId) || null;
+}
+function userForPerson(users, person) {
+  return person?.linkedUserId ? users.find(u => u.id === person.linkedUserId) || null : null;
+}
 const errorTextStyle = { color: COLORS.danger, fontSize: 11.5, marginTop: 4 };
 const manageLinkStyle = { background: "none", border: "none", color: COLORS.data, fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0 };
 
-const PEOPLE_EMPTY_FORM = { name: "", role: "", department: "", employmentStatus: "", email: "", phone: "", startDate: "", status: "Active" };
+const PEOPLE_EMPTY_FORM = { name: "", role: "", department: "", employmentStatus: "", email: "", phone: "", startDate: "", status: "Active", linkedUserId: "" };
 const PEOPLE_STATUSES = ["Active", "On leave", "Inactive"];
 
-function PeopleInfoPage({ user, people, peopleConfig, addPerson, updatePerson, removePerson, savePeopleConfig }) {
+function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePerson, removePerson, savePeopleConfig }) {
   const canManage = user.role === "OWNER" || user.role === "ADMIN";
   const canManageLists = user.role === "OWNER"; // list config lives in "settings", which is owner-only elsewhere too
   const departments = peopleConfig.departments || [];
@@ -1040,6 +1050,7 @@ function PeopleInfoPage({ user, people, peopleConfig, addPerson, updatePerson, r
   }
 
   const deptCounts = departments.reduce((acc, d) => { acc[d] = people.filter(p => p.department === d).length; return acc; }, {});
+  const linkableUsers = users.filter(u => u.role !== "CLIENT" && (!personForUser(people, u.id) || personForUser(people, u.id).id === editingId));
 
   return (
     <div className="cly-fade-in" style={{ padding: 28 }}>
@@ -1094,7 +1105,12 @@ function PeopleInfoPage({ user, people, peopleConfig, addPerson, updatePerson, r
                       <div style={{ fontSize: 11.5, color: COLORS.mute }}>{p.role}</div>
                     </span>
                   </span>
-                  <span style={{ width: 120 }}>{p.department}</span>
+                  <span style={{ width: 120 }}>
+                    {p.department}
+                    <div style={{ fontSize: 10.5, color: COLORS.mute, marginTop: 2 }}>
+                      {p.linkedUserId ? "🔗 Portal access" : "No portal account"}
+                    </div>
+                  </span>
                   <span style={{ width: 120 }}>{p.employmentStatus || "—"}</span>
                   <span style={{ flex: 1.5, minWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.email}</span>
                   <span style={{ width: 130 }}>{p.phone || "—"}</span>
@@ -1158,6 +1174,15 @@ function PeopleInfoPage({ user, people, peopleConfig, addPerson, updatePerson, r
                 {PEOPLE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </Field>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <Field label="Linked portal account (optional)">
+                <select value={form.linkedUserId} onChange={e => updateField("linkedUserId", e.target.value)} style={inputStyle}>
+                  <option value="">— No linked account —</option>
+                  {linkableUsers.map(u => <option key={u.id} value={u.id}>{u.name} ({ROLE_META[u.role].label}) — {u.email}</option>)}
+                </select>
+              </Field>
+              <div style={{ fontSize: 11, color: COLORS.mute, marginTop: 4 }}>Connects this person to their portal login, so Time Tracking and Attendance can show their department and job title.</div>
+            </div>
             <div>
               <Field label="Email"><input value={form.email} onChange={e => updateField("email", e.target.value)} placeholder="name@clydecstudio.com" style={inputStyle} /></Field>
               {errors.email && <div style={errorTextStyle}>{errors.email}</div>}
@@ -1297,85 +1322,58 @@ function getMonthMatrix(year, month) {
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
 
-// Computes one attendance row per person per working day within a month,
-// for people who have a personal calendar (everyone except the Owner —
-// see AttendancePage). Days off (weekends/holidays) are skipped entirely;
-// a working day with no clock-in that has already passed becomes "Absent".
-function computeAttendanceForRange(entries, calendarUsers, year, month, todayStr) {
-  const entriesByUser = {};
-  entries.forEach(e => {
-    if (!entriesByUser[e.userId]) entriesByUser[e.userId] = {};
-    if (!entriesByUser[e.userId][e.date]) entriesByUser[e.userId][e.date] = [];
-    entriesByUser[e.userId][e.date].push(e);
-  });
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const rows = [];
-  calendarUsers.forEach(u => {
-    const rules = getAttendanceRules(u);
-    const [wsH, wsM] = rules.workStartTime.split(":").map(Number);
-    const [weH, weM] = rules.workEndTime.split(":").map(Number);
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = toDateStr(year, month, d);
-      if (dateStr > todayStr) continue; // don't judge the future
-      if (!isWorkingDay(dateStr, rules)) continue; // weekend/holiday/day off
-      const dayEntries = (entriesByUser[u.id] || {})[dateStr];
-      if (!dayEntries || dayEntries.length === 0) {
-        if (dateStr === todayStr) continue; // today isn't over yet — not absent (yet)
-        rows.push({ key: `${u.id}__${dateStr}`, userId: u.id, userName: u.name, date: dateStr, clockIn: null, clockOut: null, hours: 0, status: "Absent", isLate: false });
-        continue;
-      }
-      const sorted = [...dayEntries].sort((a, b) => a.clockIn - b.clockIn);
-      const earliest = sorted[0].clockIn;
-      const stillOpen = sorted.some(e => !e.clockOut);
-      const latestOut = stillOpen ? null : Math.max(...sorted.map(e => e.clockOut));
-      const totalMs = sorted.reduce((sum, e) => sum + ((e.clockOut || Date.now()) - e.clockIn), 0);
-      const hours = totalMs / 3_600_000;
-      const expectedIn = new Date(earliest);
-      expectedIn.setHours(wsH || 0, (wsM || 0) + (rules.lateThresholdMinutes || 0), 0, 0);
-      const isLate = new Date(earliest) > expectedIn;
-      const expectedOut = new Date(earliest);
-      expectedOut.setHours(weH || 0, (weM || 0) - (rules.lateThresholdMinutes || 0), 0, 0);
-      const leftEarly = !stillOpen && new Date(latestOut) < expectedOut;
-      let status;
-      if (stillOpen) status = "In progress";
-      else if (hours < rules.halfDayHours) status = "Incomplete";
-      else if (hours < rules.fullDayHours) status = "Half day";
-      else status = isLate ? "Late" : leftEarly ? "Left early" : "Present";
-      rows.push({ key: `${u.id}__${dateStr}`, userId: u.id, userName: u.name, date: dateStr, clockIn: earliest, clockOut: latestOut, hours, status, isLate });
-    }
-  });
-  return rows.sort((a, b) => b.date.localeCompare(a.date) || (a.userName || "").localeCompare(b.userName || ""));
-}
-// Simple entries-only attendance (no calendar/absence) — used for the
-// Owner's own rows, since the owner doesn't have a personal calendar.
-function computeSimpleAttendance(entries, rules) {
-  const groups = {};
-  entries.forEach(e => {
-    const k = `${e.userId}__${e.date}`;
-    if (!groups[k]) groups[k] = { key: k, userId: e.userId, userName: e.userName, date: e.date, entries: [] };
-    groups[k].entries.push(e);
-  });
+
+// Same math as above, but produces a dateStr -> day-info map for one person
+// across one month, for the Attendance calendar view. The Owner has no
+// personal calendar (no absence/day-off concept for them); everyone else's
+// working days come from their own attendanceRules calendar.
+function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
+  const isOwner = u.role === "OWNER";
+  const rules = getAttendanceRules(u);
   const [wsH, wsM] = rules.workStartTime.split(":").map(Number);
-  return Object.values(groups).map(g => {
-    const sorted = [...g.entries].sort((a, b) => a.clockIn - b.clockIn);
+  const [weH, weM] = rules.workEndTime.split(":").map(Number);
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const byDate = {};
+  entries.filter(e => e.userId === u.id).forEach(e => {
+    if (!byDate[e.date]) byDate[e.date] = [];
+    byDate[e.date].push(e);
+  });
+  const result = {};
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = toDateStr(year, month, d);
+    if (dateStr > todayStr) { result[dateStr] = { future: true }; continue; }
+    if (!isOwner && !isWorkingDay(dateStr, rules)) { result[dateStr] = { dayOff: true }; continue; }
+    const dayEntries = byDate[dateStr];
+    if (!dayEntries || dayEntries.length === 0) {
+      if (dateStr === todayStr) { result[dateStr] = { pending: true }; continue; }
+      if (isOwner) { result[dateStr] = { empty: true }; continue; }
+      result[dateStr] = { status: "Absent", hours: 0 };
+      continue;
+    }
+    const sorted = [...dayEntries].sort((a, b) => a.clockIn - b.clockIn);
     const earliest = sorted[0].clockIn;
     const stillOpen = sorted.some(e => !e.clockOut);
     const latestOut = stillOpen ? null : Math.max(...sorted.map(e => e.clockOut));
     const totalMs = sorted.reduce((sum, e) => sum + ((e.clockOut || Date.now()) - e.clockIn), 0);
     const hours = totalMs / 3_600_000;
-    const expected = new Date(earliest);
-    expected.setHours(wsH || 0, (wsM || 0) + (rules.lateThresholdMinutes || 0), 0, 0);
-    const isLate = new Date(earliest) > expected;
+    const expectedIn = new Date(earliest);
+    expectedIn.setHours(wsH || 0, (wsM || 0) + (rules.lateThresholdMinutes || 0), 0, 0);
+    const isLate = new Date(earliest) > expectedIn;
+    const expectedOut = new Date(earliest);
+    expectedOut.setHours(weH || 0, (weM || 0) - (rules.lateThresholdMinutes || 0), 0, 0);
+    const leftEarly = !stillOpen && new Date(latestOut) < expectedOut;
     let status;
     if (stillOpen) status = "In progress";
     else if (hours < rules.halfDayHours) status = "Incomplete";
     else if (hours < rules.fullDayHours) status = "Half day";
-    else status = isLate ? "Late" : "Present";
-    return { ...g, clockIn: earliest, clockOut: latestOut, hours, status, isLate };
-  });
+    else status = isLate ? "Late" : leftEarly ? "Left early" : "Present";
+    result[dateStr] = { status, hours, clockIn: earliest, clockOut: latestOut, isLate };
+  }
+  return result;
 }
 
-function TimeTrackingPage({ user, users, timeEntries, clockIn, clockOut, setUserTimeTrackingEnabled, saveUserAttendanceRules }) {
+
+function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut, setUserTimeTrackingEnabled, saveUserAttendanceRules }) {
   const isOwner = user.role === "OWNER";
   const enabled = isOwner || !!user.timeTrackingEnabled;
   const myOpenEntry = timeEntries.find(e => e.userId === user.id && !e.clockOut);
@@ -1471,6 +1469,7 @@ function TimeTrackingPage({ user, users, timeEntries, clockIn, clockOut, setUser
               </div>
               {teamMembers.map(u => {
                 const meta = ROLE_META[u.role];
+                const person = personForUser(people, u.id);
                 const isExpanded = expandedId === u.id;
                 return (
                   <div key={u.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
@@ -1478,6 +1477,7 @@ function TimeTrackingPage({ user, users, timeEntries, clockIn, clockOut, setUser
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <span style={{ fontWeight: 600, fontSize: 13.5 }}>{u.name}</span>
                         <Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge>
+                        {person && <span style={{ fontSize: 11.5, color: COLORS.mute }}>{person.department} · {person.role}</span>}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                         <button onClick={() => setExpandedId(isExpanded ? null : u.id)} className="cly-btn" style={{ background: "none", color: COLORS.data, fontSize: 12, fontWeight: 700 }}>
@@ -1613,7 +1613,7 @@ function AttendanceRulesEditor({ user, onSave }) {
   );
 }
 
-function TimeInOutPage({ user, users, timeEntries }) {
+function TimeInOutPage({ user, users, people, timeEntries }) {
   const isOwner = user.role === "OWNER";
   const [filterUser, setFilterUser] = useState("all");
   const eligibleUsers = users.filter(u => u.role !== "CLIENT");
@@ -1628,7 +1628,10 @@ function TimeInOutPage({ user, users, timeEntries }) {
         <div style={{ marginBottom: 16 }}>
           <select value={filterUser} onChange={e => setFilterUser(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 220 }}>
             <option value="all">All team members</option>
-            {eligibleUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+            {eligibleUsers.map(u => {
+              const person = personForUser(people, u.id);
+              return <option key={u.id} value={u.id}>{u.name}{person ? ` — ${person.department}` : ""}</option>;
+            })}
           </select>
         </div>
       )}
@@ -1644,22 +1647,28 @@ function TimeInOutPage({ user, users, timeEntries }) {
               <span style={{ width: 110 }}>Clock out</span>
               <span style={{ width: 100 }}>Duration</span>
             </div>
-            {visible.map(e => (
-              <div key={e.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
-                {isOwner && (
-                  <span style={{ flex: 1.5, minWidth: 140, display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(e.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
-                      {peopleInitials(e.userName)}
-                    </div>
-                    <span style={{ fontWeight: 600 }}>{e.userName}</span>
-                  </span>
-                )}
-                <span style={{ width: 120 }}>{formatPeopleDate(e.date)}</span>
-                <span style={{ width: 110 }}>{formatClockTime(e.clockIn)}</span>
-                <span style={{ width: 110 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>In progress</span>}</span>
-                <span style={{ width: 100 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
-              </div>
-            ))}
+            {visible.map(e => {
+              const person = personForUser(people, e.userId);
+              return (
+                <div key={e.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+                  {isOwner && (
+                    <span style={{ flex: 1.5, minWidth: 140, display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(e.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                        {peopleInitials(e.userName)}
+                      </div>
+                      <span style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.userName}</div>
+                        {person && <div style={{ fontSize: 10.5, color: COLORS.mute }}>{person.department}</div>}
+                      </span>
+                    </span>
+                  )}
+                  <span style={{ width: 120 }}>{formatPeopleDate(e.date)}</span>
+                  <span style={{ width: 110 }}>{formatClockTime(e.clockIn)}</span>
+                  <span style={{ width: 110 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>In progress</span>}</span>
+                  <span style={{ width: 100 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
+                </div>
+              );
+            })}
           </>
         )}
       </div>
@@ -1667,77 +1676,94 @@ function TimeInOutPage({ user, users, timeEntries }) {
   );
 }
 
-function AttendancePage({ user, users, timeEntries }) {
+function AttendancePage({ user, users, people, timeEntries }) {
   const isOwner = user.role === "OWNER";
-  const [filterUser, setFilterUser] = useState("all");
+  const eligibleUsers = users.filter(u => u.role !== "CLIENT");
+  const [selectedId, setSelectedId] = useState(isOwner ? (eligibleUsers.find(u => u.id !== user.id)?.id || user.id) : user.id);
   const [today] = useState(new Date());
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
   const todayStr = today.toISOString().slice(0, 10);
-  const eligibleUsers = users.filter(u => u.role !== "CLIENT");
 
-  const calendarUsers = eligibleUsers.filter(u => u.role !== "OWNER" && (filterUser === "all" || u.id === filterUser));
-  const ownerInScope = eligibleUsers.find(u => u.role === "OWNER" && (filterUser === "all" || u.id === filterUser));
+  const selectedUser = eligibleUsers.find(u => u.id === selectedId) || user;
+  const person = personForUser(people, selectedUser.id);
+  const rules = getAttendanceRules(selectedUser);
 
   const monthEntries = timeEntries.filter(e => {
+    if (e.userId !== selectedUser.id) return false;
     const [y, m] = e.date.split("-").map(Number);
     return y === viewYear && (m - 1) === viewMonth;
   });
+  const dayMap = computeMonthCalendarForUser(monthEntries, selectedUser, viewYear, viewMonth, todayStr);
+  const weeks = getMonthMatrix(viewYear, viewMonth);
 
-  let rows = computeAttendanceForRange(monthEntries, calendarUsers, viewYear, viewMonth, todayStr);
-  if (ownerInScope) {
-    rows = [...rows, ...computeSimpleAttendance(monthEntries.filter(e => e.userId === ownerInScope.id), getAttendanceRules(ownerInScope))];
-  }
-  rows.sort((a, b) => b.date.localeCompare(a.date) || (a.userName || "").localeCompare(b.userName || ""));
+  const counts = { Present: 0, Late: 0, "Half day": 0, Absent: 0, "Left early": 0 };
+  Object.values(dayMap).forEach(v => { if (v.status && counts[v.status] !== undefined) counts[v.status]++; });
 
   return (
-    <div className="cly-fade-in" style={{ padding: 28 }}>
-      <div style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         {isOwner ? (
-          <select value={filterUser} onChange={e => setFilterUser(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 220 }}>
-            <option value="all">All team members</option>
-            {eligibleUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          <select value={selectedId} onChange={e => setSelectedId(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 240 }}>
+            {eligibleUsers.map(u => {
+              const p = personForUser(people, u.id);
+              return <option key={u.id} value={u.id}>{u.name}{u.role === "OWNER" ? " (You)" : ""}{p ? ` — ${p.department}` : ""}</option>;
+            })}
           </select>
-        ) : <div />}
+        ) : (
+          <div style={{ fontSize: 14, fontWeight: 700 }}>My attendance{person ? ` · ${person.department}, ${person.role}` : ""}</div>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 28, height: 28 }}>‹</button>
           <span style={{ fontSize: 13, fontWeight: 700, minWidth: 130, textAlign: "center" }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
           <button onClick={() => setViewMonth(m => { if (m === 11) { setViewYear(y => y + 1); return 0; } return m + 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 28, height: 28 }}>›</button>
         </div>
       </div>
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
-        {rows.length === 0 ? (
-          <EmptyState icon={CalendarCheck} title="No attendance records for this month" body="Attendance is calculated automatically from Time Tracking sessions and each person's work calendar." />
-        ) : (
-          <>
-            <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
-              {isOwner && <span style={{ flex: 1.5, minWidth: 140 }}>Team member</span>}
-              <span style={{ width: 120 }}>Date</span>
-              <span style={{ width: 110 }}>Clock in</span>
-              <span style={{ width: 90 }}>Hours</span>
-              <span style={{ width: 110 }}>Status</span>
-            </div>
-            {rows.map(r => {
-              const sm = attendanceStatusMeta(r.status);
-              return (
-                <div key={r.key} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
-                  {isOwner && (
-                    <span style={{ flex: 1.5, minWidth: 140, display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(r.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
-                        {peopleInitials(r.userName)}
-                      </div>
-                      <span style={{ fontWeight: 600 }}>{r.userName}</span>
-                    </span>
-                  )}
-                  <span style={{ width: 120 }}>{formatPeopleDate(r.date)}</span>
-                  <span style={{ width: 110 }}>{r.clockIn ? formatClockTime(r.clockIn) : "—"}</span>
-                  <span style={{ width: 90 }}>{r.hours ? `${r.hours.toFixed(1)}h` : "—"}</span>
-                  <span style={{ width: 110 }}><Badge soft={sm.soft} text={sm.text}>{r.status}</Badge></span>
-                </div>
-              );
-            })}
-          </>
-        )}
+
+      {isOwner && person && <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>{selectedUser.name} — {person.department}, {person.role}</div>}
+
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
+        {Object.entries(counts).filter(([, n]) => n > 0).map(([status, n]) => {
+          const sm = attendanceStatusMeta(status);
+          return <span key={status} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: sm.soft, border: `1px solid ${sm.text}` }} />
+            {status}: <strong>{n}</strong>
+          </span>;
+        })}
+        {Object.values(counts).every(n => n === 0) && <span style={{ color: COLORS.mute }}>No attendance data yet this month.</span>}
+      </div>
+
+      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+          {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 11, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
+          {weeks.flat().map((d, i) => {
+            if (d === null) return <div key={i} />;
+            const dateStr = toDateStr(viewYear, viewMonth, d);
+            const info = dayMap[dateStr] || {};
+            const isToday = dateStr === todayStr;
+            let bg = "#fff", fg = COLORS.text, border = COLORS.line, label = "";
+            if (info.dayOff) { bg = COLORS.cream; fg = COLORS.mute; label = "Off"; }
+            else if (info.future) { bg = "#fff"; fg = COLORS.line; }
+            else if (info.pending) { bg = "#fff"; fg = COLORS.mute; label = "Today"; }
+            else if (info.empty) { bg = "#fff"; fg = COLORS.mute; }
+            else if (info.status) {
+              const sm = attendanceStatusMeta(info.status);
+              bg = sm.soft; fg = sm.text; border = sm.text;
+              label = info.status === "In progress" ? "Active" : info.status;
+            }
+            return (
+              <div key={i} title={info.status ? `${info.status}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}` : (info.dayOff ? "Day off" : "")}
+                style={{
+                  aspectRatio: "1", borderRadius: 8, background: bg, color: fg,
+                  border: isToday ? `1.5px solid ${COLORS.ink}` : `1px solid ${border}`,
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2,
+                }}>
+                <span style={{ fontSize: 12, fontWeight: 700 }}>{d}</span>
+                {label && <span style={{ fontSize: 8.5, fontWeight: 600, textAlign: "center", lineHeight: 1 }}>{label}</span>}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -1795,7 +1821,7 @@ function AuthTab({ auth, setAuth, canEdit }) {
 /* ---------------------------------------------------------------- */
 /* Admin settings — Users tab                                         */
 /* ---------------------------------------------------------------- */
-function UsersTab({ user, users, addUserRequest, removeUser, groups }) {
+function UsersTab({ user, users, people, addUserRequest, removeUser, groups }) {
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({ email: "", name: "", role: "EMPLOYEE" });
   const isOwner = user.role === "OWNER";
@@ -1821,11 +1847,13 @@ function UsersTab({ user, users, addUserRequest, removeUser, groups }) {
         </div>
         {users.map((u, i) => {
           const meta = ROLE_META[u.role];
+          const person = personForUser(people, u.id);
           return (
             <div key={u.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
               <span style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name}</div>
                 <div style={{ fontSize: 11.5, color: COLORS.mute }}>{u.email}</div>
+                {person && <div style={{ fontSize: 11, color: COLORS.mute }}>{person.department} · {person.role}</div>}
               </span>
               <span style={{ width: 150 }}><Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge></span>
               <span style={{ width: 100 }}><Badge color={COLORS.success} soft={COLORS.successSoft} text={COLORS.success}>{u.status}</Badge></span>
@@ -2010,7 +2038,7 @@ function AdminSettings(props) {
         ))}
       </div>
       {tab === "auth" && <AuthTab auth={props.auth} setAuth={props.setAuth} canEdit={isOwner} />}
-      {tab === "users" && <UsersTab user={user} users={props.users} addUserRequest={props.addUserRequest} removeUser={props.removeUser} groups={props.groups} />}
+      {tab === "users" && <UsersTab user={user} users={props.users} people={props.people} addUserRequest={props.addUserRequest} removeUser={props.removeUser} groups={props.groups} />}
       {tab === "groups" && <GroupsTab user={user} groups={props.groups} addGroup={props.addGroup} />}
       {tab === "restrictions" && <RestrictionsTab user={user} groups={props.groups} restrictions={props.restrictions} setRestrictions={props.setRestrictions} />}
       {tab === "notif" && <NotifTab notif={props.notif} setNotif={props.setNotif} canEdit={isOwner} />}
@@ -2475,13 +2503,13 @@ export default function App() {
               {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
               {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
-              {page === "people-info" && <PeopleInfoPage user={user} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
-              {page === "time-tracking" && <TimeTrackingPage user={user} users={users} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
-              {page === "time-inout" && <TimeInOutPage user={user} users={users} timeEntries={timeEntries} />}
-              {page === "attendance" && <AttendancePage user={user} users={users} timeEntries={timeEntries} />}
+              {page === "people-info" && <PeopleInfoPage user={user} users={users} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
+              {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
+              {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} />}
+              {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} />}
               {page === "admin" && (
                 <AdminSettings
-                  user={user} auth={auth} setAuth={persistAuth} users={users} addUserRequest={addUserRequest} removeUser={removeUser}
+                  user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
                   groups={groups} addGroup={addGroup} restrictions={restrictions} setRestrictions={persistRestrictions}
                   notif={notif} setNotif={persistNotif}
                 />
