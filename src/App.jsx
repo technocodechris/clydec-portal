@@ -76,7 +76,7 @@ const ROLE_META = {
 import {
   watchAuth, login as fbLogin, logout as fbLogout, createUserAccount,
   requestPasswordReset as requestPasswordResetFor,
-  sget, sset, listCollection, setDocIn, addDocIn, updateDocIn, deleteDocIn,
+  sget, sset, listCollection, listCollectionWhere, setDocIn, addDocIn, updateDocIn, deleteDocIn,
   uploadFile, deleteFileFromStorage, db,
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
@@ -165,6 +165,12 @@ const SEED_RESTRICTIONS = {
 const SEED_PEOPLE_CONFIG = {
   departments: ["Engineering", "Design", "Creatives", "Data", "Product", "Marketing", "Sales", "Operations", "Finance", "HR"],
   employmentStatuses: ["Full-time", "Part-time", "Project-Based"],
+};
+const SEED_TIME_SETTINGS = {
+  workStartTime: "09:00",   // expected clock-in time (24h "HH:MM")
+  lateThresholdMinutes: 15, // grace period after workStartTime before "Late"
+  fullDayHours: 8,          // hours worked to count as a full "Present" day
+  halfDayHours: 4,          // hours worked to count as a "Half day"
 };
 
 /* ---------------------------------------------------------------- */
@@ -1220,31 +1226,303 @@ function ManagePeopleListModal({ title, items, placeholder, onAdd, onRemove, onC
   );
 }
 
-function TimeTrackingPage() {
+/* ---------------------------------------------------------------- */
+/* Time Tracking / Time in-out / Attendance — shared helpers          */
+/* ---------------------------------------------------------------- */
+function formatClockTime(ms) {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+function formatWorkedDuration(ms) {
+  if (ms == null || ms < 0) return "—";
+  const totalMinutes = Math.round(ms / 60000);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+function attendanceStatusMeta(status) {
+  if (status === "Present") return { soft: COLORS.successSoft, text: COLORS.success };
+  if (status === "Late") return { soft: COLORS.warningSoft, text: COLORS.warning };
+  if (status === "Half day") return { soft: COLORS.dataSoft, text: COLORS.dataText };
+  if (status === "In progress") return { soft: COLORS.goldSoft, text: "#6B4A1A" };
+  return { soft: COLORS.dangerSoft, text: COLORS.danger }; // "Incomplete"
+}
+// Groups raw clock-in/out entries into one attendance row per person per
+// day, then derives Present / Late / Half day / Incomplete from the
+// workspace's configurable attendance rules (time-settings).
+function computeDailyAttendance(entries, timeSettings) {
+  const ts = timeSettings || SEED_TIME_SETTINGS;
+  const groups = {};
+  entries.forEach(e => {
+    const k = `${e.userId}__${e.date}`;
+    if (!groups[k]) groups[k] = { key: k, userId: e.userId, userName: e.userName, date: e.date, entries: [] };
+    groups[k].entries.push(e);
+  });
+  const [wsH, wsM] = (ts.workStartTime || "09:00").split(":").map(Number);
+  return Object.values(groups).map(g => {
+    const sorted = [...g.entries].sort((a, b) => a.clockIn - b.clockIn);
+    const earliest = sorted[0].clockIn;
+    const stillOpen = sorted.some(e => !e.clockOut);
+    const latestOut = stillOpen ? null : Math.max(...sorted.map(e => e.clockOut));
+    const totalMs = sorted.reduce((sum, e) => sum + ((e.clockOut || Date.now()) - e.clockIn), 0);
+    const hours = totalMs / 3_600_000;
+    const expected = new Date(earliest);
+    expected.setHours(wsH || 0, (wsM || 0) + (ts.lateThresholdMinutes || 0), 0, 0);
+    const isLate = new Date(earliest) > expected;
+    let status;
+    if (stillOpen) status = "In progress";
+    else if (hours >= (ts.fullDayHours || 8)) status = isLate ? "Late" : "Present";
+    else if (hours >= (ts.halfDayHours || 4)) status = "Half day";
+    else status = "Incomplete";
+    return { ...g, clockIn: earliest, clockOut: latestOut, totalMs, hours, status, isLate };
+  }).sort((a, b) => b.date.localeCompare(a.date) || b.clockIn - a.clockIn);
+}
+
+function TimeTrackingPage({ user, users, timeEntries, timeSettings, clockIn, clockOut, setUserTimeTrackingEnabled, saveTimeSettings }) {
+  const isOwner = user.role === "OWNER";
+  const enabled = isOwner || !!user.timeTrackingEnabled;
+  const myOpenEntry = timeEntries.find(e => e.userId === user.id && !e.clockOut);
+  const [busy, setBusy] = useState(false);
+  const [, forceTick] = useState(0);
+
+  useEffect(() => {
+    if (!myOpenEntry) return;
+    const t = setInterval(() => forceTick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [myOpenEntry?.id]);
+
+  async function handleClockIn() {
+    setBusy(true);
+    try { await clockIn(); } catch (e) { /* toast already shown */ } finally { setBusy(false); }
+  }
+  async function handleClockOut() {
+    setBusy(true);
+    try { await clockOut(myOpenEntry.id); } catch (e) { /* toast already shown */ } finally { setBusy(false); }
+  }
+
+  const elapsedMs = myOpenEntry ? Date.now() - myOpenEntry.clockIn : 0;
+  const eligibleUsers = users.filter(u => u.role !== "CLIENT");
+  const activeNow = isOwner ? timeEntries.filter(e => !e.clockOut).sort((a, b) => a.clockIn - b.clockIn) : [];
+
+  return (
+    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 24 }}>
+        {!enabled ? (
+          <EmptyState icon={Timer} title="Time tracking isn't enabled for your account" body="Ask your workspace owner to turn this on for you from this page." />
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 12.5, color: COLORS.mute, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }}>
+                {myOpenEntry ? "Clocked in since" : "Status"}
+              </div>
+              <div className="cly-serif" style={{ fontSize: 24, marginTop: 4 }}>
+                {myOpenEntry ? formatClockTime(myOpenEntry.clockIn) : "Not clocked in"}
+              </div>
+              {myOpenEntry && (
+                <div className="cly-mono" style={{ fontSize: 13, color: COLORS.mute, marginTop: 4 }}>{formatWorkedDuration(elapsedMs)} elapsed</div>
+              )}
+            </div>
+            <button
+              disabled={busy}
+              onClick={myOpenEntry ? handleClockOut : handleClockIn}
+              className="cly-btn"
+              style={{ padding: "12px 26px", borderRadius: 10, fontWeight: 700, fontSize: 14, background: myOpenEntry ? COLORS.dangerSoft : COLORS.ink, color: myOpenEntry ? COLORS.danger : "#fff", opacity: busy ? 0.7 : 1 }}
+            >
+              {busy ? "…" : myOpenEntry ? "Clock out" : "Clock in"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {isOwner && (
+        <>
+          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Currently clocked in</div>
+            {activeNow.length === 0 ? (
+              <div style={{ color: COLORS.mute, fontSize: 13 }}>No one is clocked in right now.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {activeNow.map(e => (
+                  <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13.5 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(e.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
+                        {peopleInitials(e.userName)}
+                      </div>
+                      <span style={{ fontWeight: 600 }}>{e.userName}</span>
+                    </span>
+                    <span style={{ color: COLORS.mute }}>since {formatClockTime(e.clockIn)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Who can use time tracking</div>
+            <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14 }}>Clients never get this feature. Turn it on for anyone else who needs to clock in/out — everyone starts off without it.</div>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {eligibleUsers.map(u => {
+                const meta = ROLE_META[u.role];
+                return (
+                  <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${COLORS.line}` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontWeight: 600, fontSize: 13.5 }}>{u.name}</span>
+                      <Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge>
+                    </div>
+                    {u.role === "OWNER" ? (
+                      <span style={{ fontSize: 12, color: COLORS.mute }}>Always on</span>
+                    ) : (
+                      <Toggle checked={!!u.timeTrackingEnabled} onChange={(v) => setUserTimeTrackingEnabled(u.id, v)} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <TimeSettingsPanel timeSettings={timeSettings} saveTimeSettings={saveTimeSettings} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function TimeSettingsPanel({ timeSettings, saveTimeSettings }) {
+  const [form, setForm] = useState(timeSettings);
+  useEffect(() => { setForm(timeSettings); }, [timeSettings]);
+  const dirty = JSON.stringify(form) !== JSON.stringify(timeSettings);
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Attendance rules</div>
+      <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14 }}>These control how the Attendance page labels each day — Present, Late, or Half day.</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 480 }}>
+        <label style={{ fontSize: 12.5, fontWeight: 600 }}>Work start time
+          <input type="time" className="cly-input" value={form.workStartTime} onChange={e => setForm({ ...form, workStartTime: e.target.value })} style={{ ...inputStyle, marginTop: 5 }} />
+        </label>
+        <label style={{ fontSize: 12.5, fontWeight: 600 }}>Grace period (minutes)
+          <input type="number" min={0} className="cly-input" value={form.lateThresholdMinutes} onChange={e => setForm({ ...form, lateThresholdMinutes: Number(e.target.value) })} style={{ ...inputStyle, marginTop: 5 }} />
+        </label>
+        <label style={{ fontSize: 12.5, fontWeight: 600 }}>Full day hours
+          <input type="number" min={0} step={0.5} className="cly-input" value={form.fullDayHours} onChange={e => setForm({ ...form, fullDayHours: Number(e.target.value) })} style={{ ...inputStyle, marginTop: 5 }} />
+        </label>
+        <label style={{ fontSize: 12.5, fontWeight: 600 }}>Half day hours
+          <input type="number" min={0} step={0.5} className="cly-input" value={form.halfDayHours} onChange={e => setForm({ ...form, halfDayHours: Number(e.target.value) })} style={{ ...inputStyle, marginTop: 5 }} />
+        </label>
+      </div>
+      <button disabled={!dirty} onClick={() => saveTimeSettings(form)} className="cly-btn"
+        style={{ marginTop: 16, padding: "9px 18px", borderRadius: 8, fontWeight: 700, fontSize: 13, background: dirty ? COLORS.ink : COLORS.line, color: dirty ? "#fff" : COLORS.mute }}>
+        Save rules
+      </button>
+    </div>
+  );
+}
+
+function TimeInOutPage({ user, users, timeEntries }) {
+  const isOwner = user.role === "OWNER";
+  const [filterUser, setFilterUser] = useState("all");
+  const eligibleUsers = users.filter(u => u.role !== "CLIENT");
+
+  const visible = timeEntries
+    .filter(e => isOwner ? (filterUser === "all" || e.userId === filterUser) : e.userId === user.id)
+    .sort((a, b) => b.clockIn - a.clockIn);
+
   return (
     <div className="cly-fade-in" style={{ padding: 28 }}>
+      {isOwner && (
+        <div style={{ marginBottom: 16 }}>
+          <select value={filterUser} onChange={e => setFilterUser(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 220 }}>
+            <option value="all">All team members</option>
+            {eligibleUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+      )}
       <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
-        <EmptyState icon={Timer} title="No time tracking data yet" body="Live time-tracking sessions will appear here once this section is built out." />
+        {visible.length === 0 ? (
+          <EmptyState icon={Clock} title="No time logs yet" body="Clock-in and clock-out records will appear here once someone uses Time Tracking." />
+        ) : (
+          <>
+            <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
+              {isOwner && <span style={{ flex: 1.5, minWidth: 140 }}>Team member</span>}
+              <span style={{ width: 120 }}>Date</span>
+              <span style={{ width: 110 }}>Clock in</span>
+              <span style={{ width: 110 }}>Clock out</span>
+              <span style={{ width: 100 }}>Duration</span>
+            </div>
+            {visible.map(e => (
+              <div key={e.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+                {isOwner && (
+                  <span style={{ flex: 1.5, minWidth: 140, display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(e.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                      {peopleInitials(e.userName)}
+                    </div>
+                    <span style={{ fontWeight: 600 }}>{e.userName}</span>
+                  </span>
+                )}
+                <span style={{ width: 120 }}>{formatPeopleDate(e.date)}</span>
+                <span style={{ width: 110 }}>{formatClockTime(e.clockIn)}</span>
+                <span style={{ width: 110 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>In progress</span>}</span>
+                <span style={{ width: 100 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-function TimeInOutPage() {
-  return (
-    <div className="cly-fade-in" style={{ padding: 28 }}>
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
-        <EmptyState icon={Clock} title="No time logs yet" body="Clock-in and clock-out records will appear here once this section is built out." />
-      </div>
-    </div>
-  );
-}
+function AttendancePage({ user, users, timeEntries, timeSettings }) {
+  const isOwner = user.role === "OWNER";
+  const [filterUser, setFilterUser] = useState("all");
+  const eligibleUsers = users.filter(u => u.role !== "CLIENT");
 
-function AttendancePage() {
+  const scopedEntries = timeEntries.filter(e => isOwner ? (filterUser === "all" || e.userId === filterUser) : e.userId === user.id);
+  const rows = computeDailyAttendance(scopedEntries, timeSettings);
+
   return (
     <div className="cly-fade-in" style={{ padding: 28 }}>
+      {isOwner && (
+        <div style={{ marginBottom: 16 }}>
+          <select value={filterUser} onChange={e => setFilterUser(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 220 }}>
+            <option value="all">All team members</option>
+            {eligibleUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+      )}
       <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
-        <EmptyState icon={CalendarCheck} title="No attendance records yet" body="Daily attendance summaries will appear here once this section is built out." />
+        {rows.length === 0 ? (
+          <EmptyState icon={CalendarCheck} title="No attendance records yet" body="Attendance is calculated automatically from Time Tracking sessions — it'll fill in once people start clocking in." />
+        ) : (
+          <>
+            <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
+              {isOwner && <span style={{ flex: 1.5, minWidth: 140 }}>Team member</span>}
+              <span style={{ width: 120 }}>Date</span>
+              <span style={{ width: 110 }}>Clock in</span>
+              <span style={{ width: 90 }}>Hours</span>
+              <span style={{ width: 110 }}>Status</span>
+            </div>
+            {rows.map(r => {
+              const sm = attendanceStatusMeta(r.status);
+              return (
+                <div key={r.key} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+                  {isOwner && (
+                    <span style={{ flex: 1.5, minWidth: 140, display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(r.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                        {peopleInitials(r.userName)}
+                      </div>
+                      <span style={{ fontWeight: 600 }}>{r.userName}</span>
+                    </span>
+                  )}
+                  <span style={{ width: 120 }}>{formatPeopleDate(r.date)}</span>
+                  <span style={{ width: 110 }}>{formatClockTime(r.clockIn)}{r.isLate && r.status !== "In progress" ? " ⚠" : ""}</span>
+                  <span style={{ width: 90 }}>{r.hours.toFixed(1)}h</span>
+                  <span style={{ width: 110 }}><Badge soft={sm.soft} text={sm.text}>{r.status}</Badge></span>
+                </div>
+              );
+            })}
+          </>
+        )}
       </div>
     </div>
   );
@@ -1610,6 +1888,8 @@ export default function App() {
   const [files, setFiles] = useState([]);
   const [people, setPeople] = useState([]);
   const [peopleConfig, setPeopleConfig] = useState(SEED_PEOPLE_CONFIG);
+  const [timeEntries, setTimeEntries] = useState([]);
+  const [timeSettings, setTimeSettings] = useState(SEED_TIME_SETTINGS);
   const [requests, setRequests] = useState([]);
   const [auth, setAuth] = useState(SEED_AUTH);
   const [notif, setNotif] = useState(SEED_NOTIF);
@@ -1660,6 +1940,10 @@ export default function App() {
         { key: "files", run: () => listCollection("files"), fallback: [] },
         { key: "people", run: () => listCollection("people"), fallback: [] },
         { key: "peopleConfig", run: () => sget("people-config", SEED_PEOPLE_CONFIG), fallback: SEED_PEOPLE_CONFIG },
+        // Only the Owner can read every user's time entries (per firestore.rules);
+        // everyone else's query is scoped to their own uid so it isn't denied.
+        { key: "timeEntries", run: () => (user.role === "OWNER" ? listCollection("time-entries") : listCollectionWhere("time-entries", "userId", user.id)), fallback: [] },
+        { key: "timeSettings", run: () => sget("time-settings", SEED_TIME_SETTINGS), fallback: SEED_TIME_SETTINGS },
       ];
       const results = await Promise.allSettled(jobs.map(j => j.run()));
       const values = {};
@@ -1678,6 +1962,7 @@ export default function App() {
       setAuth(values.auth); setNotif(values.notif); setRestrictions(values.restrictions);
       setFiles([...values.files].sort((x, y) => y.uploadedAt - x.uploadedAt));
       setPeople(values.people); setPeopleConfig(values.peopleConfig);
+      setTimeEntries(values.timeEntries); setTimeSettings(values.timeSettings);
       if (failed.length) {
         // Most common cause: a Firestore security rule for one of these
         // collections hasn't been deployed yet (committing firestore.rules
@@ -1861,6 +2146,57 @@ export default function App() {
     setPeopleConfig(next);
     await sset("people-config", next);
   }
+  async function clockIn() {
+    const now = Date.now();
+    const entry = {
+      userId: user.id, userName: user.name,
+      date: new Date(now).toISOString().slice(0, 10),
+      clockIn: now, clockOut: null, createdAt: now,
+    };
+    try {
+      const id = await addDocIn("time-entries", entry);
+      setTimeEntries([{ id, ...entry }, ...timeEntries]);
+      notify("Clocked in.");
+    } catch (e) {
+      console.error("Failed to clock in:", e);
+      notify("Couldn't clock in — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function clockOut(entryId) {
+    const clockOutAt = Date.now();
+    try {
+      await updateDocIn("time-entries", entryId, { clockOut: clockOutAt });
+      setTimeEntries(timeEntries.map(e => e.id === entryId ? { ...e, clockOut: clockOutAt } : e));
+      notify("Clocked out.");
+    } catch (e) {
+      console.error("Failed to clock out:", e);
+      notify("Couldn't clock out — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function setUserTimeTrackingEnabled(userId, enabled) {
+    try {
+      await updateDocIn("users", userId, { timeTrackingEnabled: enabled });
+      setUsers(users.map(u => u.id === userId ? { ...u, timeTrackingEnabled: enabled } : u));
+      notify(enabled ? "Time tracking enabled for that user." : "Time tracking disabled for that user.");
+    } catch (e) {
+      console.error("Failed to update time-tracking access:", e);
+      notify("Couldn't update — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function saveTimeSettings(next) {
+    try {
+      await sset("time-settings", next);
+      setTimeSettings(next);
+      notify("Attendance rules saved.");
+    } catch (e) {
+      console.error("Failed to save attendance rules:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
   async function resolveRequest(id, status) {
     const req = requests.find(r => r.id === id);
     await updateDocIn("requests", id, { status });
@@ -1927,9 +2263,9 @@ export default function App() {
               {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
               {page === "people-info" && <PeopleInfoPage user={user} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
-              {page === "time-tracking" && <TimeTrackingPage />}
-              {page === "time-inout" && <TimeInOutPage />}
-              {page === "attendance" && <AttendancePage />}
+              {page === "time-tracking" && <TimeTrackingPage user={user} users={users} timeEntries={timeEntries} timeSettings={timeSettings} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveTimeSettings={saveTimeSettings} />}
+              {page === "time-inout" && <TimeInOutPage user={user} users={users} timeEntries={timeEntries} />}
+              {page === "attendance" && <AttendancePage user={user} users={users} timeEntries={timeEntries} timeSettings={timeSettings} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} addUserRequest={addUserRequest} removeUser={removeUser}

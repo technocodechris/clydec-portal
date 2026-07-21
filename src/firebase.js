@@ -15,7 +15,7 @@ import {
 } from "firebase/auth";
 import {
   getFirestore, doc, getDoc, setDoc, deleteDoc, collection,
-  getDocs, addDoc, updateDoc, deleteField,
+  getDocs, addDoc, updateDoc, deleteField, query, where,
 } from "firebase/firestore";
 import {
   getStorage, ref, uploadBytes, getDownloadURL, deleteObject,
@@ -82,6 +82,11 @@ export async function sset(key, value) {
 /* ---------------------------------------------------------------- */
 export async function listCollection(name) {
   const snap = await getDocs(collection(db, name));
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+export async function listCollectionWhere(name, field, value) {
+  const q = query(collection(db, name), where(field, "==", value));
+  const snap = await getDocs(q);
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 export async function setDocIn(collectionName, id, data) {
