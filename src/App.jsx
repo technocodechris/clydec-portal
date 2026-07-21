@@ -161,6 +161,10 @@ const SEED_RESTRICTIONS = {
   EMPLOYEE: [2, 0, 0, 0],
   CLIENT: [1, 0, 0, 0],
 };
+const SEED_PEOPLE_CONFIG = {
+  departments: ["Engineering", "Design", "Creatives", "Data", "Product", "Marketing", "Sales", "Operations", "Finance", "HR"],
+  employmentStatuses: ["Full-time", "Part-time", "Project-Based"],
+};
 
 /* ---------------------------------------------------------------- */
 /* Small shared UI                                                   */
@@ -307,9 +311,9 @@ function Sidebar({ user, page, setPage, pendingCount }) {
     { key: "admin", label: "Admin settings", icon: Settings, show: user.role === "OWNER" || user.role === "ADMIN" },
   ];
   const peopleItems = [
-    { key: "people-info", label: "People Information", icon: Smile, show: true },
-    { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: true },
-    { key: "attendance", label: "Attendance", icon: CalendarCheck, show: true },
+    { key: "people-info", label: "People Information", icon: Smile, show: user.role !== "CLIENT" },
+    { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: user.role !== "CLIENT" },
+    { key: "attendance", label: "Attendance", icon: CalendarCheck, show: user.role !== "CLIENT" },
   ];
   const [storageOpen, setStorageOpen] = useState(true);
   const [portalOpen, setPortalOpen] = useState(true);
@@ -893,13 +897,290 @@ function RequestsPage({ user, requests, resolveRequest }) {
 /* ---------------------------------------------------------------- */
 /* People Management pages                                           */
 /* ---------------------------------------------------------------- */
-function PeopleInfoPage() {
+function peopleColorFor(name) {
+  const palette = [COLORS.creative, COLORS.data, COLORS.warning, COLORS.success, "#6B4A6D", "#3B5C7A"];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return palette[Math.abs(hash) % palette.length];
+}
+function peopleInitials(name) {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase();
+}
+function formatPeopleDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso + "T00:00:00");
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+function peopleStatusMeta(status) {
+  if (status === "Active") return { soft: COLORS.successSoft, text: COLORS.success };
+  if (status === "On leave") return { soft: COLORS.warningSoft, text: COLORS.warning };
+  return { soft: COLORS.line, text: COLORS.mute };
+}
+const errorTextStyle = { color: COLORS.danger, fontSize: 11.5, marginTop: 4 };
+const manageLinkStyle = { background: "none", border: "none", color: COLORS.data, fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0 };
+
+const PEOPLE_EMPTY_FORM = { name: "", role: "", department: "", employmentStatus: "", email: "", phone: "", startDate: "", status: "Active" };
+const PEOPLE_STATUSES = ["Active", "On leave", "Inactive"];
+
+function PeopleInfoPage({ user, people, peopleConfig, addPerson, updatePerson, removePerson, savePeopleConfig }) {
+  const canManage = user.role === "OWNER" || user.role === "ADMIN";
+  const canManageLists = user.role === "OWNER"; // list config lives in "settings", which is owner-only elsewhere too
+  const departments = peopleConfig.departments || [];
+  const employmentStatuses = peopleConfig.employmentStatuses || [];
+
+  const [query, setQuery] = useState("");
+  const [deptFilter, setDeptFilter] = useState("All");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(PEOPLE_EMPTY_FORM);
+  const [errors, setErrors] = useState({});
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [manageList, setManageList] = useState(null); // "department" | "employmentStatus" | null
+
+  const filtered = people.filter(p => {
+    const q = query.toLowerCase();
+    const matchesQuery = p.name.toLowerCase().includes(q) || p.role.toLowerCase().includes(q) || p.email.toLowerCase().includes(q);
+    const matchesDept = deptFilter === "All" || p.department === deptFilter;
+    return matchesQuery && matchesDept;
+  });
+
+  function openAddModal() {
+    setForm({ ...PEOPLE_EMPTY_FORM, department: departments[0] || "", employmentStatus: employmentStatuses[0] || "" });
+    setErrors({}); setEditingId(null); setModalOpen(true);
+  }
+  function openEditModal(person) {
+    setForm({ ...person }); setErrors({}); setEditingId(person.id); setModalOpen(true);
+  }
+  function closeModal() { setModalOpen(false); setErrors({}); }
+
+  function validate(f) {
+    const e = {};
+    if (!f.name.trim()) e.name = "Enter a full name.";
+    if (!f.role.trim()) e.role = "Enter a job title.";
+    if (!f.department) e.department = "Select a department.";
+    if (!f.employmentStatus) e.employmentStatus = "Select an employment status.";
+    if (!f.email.trim()) e.email = "Enter an email address.";
+    else if (!/^\S+@\S+\.\S+$/.test(f.email)) e.email = "Enter a valid email address.";
+    if (!f.startDate) e.startDate = "Select a start date.";
+    return e;
+  }
+  function handleSubmit(ev) {
+    ev.preventDefault();
+    const e = validate(form);
+    setErrors(e);
+    if (Object.keys(e).length > 0) return;
+    if (editingId) updatePerson(editingId, form);
+    else addPerson(form);
+    setModalOpen(false);
+  }
+  function updateField(key, value) { setForm(f => ({ ...f, [key]: value })); }
+
+  function addOption(kind, value) {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const key = kind === "department" ? "departments" : "employmentStatuses";
+    const list = peopleConfig[key] || [];
+    if (list.some(x => x.toLowerCase() === trimmed.toLowerCase())) return;
+    savePeopleConfig({ ...peopleConfig, [key]: [...list, trimmed] });
+  }
+  function removeOption(kind, value) {
+    const key = kind === "department" ? "departments" : "employmentStatuses";
+    const list = peopleConfig[key] || [];
+    savePeopleConfig({ ...peopleConfig, [key]: list.filter(x => x !== value) });
+    if (kind === "department" && deptFilter === value) setDeptFilter("All");
+    if (kind === "department" && form.department === value) setForm(f => ({ ...f, department: "" }));
+    if (kind === "employmentStatus" && form.employmentStatus === value) setForm(f => ({ ...f, employmentStatus: "" }));
+  }
+
+  const deptCounts = departments.reduce((acc, d) => { acc[d] = people.filter(p => p.department === d).length; return acc; }, {});
+
   return (
     <div className="cly-fade-in" style={{ padding: 28 }}>
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
-        <EmptyState icon={Smile} title="No people records yet" body="Team member profiles and details will appear here once this section is built out." />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, flex: 1, minWidth: 280 }}>
+          <div style={{ position: "relative", flex: 1, maxWidth: 340 }}>
+            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: COLORS.mute }} />
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by name, role, or email"
+              style={{ ...inputStyle, padding: "8px 10px 8px 30px" }} />
+          </div>
+          <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "8px 10px" }}>
+            <option value="All">All departments</option>
+            {departments.map(d => <option key={d} value={d}>{d} ({deptCounts[d] || 0})</option>)}
+          </select>
+        </div>
+        {canManage && (
+          <button onClick={openAddModal} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.ink, color: "#fff", padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
+            <Plus size={14} /> Add person
+          </button>
+        )}
       </div>
+
+      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+        {filtered.length === 0 ? (
+          <EmptyState icon={Smile}
+            title={people.length === 0 ? "No people records yet" : "No matches found"}
+            body={people.length === 0
+              ? (canManage ? "Add your first team member to start building your people directory." : "Team member profiles and details will appear here once added.")
+              : "Try adjusting your search or department filter."} />
+        ) : (
+          <>
+            <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
+              <span style={{ flex: 2, minWidth: 160 }}>Name</span>
+              <span style={{ width: 120 }}>Department</span>
+              <span style={{ width: 120 }}>Employment</span>
+              <span style={{ flex: 1.5, minWidth: 160 }}>Email</span>
+              <span style={{ width: 130 }}>Phone</span>
+              <span style={{ width: 100 }}>Start date</span>
+              <span style={{ width: 90 }}>Status</span>
+              {canManage && <span style={{ width: 90 }}></span>}
+            </div>
+            {filtered.map(p => {
+              const sm = peopleStatusMeta(p.status);
+              return (
+                <div key={p.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+                  <span style={{ flex: 2, minWidth: 160, display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ width: 32, height: 32, borderRadius: "50%", background: peopleColorFor(p.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>
+                      {peopleInitials(p.name)}
+                    </div>
+                    <span style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                      <div style={{ fontSize: 11.5, color: COLORS.mute }}>{p.role}</div>
+                    </span>
+                  </span>
+                  <span style={{ width: 120 }}>{p.department}</span>
+                  <span style={{ width: 120 }}>{p.employmentStatus || "—"}</span>
+                  <span style={{ flex: 1.5, minWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.email}</span>
+                  <span style={{ width: 130 }}>{p.phone || "—"}</span>
+                  <span style={{ width: 100 }}>{formatPeopleDate(p.startDate)}</span>
+                  <span style={{ width: 90 }}><Badge soft={sm.soft} text={sm.text}>{p.status}</Badge></span>
+                  {canManage && (
+                    <span style={{ width: 90, display: "flex", gap: 8, alignItems: "center" }}>
+                      <button title="Edit" onClick={() => openEditModal(p)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><Settings size={14} /></button>
+                      {confirmDeleteId === p.id ? (
+                        <>
+                          <button title="Confirm" onClick={() => { removePerson(p.id); setConfirmDeleteId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 11, fontWeight: 700 }}>Confirm</button>
+                          <button title="Cancel" onClick={() => setConfirmDeleteId(null)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><X size={14} /></button>
+                        </>
+                      ) : (
+                        <button title="Remove" onClick={() => setConfirmDeleteId(p.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger }}><Trash2 size={15} /></button>
+                      )}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      {modalOpen && (
+        <Modal title={editingId ? "Edit person" : "Add person"} onClose={closeModal} width={560}>
+          <form onSubmit={handleSubmit} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <Field label="Full name"><input value={form.name} onChange={e => updateField("name", e.target.value)} placeholder="Juan Dela Cruz" style={inputStyle} /></Field>
+              {errors.name && <div style={errorTextStyle}>{errors.name}</div>}
+            </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <Field label="Job title"><input value={form.role} onChange={e => updateField("role", e.target.value)} placeholder="Senior Product Designer" style={inputStyle} /></Field>
+              {errors.role && <div style={errorTextStyle}>{errors.role}</div>}
+            </div>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}>Department</div>
+                {canManageLists && <button type="button" onClick={() => setManageList("department")} style={manageLinkStyle}>Manage</button>}
+              </div>
+              <select value={form.department} onChange={e => updateField("department", e.target.value)} style={inputStyle}>
+                <option value="" disabled>Select department</option>
+                {departments.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+              {errors.department && <div style={errorTextStyle}>{errors.department}</div>}
+            </div>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}>Employment status</div>
+                {canManageLists && <button type="button" onClick={() => setManageList("employmentStatus")} style={manageLinkStyle}>Manage</button>}
+              </div>
+              <select value={form.employmentStatus} onChange={e => updateField("employmentStatus", e.target.value)} style={inputStyle}>
+                <option value="" disabled>Select employment status</option>
+                {employmentStatuses.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              {errors.employmentStatus && <div style={errorTextStyle}>{errors.employmentStatus}</div>}
+            </div>
+            <Field label="Status">
+              <select value={form.status} onChange={e => updateField("status", e.target.value)} style={inputStyle}>
+                {PEOPLE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Field>
+            <div>
+              <Field label="Email"><input value={form.email} onChange={e => updateField("email", e.target.value)} placeholder="name@clydecstudio.com" style={inputStyle} /></Field>
+              {errors.email && <div style={errorTextStyle}>{errors.email}</div>}
+            </div>
+            <Field label="Phone"><input value={form.phone} onChange={e => updateField("phone", e.target.value)} placeholder="+63 917 000 0000" style={inputStyle} /></Field>
+            <div>
+              <Field label="Start date"><input type="date" value={form.startDate} onChange={e => updateField("startDate", e.target.value)} style={inputStyle} /></Field>
+              {errors.startDate && <div style={errorTextStyle}>{errors.startDate}</div>}
+            </div>
+            <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8, borderTop: `1px solid ${COLORS.line}`, paddingTop: 16 }}>
+              <button type="button" onClick={closeModal} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
+              <button type="submit" className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
+                {editingId ? "Save changes" : "Add person"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {manageList && (
+        <ManagePeopleListModal
+          title={manageList === "department" ? "Manage departments" : "Manage employment statuses"}
+          items={manageList === "department" ? departments : employmentStatuses}
+          placeholder={manageList === "department" ? "e.g. Legal" : "e.g. Contractual"}
+          onAdd={value => addOption(manageList, value)}
+          onRemove={value => removeOption(manageList, value)}
+          onClose={() => setManageList(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function ManagePeopleListModal({ title, items, placeholder, onAdd, onRemove, onClose }) {
+  const [value, setValue] = useState("");
+  const [pendingRemove, setPendingRemove] = useState(null);
+
+  function submit(e) {
+    e.preventDefault();
+    onAdd(value);
+    setValue("");
+  }
+
+  return (
+    <Modal title={title} onClose={onClose} width={420}>
+      <form onSubmit={submit} style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <input style={{ ...inputStyle, flex: 1 }} placeholder={placeholder} value={value} onChange={e => setValue(e.target.value)} />
+        <button type="submit" className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Add</button>
+      </form>
+      <div style={{ border: `1px solid ${COLORS.line}`, borderRadius: 10, maxHeight: 240, overflowY: "auto" }}>
+        {items.length === 0 && <p style={{ fontSize: 12.5, color: COLORS.mute, padding: "12px 14px", margin: 0 }}>No options yet. Add one above.</p>}
+        {items.map(item => (
+          <div key={item} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+            <span>{item}</span>
+            {pendingRemove === item ? (
+              <span style={{ display: "flex", gap: 8 }}>
+                <button type="button" onClick={() => { onRemove(item); setPendingRemove(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 12, fontWeight: 700 }}>Confirm</button>
+                <button type="button" onClick={() => setPendingRemove(null)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute, fontSize: 12 }}>Cancel</button>
+              </span>
+            ) : (
+              <button type="button" onClick={() => setPendingRemove(item)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 12, fontWeight: 600 }}>Remove</button>
+            )}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+        <button onClick={onClose} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>Done</button>
+      </div>
+    </Modal>
   );
 }
 
@@ -1240,10 +1521,10 @@ function SegButtons({ value, onChange, options, disabled }) {
 function Field({ label, children }) {
   return <label style={{ display: "block" }}><div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 5 }}>{label}</div>{children}</label>;
 }
-function Modal({ title, onClose, children }) {
+function Modal({ title, onClose, children, width = 360 }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(20,24,28,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} className="cly-fade-in" style={{ background: "#fff", borderRadius: 14, padding: 22, width: 360, boxShadow: "0 20px 50px rgba(0,0,0,0.2)" }}>
+      <div onClick={e => e.stopPropagation()} className="cly-fade-in" style={{ background: "#fff", borderRadius: 14, padding: 22, width, maxWidth: "92vw", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 50px rgba(0,0,0,0.2)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <div className="cly-serif" style={{ fontSize: 17 }}>{title}</div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><X size={17} /></button>
@@ -1270,6 +1551,8 @@ export default function App() {
   const [groups, setGroups] = useState(SEED_GROUPS);
   const [folders] = useState(SEED_FOLDERS);
   const [files, setFiles] = useState([]);
+  const [people, setPeople] = useState([]);
+  const [peopleConfig, setPeopleConfig] = useState(SEED_PEOPLE_CONFIG);
   const [requests, setRequests] = useState([]);
   const [auth, setAuth] = useState(SEED_AUTH);
   const [notif, setNotif] = useState(SEED_NOTIF);
@@ -1302,13 +1585,15 @@ export default function App() {
   // workspace data load (runs once; re-run per section as needed)
   useEffect(() => {
     (async () => {
-      const [u, g, r, a, n, res, fMeta] = await Promise.all([
+      const [u, g, r, a, n, res, fMeta, p, pc] = await Promise.all([
         listCollection("users"), listCollection("groups").then(g => g.length ? g : SEED_GROUPS),
         listCollection("requests"), sget("auth-settings", SEED_AUTH), sget("notif-settings", SEED_NOTIF),
         sget("restrictions", SEED_RESTRICTIONS), listCollection("files"),
+        listCollection("people"), sget("people-config", SEED_PEOPLE_CONFIG),
       ]);
       setUsers(u); setGroups(g); setRequests(r); setAuth(a); setNotif(n); setRestrictions(res);
       setFiles(fMeta.sort((x, y) => y.uploadedAt - x.uploadedAt));
+      setPeople(p); setPeopleConfig(pc);
       setReady(true);
     })();
   }, []);
@@ -1445,6 +1730,27 @@ export default function App() {
     persistRestrictions({ ...restrictions, [g.id]: [0, 0, 0, 0] });
     notify("Group created.");
   }
+  async function addPerson(form) {
+    const id = uid();
+    const record = { ...form, id, createdAt: Date.now() };
+    await setDocIn("people", id, record);
+    setPeople([...people, record]);
+    notify(`${form.name} added.`);
+  }
+  async function updatePerson(id, form) {
+    await updateDocIn("people", id, form);
+    setPeople(people.map(p => p.id === id ? { ...p, ...form } : p));
+    notify("Changes saved.");
+  }
+  async function removePerson(id) {
+    await deleteDocIn("people", id);
+    setPeople(people.filter(p => p.id !== id));
+    notify("Person removed.");
+  }
+  async function savePeopleConfig(next) {
+    setPeopleConfig(next);
+    await sset("people-config", next);
+  }
   async function resolveRequest(id, status) {
     const req = requests.find(r => r.id === id);
     await updateDocIn("requests", id, { status });
@@ -1508,7 +1814,7 @@ export default function App() {
               {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
               {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
-              {page === "people-info" && <PeopleInfoPage />}
+              {page === "people-info" && <PeopleInfoPage user={user} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
               {page === "time-inout" && <TimeInOutPage />}
               {page === "attendance" && <AttendancePage />}
               {page === "admin" && (
