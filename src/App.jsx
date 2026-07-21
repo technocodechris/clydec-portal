@@ -1582,21 +1582,35 @@ export default function App() {
     return unsub;
   }, []);
 
-  // workspace data load (runs once; re-run per section as needed)
+  // workspace data load — every collection here requires a signed-in user
+  // per firestore.rules, so this must wait for auth to resolve. Running it
+  // unconditionally on mount meant logged-out visitors always hit
+  // permission-denied errors, which left `ready` stuck false forever (blank
+  // spinner, no login screen). It also must never leave the app stuck if a
+  // fetch fails for any other reason, so `ready` is set in a finally block.
   useEffect(() => {
+    if (!authChecked) return; // wait until we know whether someone's signed in
+    if (!user) { setReady(true); return; } // nothing to load pre-login
+
     (async () => {
-      const [u, g, r, a, n, res, fMeta, p, pc] = await Promise.all([
-        listCollection("users"), listCollection("groups").then(g => g.length ? g : SEED_GROUPS),
-        listCollection("requests"), sget("auth-settings", SEED_AUTH), sget("notif-settings", SEED_NOTIF),
-        sget("restrictions", SEED_RESTRICTIONS), listCollection("files"),
-        listCollection("people"), sget("people-config", SEED_PEOPLE_CONFIG),
-      ]);
-      setUsers(u); setGroups(g); setRequests(r); setAuth(a); setNotif(n); setRestrictions(res);
-      setFiles(fMeta.sort((x, y) => y.uploadedAt - x.uploadedAt));
-      setPeople(p); setPeopleConfig(pc);
-      setReady(true);
+      try {
+        const [u, g, r, a, n, res, fMeta, p, pc] = await Promise.all([
+          listCollection("users"), listCollection("groups").then(g => g.length ? g : SEED_GROUPS),
+          listCollection("requests"), sget("auth-settings", SEED_AUTH), sget("notif-settings", SEED_NOTIF),
+          sget("restrictions", SEED_RESTRICTIONS), listCollection("files"),
+          listCollection("people"), sget("people-config", SEED_PEOPLE_CONFIG),
+        ]);
+        setUsers(u); setGroups(g); setRequests(r); setAuth(a); setNotif(n); setRestrictions(res);
+        setFiles(fMeta.sort((x, y) => y.uploadedAt - x.uploadedAt));
+        setPeople(p); setPeopleConfig(pc);
+      } catch (e) {
+        console.error("Failed to load workspace data:", e);
+        notify("Couldn't load workspace data — try refreshing.", "error");
+      } finally {
+        setReady(true);
+      }
     })();
-  }, []);
+  }, [authChecked, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function persistAuth(next) { setAuth(next); sset("auth-settings", next); }
   function persistNotif(next) { setNotif(next); sset("notif-settings", next); }
