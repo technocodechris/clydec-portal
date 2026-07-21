@@ -966,14 +966,19 @@ function PeopleInfoPage({ user, people, peopleConfig, addPerson, updatePerson, r
     if (!f.startDate) e.startDate = "Select a start date.";
     return e;
   }
-  function handleSubmit(ev) {
+  async function handleSubmit(ev) {
     ev.preventDefault();
     const e = validate(form);
     setErrors(e);
     if (Object.keys(e).length > 0) return;
-    if (editingId) updatePerson(editingId, form);
-    else addPerson(form);
-    setModalOpen(false);
+    try {
+      if (editingId) await updatePerson(editingId, form);
+      else await addPerson(form);
+      setModalOpen(false);
+    } catch (e) {
+      // addPerson/updatePerson already surfaced an error toast; keep the
+      // modal open so the user doesn't lose what they typed.
+    }
   }
   function updateField(key, value) { setForm(f => ({ ...f, [key]: value })); }
 
@@ -1605,22 +1610,43 @@ export default function App() {
     if (!user) { setReady(true); return; } // nothing to load pre-login
 
     (async () => {
-      try {
-        const [u, g, r, a, n, res, fMeta, p, pc] = await Promise.all([
-          listCollection("users"), listCollection("groups").then(g => g.length ? g : SEED_GROUPS),
-          listCollection("requests"), sget("auth-settings", SEED_AUTH), sget("notif-settings", SEED_NOTIF),
-          sget("restrictions", SEED_RESTRICTIONS), listCollection("files"),
-          listCollection("people"), sget("people-config", SEED_PEOPLE_CONFIG),
-        ]);
-        setUsers(u); setGroups(g); setRequests(r); setAuth(a); setNotif(n); setRestrictions(res);
-        setFiles(fMeta.sort((x, y) => y.uploadedAt - x.uploadedAt));
-        setPeople(p); setPeopleConfig(pc);
-      } catch (e) {
-        console.error("Failed to load workspace data:", e);
-        notify("Couldn't load workspace data — try refreshing.", "error");
-      } finally {
-        setReady(true);
+      const jobs = [
+        { key: "users", run: () => listCollection("users"), fallback: [] },
+        { key: "groups", run: () => listCollection("groups").then(g => g.length ? g : SEED_GROUPS), fallback: SEED_GROUPS },
+        { key: "requests", run: () => listCollection("requests"), fallback: [] },
+        { key: "auth", run: () => sget("auth-settings", SEED_AUTH), fallback: SEED_AUTH },
+        { key: "notif", run: () => sget("notif-settings", SEED_NOTIF), fallback: SEED_NOTIF },
+        { key: "restrictions", run: () => sget("restrictions", SEED_RESTRICTIONS), fallback: SEED_RESTRICTIONS },
+        { key: "files", run: () => listCollection("files"), fallback: [] },
+        { key: "people", run: () => listCollection("people"), fallback: [] },
+        { key: "peopleConfig", run: () => sget("people-config", SEED_PEOPLE_CONFIG), fallback: SEED_PEOPLE_CONFIG },
+      ];
+      const results = await Promise.allSettled(jobs.map(j => j.run()));
+      const values = {};
+      const failed = [];
+      results.forEach((r, i) => {
+        const { key, fallback } = jobs[i];
+        if (r.status === "fulfilled") {
+          values[key] = r.value;
+        } else {
+          values[key] = fallback;
+          failed.push(key);
+          console.error(`Failed to load "${key}":`, r.reason);
+        }
+      });
+      setUsers(values.users); setGroups(values.groups); setRequests(values.requests);
+      setAuth(values.auth); setNotif(values.notif); setRestrictions(values.restrictions);
+      setFiles([...values.files].sort((x, y) => y.uploadedAt - x.uploadedAt));
+      setPeople(values.people); setPeopleConfig(values.peopleConfig);
+      if (failed.length) {
+        // Most common cause: a Firestore security rule for one of these
+        // collections hasn't been deployed yet (committing firestore.rules
+        // to GitHub does NOT push it — run `firebase deploy --only
+        // firestore:rules` from the terminal). Check the browser console
+        // for the exact collection and error code.
+        notify(`Some data didn't load (${failed.join(", ")}) — check console for details.`, "error");
       }
+      setReady(true);
     })();
   }, [authChecked, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1759,19 +1785,37 @@ export default function App() {
   async function addPerson(form) {
     const id = uid();
     const record = { ...form, id, createdAt: Date.now() };
-    await setDocIn("people", id, record);
-    setPeople([...people, record]);
-    notify(`${form.name} added.`);
+    try {
+      await setDocIn("people", id, record);
+      setPeople([...people, record]);
+      notify(`${form.name} added.`);
+    } catch (e) {
+      console.error("Failed to add person:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e; // let the form know it failed so it can keep the modal open
+    }
   }
   async function updatePerson(id, form) {
-    await updateDocIn("people", id, form);
-    setPeople(people.map(p => p.id === id ? { ...p, ...form } : p));
-    notify("Changes saved.");
+    try {
+      await updateDocIn("people", id, form);
+      setPeople(people.map(p => p.id === id ? { ...p, ...form } : p));
+      notify("Changes saved.");
+    } catch (e) {
+      console.error("Failed to update person:", e);
+      notify("Couldn't save changes — check your connection or permissions and try again.", "error");
+      throw e;
+    }
   }
   async function removePerson(id) {
-    await deleteDocIn("people", id);
-    setPeople(people.filter(p => p.id !== id));
-    notify("Person removed.");
+    try {
+      await deleteDocIn("people", id);
+      setPeople(people.filter(p => p.id !== id));
+      notify("Person removed.");
+    } catch (e) {
+      console.error("Failed to remove person:", e);
+      notify("Couldn't remove — check your connection or permissions and try again.", "error");
+      throw e;
+    }
   }
   async function savePeopleConfig(next) {
     setPeopleConfig(next);
