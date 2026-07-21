@@ -41,12 +41,5 @@ service cloud.firestore {
       allow create, delete: if signedIn() && myRole() != 'CLIENT';
       allow update: if isAdminOrOwner();
     }
-
-    // People directory: internal staff records, not visible to clients.
-    // Only the owner/admins can add, edit, or remove entries.
-    match /people/{personId} {
-      allow read: if signedIn() && myRole() != 'CLIENT';
-      allow write: if isAdminOrOwner();
-    }
   }
 }
