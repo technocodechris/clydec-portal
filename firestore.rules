@@ -54,7 +54,7 @@ service cloud.firestore {
     // this feature at all, enforced both here and in the UI.
     match /time-entries/{entryId} {
       allow read: if signedIn() && (resource.data.userId == request.auth.uid || isOwner());
-      allow create: if signedIn() && myRole() != 'CLIENT' && request.resource.data.userId == request.auth.uid;
+      allow create: if signedIn() && myRole() != 'CLIENT' && (request.resource.data.userId == request.auth.uid || isOwner());
       allow update: if signedIn() && (resource.data.userId == request.auth.uid || isOwner());
       allow delete: if isOwner();
     }
