@@ -102,6 +102,16 @@ export async function updateDocIn(collectionName, id, data) {
 export async function deleteDocFieldIn(collectionName, id, fieldPath) {
   await updateDoc(doc(db, collectionName, id), { [fieldPath]: deleteField() });
 }
+// Sets or clears several "attendanceOverrides.<date>" keys on one user doc
+// in a single write. Pass status: null for a given date to clear that
+// override instead of setting it.
+export async function setUserAttendanceOverridesBulk(userId, dateStatusPairs) {
+  const patch = {};
+  dateStatusPairs.forEach(([dateStr, status]) => {
+    patch[`attendanceOverrides.${dateStr}`] = status === null ? deleteField() : status;
+  });
+  await updateDoc(doc(db, "users", userId), patch);
+}
 export async function deleteDocIn(collectionName, id) {
   await deleteDoc(doc(db, collectionName, id));
 }

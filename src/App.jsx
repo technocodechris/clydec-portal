@@ -76,7 +76,7 @@ const ROLE_META = {
 import {
   watchAuth, login as fbLogin, logout as fbLogout, createUserAccount,
   requestPasswordReset as requestPasswordResetFor,
-  sget, sset, listCollection, listCollectionWhere, setDocIn, addDocIn, updateDocIn, deleteDocIn, deleteDocFieldIn,
+  sget, sset, listCollection, listCollectionWhere, setDocIn, addDocIn, updateDocIn, deleteDocIn, deleteDocFieldIn, setUserAttendanceOverridesBulk,
   uploadFile, deleteFileFromStorage, db,
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
@@ -1659,6 +1659,13 @@ function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
 // against that person's own scheduled work start/end time. Early arrival
 // isn't credited as extra work time — it's purely informational — so this
 // never touches the Duration column, it just adds context alongside it.
+//
+// Undertime is the shortfall against the *full scheduled shift* (schedEnd -
+// schedStart), not just "clocked out before schedEnd" — a late arrival
+// eats into that shift the same way an early departure does, so both ends
+// of the actual session are weighed against both ends of the schedule.
+// Overtime is purely extra time worked past the scheduled end, and can
+// occur alongside undertime (e.g. arrived late, then also stayed late).
 function computeEntryTimingFlags(entry, ruleUser) {
   if (!ruleUser) return { earlyMs: 0, undertimeMs: 0, overtimeMs: 0 };
   const rules = getAttendanceRules(ruleUser);
@@ -1666,11 +1673,16 @@ function computeEntryTimingFlags(entry, ruleUser) {
   const [eh, em] = rules.workEndTime.split(":").map(Number);
   const schedStart = new Date(entry.clockIn); schedStart.setHours(sh || 0, sm || 0, 0, 0);
   const schedEnd = new Date(entry.clockIn); schedEnd.setHours(eh || 0, em || 0, 0, 0);
-  const earlyMs = entry.clockIn < schedStart.getTime() ? schedStart.getTime() - entry.clockIn : 0;
+  const schedStartMs = schedStart.getTime(), schedEndMs = schedEnd.getTime();
+  const earlyMs = entry.clockIn < schedStartMs ? schedStartMs - entry.clockIn : 0;
   let undertimeMs = 0, overtimeMs = 0;
   if (entry.clockOut) {
-    if (entry.clockOut < schedEnd.getTime()) undertimeMs = schedEnd.getTime() - entry.clockOut;
-    else if (entry.clockOut > schedEnd.getTime()) overtimeMs = entry.clockOut - schedEnd.getTime();
+    const scheduledShiftMs = Math.max(0, schedEndMs - schedStartMs);
+    const effStart = Math.max(entry.clockIn, schedStartMs);   // early arrival doesn't count
+    const effEnd = Math.min(entry.clockOut, schedEndMs);       // time past schedEnd is overtime, not "shift" time
+    const effectiveWorkedMs = Math.max(0, effEnd - effStart);
+    undertimeMs = Math.max(0, scheduledShiftMs - effectiveWorkedMs);
+    if (entry.clockOut > schedEndMs) overtimeMs = entry.clockOut - schedEndMs;
   }
   return { earlyMs, undertimeMs, overtimeMs };
 }
@@ -2018,23 +2030,25 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
         {visible.length === 0 ? (
           <EmptyState icon={Clock} title="No time logs yet" body="Clock-in and clock-out records will appear here once someone uses Time Tracking." />
         ) : (
-          <>
-            <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
-              {isOwner && <span style={{ flex: 1.5, minWidth: 140 }}>Team member</span>}
-              <span style={{ width: 120 }}>Date</span>
-              <span style={{ width: 110 }}>Clock in</span>
-              <span style={{ width: 110 }}>Clock out</span>
-              <span style={{ width: 100 }}>Duration</span>
-              {isOwner && <span style={{ width: 32 }}></span>}
-            </div>
-            {visible.map(e => {
-              const person = personForUser(people, e.userId);
-              const entryUser = users.find(u => u.id === e.userId);
-              const flags = computeEntryTimingFlags(e, entryUser);
-              const hasFlags = flags.earlyMs >= 60000 || flags.undertimeMs >= 60000 || flags.overtimeMs >= 60000;
-              return (
-                <div key={e.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
-                  <div className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", fontSize: 13 }}>
+          <div style={{ overflowX: "auto" }}>
+            <div style={{ minWidth: isOwner ? 1060 : 760 }}>
+              <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
+                {isOwner && <span style={{ flex: 1.5, minWidth: 140 }}>Team member</span>}
+                <span style={{ width: 110 }}>Date</span>
+                <span style={{ width: 100 }}>Clock in</span>
+                <span style={{ width: 100 }}>Clock out</span>
+                <span style={{ width: 90 }}>Duration</span>
+                <span style={{ width: 90 }}>Early in</span>
+                <span style={{ width: 100 }}>Undertime</span>
+                <span style={{ width: 100 }}>Overtime</span>
+                {isOwner && <span style={{ width: 32 }}></span>}
+              </div>
+              {visible.map(e => {
+                const person = personForUser(people, e.userId);
+                const entryUser = users.find(u => u.id === e.userId);
+                const flags = computeEntryTimingFlags(e, entryUser);
+                return (
+                  <div key={e.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
                     {isOwner && (
                       <span style={{ flex: 1.5, minWidth: 140, display: "flex", alignItems: "center", gap: 10 }}>
                         <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(e.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
@@ -2046,10 +2060,19 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
                         </span>
                       </span>
                     )}
-                    <span style={{ width: 120 }}>{formatPeopleDate(e.date)}</span>
-                    <span style={{ width: 110 }}>{formatClockTime(e.clockIn)}</span>
-                    <span style={{ width: 110 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>In progress</span>}</span>
-                    <span style={{ width: 100 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
+                    <span style={{ width: 110 }}>{formatPeopleDate(e.date)}</span>
+                    <span style={{ width: 100 }}>{formatClockTime(e.clockIn)}</span>
+                    <span style={{ width: 100 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>In progress</span>}</span>
+                    <span style={{ width: 90 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
+                    <span style={{ width: 90, color: flags.earlyMs >= 60000 ? COLORS.dataText : COLORS.mute, fontWeight: flags.earlyMs >= 60000 ? 700 : 400 }}>
+                      {flags.earlyMs >= 60000 ? formatWorkedDuration(flags.earlyMs) : "—"}
+                    </span>
+                    <span style={{ width: 100, color: flags.undertimeMs >= 60000 ? COLORS.warning : COLORS.mute, fontWeight: flags.undertimeMs >= 60000 ? 700 : 400 }}>
+                      {flags.undertimeMs >= 60000 ? formatWorkedDuration(flags.undertimeMs) : "—"}
+                    </span>
+                    <span style={{ width: 100, color: flags.overtimeMs >= 60000 ? "#6B4A1A" : COLORS.mute, fontWeight: flags.overtimeMs >= 60000 ? 700 : 400 }}>
+                      {flags.overtimeMs >= 60000 ? formatWorkedDuration(flags.overtimeMs) : "—"}
+                    </span>
                     {isOwner && (
                       <span style={{ width: 32, textAlign: "right" }}>
                         <button title="Edit for correction" onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}>
@@ -2058,17 +2081,10 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
                       </span>
                     )}
                   </div>
-                  {hasFlags && (
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: `0 16px 10px ${isOwner ? 54 : 16}px` }}>
-                      {flags.earlyMs >= 60000 && <Badge color={COLORS.data} soft={COLORS.dataSoft} text={COLORS.dataText}>Early in {formatWorkedDuration(flags.earlyMs)}</Badge>}
-                      {flags.undertimeMs >= 60000 && <Badge color={COLORS.warning} soft={COLORS.warningSoft} text={COLORS.warning}>Undertime {formatWorkedDuration(flags.undertimeMs)}</Badge>}
-                      {flags.overtimeMs >= 60000 && <Badge color={COLORS.gold} soft={COLORS.goldSoft} text={"#6B4A1A"}>Overtime {formatWorkedDuration(flags.overtimeMs)}</Badge>}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
 
@@ -2085,7 +2101,7 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
   );
 }
 
-function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEntry, createTimeEntry, deleteTimeEntry, setDayStatusOverride, clearDayStatusOverride }) {
+function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEntry, createTimeEntry, deleteTimeEntry, setDayStatusOverride, clearDayStatusOverride, applyBulkDayStatus }) {
   const isOwner = user.role === "OWNER";
   const eligibleUsers = users.filter(u => u.role !== "CLIENT");
   const [filterGroup, setFilterGroup] = useState("all");
@@ -2101,6 +2117,34 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
   // that's showing as Absent).
   const [correctingDate, setCorrectingDate] = useState(null);
   const [editingEntry, setEditingEntry] = useState(null); // "new" | an entry object
+  // Owner-only bulk mode: select several days at once and apply one Day
+  // type to all of them in a single action (e.g. marking a whole week as
+  // Holiday Off).
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedDates, setSelectedDates] = useState([]); // array of "YYYY-MM-DD"
+  const [bulkStatus, setBulkStatus] = useState("Holiday Off");
+  const [bulkSaving, setBulkSaving] = useState(false);
+
+  function toggleBulkMode() {
+    setBulkMode(m => !m);
+    setSelectedDates([]);
+  }
+  function toggleDateSelected(dateStr) {
+    setSelectedDates(prev => prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr]);
+  }
+  async function applyBulkSelection() {
+    if (selectedDates.length === 0) return;
+    setBulkSaving(true);
+    try {
+      await applyBulkDayStatus(selectedUser.id, selectedDates, bulkStatus);
+      setSelectedDates([]);
+      setBulkMode(false);
+    } catch (e) {
+      // parent already showed a toast; keep selection so they can retry
+    } finally {
+      setBulkSaving(false);
+    }
+  }
 
   // If narrowing to a group drops the currently-selected person, fall back
   // to the first person in that group.
@@ -2143,6 +2187,9 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
                 return <option key={u.id} value={u.id}>{u.name}{u.role === "OWNER" ? " (You)" : ""}{p ? ` — ${p.department}` : ""}</option>;
               })}
             </select>
+            <button onClick={toggleBulkMode} className="cly-btn" style={{ background: bulkMode ? COLORS.ink : "#fff", color: bulkMode ? "#fff" : COLORS.text, border: `1px solid ${bulkMode ? COLORS.ink : COLORS.line}`, borderRadius: 8, padding: "0 14px", fontSize: 13, fontWeight: 600 }}>
+              {bulkMode ? "Cancel selection" : "Select multiple days"}
+            </button>
           </div>
         ) : (
           <div style={{ fontSize: 14, fontWeight: 700 }}>My attendance{person ? ` · ${person.department}, ${person.role}` : ""}</div>
@@ -2154,7 +2201,11 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
         </div>
       </div>
 
-      {isOwner && person && <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>{selectedUser.name} — {person.department}, {person.role}{isOwner && " · click a day to add or correct a session"}</div>}
+      {isOwner && person && (
+        <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
+          {selectedUser.name} — {person.department}, {person.role} · {bulkMode ? "click days to select them, then apply a day type below" : "click a day to add or correct a session"}
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
         {Object.entries(counts).filter(([, n]) => n > 0).map(([status, n]) => {
@@ -2176,6 +2227,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             const info = dayMap[dateStr] || {};
             const isToday = dateStr === todayStr;
             const clickable = isOwner && !info.future;
+            const isSelected = bulkMode && selectedDates.includes(dateStr);
             let bg = "#fff", fg = COLORS.text, border = COLORS.line, label = "";
             if (info.dayOff) { bg = COLORS.cream; fg = COLORS.mute; label = info.manualLabel || "Off"; }
             else if (info.future) { bg = "#fff"; fg = COLORS.line; }
@@ -2187,14 +2239,17 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
               label = info.status === "In progress" ? "Active" : info.status;
             }
             return (
-              <div key={i} onClick={clickable ? () => { setCorrectingDate(dateStr); setEditingEntry(null); } : undefined}
-                title={info.status ? `${info.status}${info.manual ? " (manually set)" : ""}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}` : (info.dayOff ? (info.manualLabel || "Day off") : (clickable ? "Click to add or correct a session" : ""))}
+              <div key={i}
+                onClick={clickable ? () => { if (bulkMode) { toggleDateSelected(dateStr); } else { setCorrectingDate(dateStr); setEditingEntry(null); } } : undefined}
+                title={info.status ? `${info.status}${info.manual ? " (manually set)" : ""}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}` : (info.dayOff ? (info.manualLabel || "Day off") : (clickable ? (bulkMode ? "Click to select" : "Click to add or correct a session") : ""))}
                 style={{
-                  aspectRatio: "1", borderRadius: 6, background: bg, color: fg,
-                  border: isToday ? `1.5px solid ${COLORS.ink}` : info.manual ? `1.5px dashed ${COLORS.gold}` : `1px solid ${border}`,
+                  position: "relative", aspectRatio: "1", borderRadius: 6, background: bg, color: fg,
+                  border: isSelected ? `2px solid ${COLORS.data}` : isToday ? `1.5px solid ${COLORS.ink}` : info.manual ? `1.5px dashed ${COLORS.gold}` : `1px solid ${border}`,
+                  boxShadow: isSelected ? `0 0 0 2px ${COLORS.dataSoft}` : "none",
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1,
                   cursor: clickable ? "pointer" : "default",
                 }}>
+                {isSelected && <CheckCircle2 size={12} style={{ position: "absolute", top: 3, right: 3, color: COLORS.data }} />}
                 <span style={{ fontSize: 11.5, fontWeight: 700 }}>{d}</span>
                 {label && <span style={{ fontSize: 7.5, fontWeight: 600, textAlign: "center", lineHeight: 1 }}>{label}</span>}
               </div>
@@ -2203,7 +2258,35 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
         </div>
       </div>
 
-      {isOwner && correctingDate && !editingEntry && (
+      {bulkMode && (
+        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>
+            {selectedDates.length === 0 ? "No days selected yet" : `${selectedDates.length} day${selectedDates.length !== 1 ? "s" : ""} selected`}
+          </span>
+          <select value={bulkStatus} onChange={e => setBulkStatus(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "8px 10px" }}>
+            <option value="Half Day">Half Day</option>
+            <option value="Off">Off</option>
+            <option value="Restday">Restday</option>
+            <option value="Holiday Off">Holiday Off</option>
+            <option value="Present">Present (clear override)</option>
+          </select>
+          <button
+            disabled={selectedDates.length === 0 || bulkSaving}
+            onClick={applyBulkSelection}
+            className="cly-btn"
+            style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, opacity: (selectedDates.length === 0 || bulkSaving) ? 0.5 : 1 }}
+          >
+            {bulkSaving ? "Applying…" : `Apply to ${selectedDates.length || ""} day${selectedDates.length !== 1 ? "s" : ""}`}
+          </button>
+          {selectedDates.length > 0 && (
+            <button onClick={() => setSelectedDates([])} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 13, fontWeight: 600 }}>
+              Clear selection
+            </button>
+          )}
+        </div>
+      )}
+
+      {isOwner && !bulkMode && correctingDate && !editingEntry && (
         <Modal title={`${formatPeopleDate(correctingDate)} — ${selectedUser.name}`} onClose={() => setCorrectingDate(null)} width={380}>
           <div style={{ display: "grid", gap: 14 }}>
             <Field label="Day type">
@@ -2245,7 +2328,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
         </Modal>
       )}
 
-      {isOwner && correctingDate && editingEntry && (
+      {isOwner && !bulkMode && correctingDate && editingEntry && (
         <TimeEntryEditModal
           entry={editingEntry === "new" ? null : editingEntry}
           userId={selectedUser.id}
@@ -2711,15 +2794,21 @@ export default function App() {
     if (!user) { setReady(true); return; } // nothing to load pre-login
 
     (async () => {
+      const canReadRequests = user.role === "OWNER" || user.role === "ADMIN";
+      const canReadPeople = user.role !== "CLIENT";
       const jobs = [
         { key: "users", run: () => listCollection("users"), fallback: [] },
         { key: "groups", run: () => listCollection("groups").then(g => g.length ? g : SEED_GROUPS), fallback: SEED_GROUPS },
-        { key: "requests", run: () => listCollection("requests"), fallback: [] },
+        // requests/{id} is Admin/Owner-only per firestore.rules — querying it
+        // as anyone else is a guaranteed permission-denied, so skip the call
+        // entirely rather than let it fail and show a "data didn't load" banner.
+        { key: "requests", run: () => canReadRequests ? listCollection("requests") : Promise.resolve([]), fallback: [] },
         { key: "auth", run: () => sget("auth-settings", SEED_AUTH), fallback: SEED_AUTH },
         { key: "notif", run: () => sget("notif-settings", SEED_NOTIF), fallback: SEED_NOTIF },
         { key: "restrictions", run: () => sget("restrictions", SEED_RESTRICTIONS), fallback: SEED_RESTRICTIONS },
         { key: "files", run: () => listCollection("files"), fallback: [] },
-        { key: "people", run: () => listCollection("people"), fallback: [] },
+        // people/{id} is hidden from CLIENT per firestore.rules — same reasoning.
+        { key: "people", run: () => canReadPeople ? listCollection("people") : Promise.resolve([]), fallback: [] },
         { key: "peopleConfig", run: () => sget("people-config", SEED_PEOPLE_CONFIG), fallback: SEED_PEOPLE_CONFIG },
         // Only the Owner can read every user's time entries (per firestore.rules);
         // everyone else's query is scoped to their own uid so it isn't denied.
@@ -3053,6 +3142,25 @@ export default function App() {
       throw e;
     }
   }
+  // Attendance page's "Select multiple days" bulk action: apply one Day
+  // type to every selected date for a person in a single write.
+  async function applyBulkDayStatus(userId, dateStrs, status) {
+    try {
+      const pairs = dateStrs.map(d => [d, status === "Present" ? null : status]);
+      await setUserAttendanceOverridesBulk(userId, pairs);
+      setUsers(users.map(u => {
+        if (u.id !== userId) return u;
+        const next = { ...(u.attendanceOverrides || {}) };
+        dateStrs.forEach(d => { if (status === "Present") delete next[d]; else next[d] = status; });
+        return { ...u, attendanceOverrides: next };
+      }));
+      notify(`${dateStrs.length} day${dateStrs.length !== 1 ? "s" : ""} set to ${status}.`);
+    } catch (e) {
+      console.error("Failed to bulk-update day status:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
   async function setUserTimeTrackingEnabled(userId, enabled) {
     try {
       await updateDocIn("users", userId, { timeTrackingEnabled: enabled });
@@ -3148,7 +3256,7 @@ export default function App() {
               {page === "org-chart" && <OrgChartPage user={user} people={people} updatePerson={updatePerson} />}
               {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
-              {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} />}
+              {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
