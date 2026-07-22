@@ -76,7 +76,7 @@ const ROLE_META = {
 import {
   watchAuth, login as fbLogin, logout as fbLogout, createUserAccount,
   requestPasswordReset as requestPasswordResetFor,
-  sget, sset, listCollection, listCollectionWhere, setDocIn, addDocIn, updateDocIn, deleteDocIn,
+  sget, sset, listCollection, listCollectionWhere, setDocIn, addDocIn, updateDocIn, deleteDocIn, deleteDocFieldIn,
   uploadFile, deleteFileFromStorage, db,
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
@@ -1637,7 +1637,42 @@ function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
     else status = isLate ? "Late" : leftEarly ? "Left early" : "Present";
     result[dateStr] = { status, hours, clockIn: earliest, clockOut: latestOut, isLate };
   }
+  // Owner-set manual overrides (from the Attendance calendar's "Day type"
+  // picker) win over whatever the raw entries computed above. "Present" is
+  // never stored as an override — picking it just clears any override so
+  // the day goes back to following its recorded sessions, which keeps this
+  // calendar and the Time in/out table always in sync.
+  const overrides = u.attendanceOverrides || {};
+  Object.entries(overrides).forEach(([dateStr, label]) => {
+    const [oy, om] = dateStr.split("-").map(Number);
+    if (oy !== year || (om - 1) !== month) return;
+    if (label === "Half Day") {
+      result[dateStr] = { ...(result[dateStr] || {}), status: "Half day", manual: true, future: false };
+    } else {
+      // "Off", "Restday", "Holiday Off"
+      result[dateStr] = { dayOff: true, manual: true, manualLabel: label === "Holiday Off" ? "Holiday" : label };
+    }
+  });
   return result;
+}
+// Early-in / undertime / overtime for a single Time in/out row, measured
+// against that person's own scheduled work start/end time. Early arrival
+// isn't credited as extra work time — it's purely informational — so this
+// never touches the Duration column, it just adds context alongside it.
+function computeEntryTimingFlags(entry, ruleUser) {
+  if (!ruleUser) return { earlyMs: 0, undertimeMs: 0, overtimeMs: 0 };
+  const rules = getAttendanceRules(ruleUser);
+  const [sh, sm] = rules.workStartTime.split(":").map(Number);
+  const [eh, em] = rules.workEndTime.split(":").map(Number);
+  const schedStart = new Date(entry.clockIn); schedStart.setHours(sh || 0, sm || 0, 0, 0);
+  const schedEnd = new Date(entry.clockIn); schedEnd.setHours(eh || 0, em || 0, 0, 0);
+  const earlyMs = entry.clockIn < schedStart.getTime() ? schedStart.getTime() - entry.clockIn : 0;
+  let undertimeMs = 0, overtimeMs = 0;
+  if (entry.clockOut) {
+    if (entry.clockOut < schedEnd.getTime()) undertimeMs = schedEnd.getTime() - entry.clockOut;
+    else if (entry.clockOut > schedEnd.getTime()) overtimeMs = entry.clockOut - schedEnd.getTime();
+  }
+  return { earlyMs, undertimeMs, overtimeMs };
 }
 
 
@@ -1994,29 +2029,41 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
             </div>
             {visible.map(e => {
               const person = personForUser(people, e.userId);
+              const entryUser = users.find(u => u.id === e.userId);
+              const flags = computeEntryTimingFlags(e, entryUser);
+              const hasFlags = flags.earlyMs >= 60000 || flags.undertimeMs >= 60000 || flags.overtimeMs >= 60000;
               return (
-                <div key={e.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
-                  {isOwner && (
-                    <span style={{ flex: 1.5, minWidth: 140, display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(e.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
-                        {peopleInitials(e.userName)}
-                      </div>
-                      <span style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.userName}</div>
-                        {person && <div style={{ fontSize: 10.5, color: COLORS.mute }}>{person.department}</div>}
+                <div key={e.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                  <div className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", fontSize: 13 }}>
+                    {isOwner && (
+                      <span style={{ flex: 1.5, minWidth: 140, display: "flex", alignItems: "center", gap: 10 }}>
+                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(e.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                          {peopleInitials(e.userName)}
+                        </div>
+                        <span style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.userName}</div>
+                          {person && <div style={{ fontSize: 10.5, color: COLORS.mute }}>{person.department}</div>}
+                        </span>
                       </span>
-                    </span>
-                  )}
-                  <span style={{ width: 120 }}>{formatPeopleDate(e.date)}</span>
-                  <span style={{ width: 110 }}>{formatClockTime(e.clockIn)}</span>
-                  <span style={{ width: 110 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>In progress</span>}</span>
-                  <span style={{ width: 100 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
-                  {isOwner && (
-                    <span style={{ width: 32, textAlign: "right" }}>
-                      <button title="Edit for correction" onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}>
-                        <Pencil size={14} />
-                      </button>
-                    </span>
+                    )}
+                    <span style={{ width: 120 }}>{formatPeopleDate(e.date)}</span>
+                    <span style={{ width: 110 }}>{formatClockTime(e.clockIn)}</span>
+                    <span style={{ width: 110 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>In progress</span>}</span>
+                    <span style={{ width: 100 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
+                    {isOwner && (
+                      <span style={{ width: 32, textAlign: "right" }}>
+                        <button title="Edit for correction" onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}>
+                          <Pencil size={14} />
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                  {hasFlags && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: `0 16px 10px ${isOwner ? 54 : 16}px` }}>
+                      {flags.earlyMs >= 60000 && <Badge color={COLORS.data} soft={COLORS.dataSoft} text={COLORS.dataText}>Early in {formatWorkedDuration(flags.earlyMs)}</Badge>}
+                      {flags.undertimeMs >= 60000 && <Badge color={COLORS.warning} soft={COLORS.warningSoft} text={COLORS.warning}>Undertime {formatWorkedDuration(flags.undertimeMs)}</Badge>}
+                      {flags.overtimeMs >= 60000 && <Badge color={COLORS.gold} soft={COLORS.goldSoft} text={"#6B4A1A"}>Overtime {formatWorkedDuration(flags.overtimeMs)}</Badge>}
+                    </div>
                   )}
                 </div>
               );
@@ -2038,7 +2085,7 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
   );
 }
 
-function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEntry, createTimeEntry, deleteTimeEntry }) {
+function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEntry, createTimeEntry, deleteTimeEntry, setDayStatusOverride, clearDayStatusOverride }) {
   const isOwner = user.role === "OWNER";
   const eligibleUsers = users.filter(u => u.role !== "CLIENT");
   const [filterGroup, setFilterGroup] = useState("all");
@@ -2130,7 +2177,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             const isToday = dateStr === todayStr;
             const clickable = isOwner && !info.future;
             let bg = "#fff", fg = COLORS.text, border = COLORS.line, label = "";
-            if (info.dayOff) { bg = COLORS.cream; fg = COLORS.mute; label = "Off"; }
+            if (info.dayOff) { bg = COLORS.cream; fg = COLORS.mute; label = info.manualLabel || "Off"; }
             else if (info.future) { bg = "#fff"; fg = COLORS.line; }
             else if (info.pending) { bg = "#fff"; fg = COLORS.mute; label = "Today"; }
             else if (info.empty) { bg = "#fff"; fg = COLORS.mute; }
@@ -2141,10 +2188,10 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             }
             return (
               <div key={i} onClick={clickable ? () => { setCorrectingDate(dateStr); setEditingEntry(null); } : undefined}
-                title={info.status ? `${info.status}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}` : (info.dayOff ? "Day off" : (clickable ? "Click to add or correct a session" : ""))}
+                title={info.status ? `${info.status}${info.manual ? " (manually set)" : ""}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}` : (info.dayOff ? (info.manualLabel || "Day off") : (clickable ? "Click to add or correct a session" : ""))}
                 style={{
                   aspectRatio: "1", borderRadius: 6, background: bg, color: fg,
-                  border: isToday ? `1.5px solid ${COLORS.ink}` : `1px solid ${border}`,
+                  border: isToday ? `1.5px solid ${COLORS.ink}` : info.manual ? `1.5px dashed ${COLORS.gold}` : `1px solid ${border}`,
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1,
                   cursor: clickable ? "pointer" : "default",
                 }}>
@@ -2158,14 +2205,39 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
 
       {isOwner && correctingDate && !editingEntry && (
         <Modal title={`${formatPeopleDate(correctingDate)} — ${selectedUser.name}`} onClose={() => setCorrectingDate(null)} width={380}>
-          <div style={{ display: "grid", gap: 10 }}>
-            {dayEntries.length === 0 && <div style={{ fontSize: 13, color: COLORS.mute }}>No clock-in/out sessions recorded for this day.</div>}
-            {dayEntries.map(e => (
-              <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "8px 12px" }}>
-                <span style={{ fontSize: 13 }}>{formatClockTime(e.clockIn)} – {e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>in progress</span>}</span>
-                <button onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><Pencil size={14} /></button>
+          <div style={{ display: "grid", gap: 14 }}>
+            <Field label="Day type">
+              <select
+                value={selectedUser.attendanceOverrides?.[correctingDate] || "Present"}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (v === "Present") clearDayStatusOverride(selectedUser.id, correctingDate);
+                  else setDayStatusOverride(selectedUser.id, correctingDate, v);
+                }}
+                style={{ ...inputStyle, padding: "9px 10px" }}
+              >
+                <option value="Present">Present (follow recorded sessions)</option>
+                <option value="Half Day">Half Day</option>
+                <option value="Off">Off</option>
+                <option value="Restday">Restday</option>
+                <option value="Holiday Off">Holiday Off</option>
+              </select>
+              <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 5 }}>
+                Choosing anything but "Present" marks the day directly and overrides whatever the sessions below would otherwise compute. Switch back to "Present" any time to go back to following the recorded sessions.
               </div>
-            ))}
+            </Field>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Recorded sessions</div>
+              {dayEntries.length === 0 && <div style={{ fontSize: 13, color: COLORS.mute }}>No clock-in/out sessions recorded for this day.</div>}
+              <div style={{ display: "grid", gap: 8 }}>
+                {dayEntries.map(e => (
+                  <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "8px 12px" }}>
+                    <span style={{ fontSize: 13 }}>{formatClockTime(e.clockIn)} – {e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>in progress</span>}</span>
+                    <button onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><Pencil size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
             <button onClick={() => setEditingEntry("new")} className="cly-btn" style={{ background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 600 }}>
               + Add session
             </button>
@@ -2948,6 +3020,39 @@ export default function App() {
       throw e;
     }
   }
+  // Owner-only "Day type" picker on the Attendance calendar. Setting one of
+  // Half Day / Off / Restday / Holiday Off stores a manual override that
+  // wins over whatever the recorded sessions would otherwise compute.
+  // Picking "Present" clears the override instead of storing it, so the day
+  // goes back to following its actual clock-in/out entries — which keeps
+  // this calendar and the Time in/out table always in agreement.
+  async function setDayStatusOverride(userId, dateStr, status) {
+    try {
+      await updateDocIn("users", userId, { [`attendanceOverrides.${dateStr}`]: status });
+      setUsers(users.map(u => u.id === userId ? { ...u, attendanceOverrides: { ...(u.attendanceOverrides || {}), [dateStr]: status } } : u));
+      notify(`Day marked as ${status}.`);
+    } catch (e) {
+      console.error("Failed to set day status override:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function clearDayStatusOverride(userId, dateStr) {
+    try {
+      await deleteDocFieldIn("users", userId, `attendanceOverrides.${dateStr}`);
+      setUsers(users.map(u => {
+        if (u.id !== userId || !u.attendanceOverrides || !(dateStr in u.attendanceOverrides)) return u;
+        const next = { ...u.attendanceOverrides };
+        delete next[dateStr];
+        return { ...u, attendanceOverrides: next };
+      }));
+      notify("Back to following recorded sessions for that day.");
+    } catch (e) {
+      console.error("Failed to clear day status override:", e);
+      notify("Couldn't update — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
   async function setUserTimeTrackingEnabled(userId, enabled) {
     try {
       await updateDocIn("users", userId, { timeTrackingEnabled: enabled });
@@ -3043,7 +3148,7 @@ export default function App() {
               {page === "org-chart" && <OrgChartPage user={user} people={people} updatePerson={updatePerson} />}
               {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
-              {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
+              {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
