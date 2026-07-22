@@ -99,6 +99,9 @@ export async function addDocIn(collectionName, data) {
 export async function updateDocIn(collectionName, id, data) {
   await updateDoc(doc(db, collectionName, id), data);
 }
+export async function deleteDocFieldIn(collectionName, id, fieldPath) {
+  await updateDoc(doc(db, collectionName, id), { [fieldPath]: deleteField() });
+}
 export async function deleteDocIn(collectionName, id) {
   await deleteDoc(doc(db, collectionName, id));
 }
