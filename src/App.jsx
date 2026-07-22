@@ -1988,9 +1988,9 @@ function AttendancePage({ user, users, people, timeEntries }) {
         {Object.values(counts).every(n => n === 0) && <span style={{ color: COLORS.mute }}>No attendance data yet this month.</span>}
       </div>
 
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
-          {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 11, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
+      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20, display: "flex", justifyContent: "center" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, width: "100%", maxWidth: 380 }}>
+          {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
           {weeks.flat().map((d, i) => {
             if (d === null) return <div key={i} />;
             const dateStr = toDateStr(viewYear, viewMonth, d);
@@ -2009,12 +2009,12 @@ function AttendancePage({ user, users, people, timeEntries }) {
             return (
               <div key={i} title={info.status ? `${info.status}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}` : (info.dayOff ? "Day off" : "")}
                 style={{
-                  aspectRatio: "1", borderRadius: 8, background: bg, color: fg,
+                  aspectRatio: "1", borderRadius: 6, background: bg, color: fg,
                   border: isToday ? `1.5px solid ${COLORS.ink}` : `1px solid ${border}`,
-                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2,
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1,
                 }}>
-                <span style={{ fontSize: 12, fontWeight: 700 }}>{d}</span>
-                {label && <span style={{ fontSize: 8.5, fontWeight: 600, textAlign: "center", lineHeight: 1 }}>{label}</span>}
+                <span style={{ fontSize: 11.5, fontWeight: 700 }}>{d}</span>
+                {label && <span style={{ fontSize: 7.5, fontWeight: 600, textAlign: "center", lineHeight: 1 }}>{label}</span>}
               </div>
             );
           })}
