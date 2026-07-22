@@ -48,5 +48,15 @@ service cloud.firestore {
       allow read: if signedIn() && myRole() != 'CLIENT';
       allow write: if isAdminOrOwner();
     }
+
+    // Time-tracking entries (clock in/out sessions). Everyone manages their
+    // own; only the owner can read or edit anyone else's. Clients never use
+    // this feature at all, enforced both here and in the UI.
+    match /time-entries/{entryId} {
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isOwner());
+      allow create: if signedIn() && myRole() != 'CLIENT' && request.resource.data.userId == request.auth.uid;
+      allow update: if signedIn() && (resource.data.userId == request.auth.uid || isOwner());
+      allow delete: if isOwner();
+    }
   }
 }
