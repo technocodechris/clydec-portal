@@ -6,7 +6,7 @@ import {
   ChevronDown, Search, FileText, Settings, UserPlus, AlertCircle,
   Loader2, Building2, KeyRound, Image as ImageIcon, File as FileIcon,
   ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
-  Database, Smile, CalendarCheck, Timer, Network, LayoutGrid,
+  Database, Smile, CalendarCheck, Timer, Network, LayoutGrid, Pencil,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------- */
@@ -1517,6 +1517,19 @@ function formatClockTime(ms) {
   if (!ms) return "—";
   return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
+// datetime-local inputs work in the browser's local time, so we shift by the
+// timezone offset before/after going to/from an epoch-ms timestamp.
+function tsToLocalInputValue(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const off = d.getTimezoneOffset() * 60000;
+  return new Date(ts - off).toISOString().slice(0, 16);
+}
+function localInputValueToTs(v) {
+  if (!v) return null;
+  const t = new Date(v).getTime();
+  return isNaN(t) ? null : t;
+}
 function formatWorkedDuration(ms) {
   if (ms == null || ms < 0) return "—";
   const totalMinutes = Math.round(ms / 60000);
@@ -1868,22 +1881,98 @@ function AttendanceRulesEditor({ user, onSave }) {
   );
 }
 
-function TimeInOutPage({ user, users, people, timeEntries }) {
+// Shared modal for correcting a clock-in/out session (Owner only). Used both
+// to edit an existing time-entries doc from the Time in/out table, and to
+// add/edit a session for a specific day+person from the Attendance calendar
+// (e.g. filling in a day that's showing "Absent" because of a missed punch).
+function TimeEntryEditModal({ entry, userId, userName, defaultDate, onSave, onCreate, onDelete, onClose }) {
+  const [clockInVal, setClockInVal] = useState(entry ? tsToLocalInputValue(entry.clockIn) : (defaultDate ? `${defaultDate}T09:00` : ""));
+  const [clockOutVal, setClockOutVal] = useState(entry ? tsToLocalInputValue(entry.clockOut) : "");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setError("");
+    const clockIn = localInputValueToTs(clockInVal);
+    if (!clockIn) { setError("Clock-in time is required."); return; }
+    const clockOut = clockOutVal ? localInputValueToTs(clockOutVal) : null;
+    if (clockOut && clockOut <= clockIn) { setError("Clock-out must be after clock-in."); return; }
+    const date = new Date(clockIn).toISOString().slice(0, 10);
+    setSaving(true);
+    try {
+      if (entry) await onSave(entry.id, { clockIn, clockOut, date });
+      else await onCreate({ userId, userName, clockIn, clockOut, date });
+      onClose();
+    } catch (e) {
+      setSaving(false); // parent already showed a toast; keep the modal open to retry
+    }
+  }
+
+  async function handleDelete() {
+    setSaving(true);
+    try {
+      await onDelete(entry.id);
+      onClose();
+    } catch (e) {
+      setSaving(false);
+    }
+  }
+
+  const canDelete = !!(entry && onDelete);
+
+  return (
+    <Modal title={entry ? "Edit time entry" : "Add time entry"} onClose={onClose} width={380}>
+      <div style={{ display: "grid", gap: 12 }}>
+        {userName && <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -4 }}>{userName}</div>}
+        <Field label="Clock in"><input type="datetime-local" value={clockInVal} onChange={e => setClockInVal(e.target.value)} style={inputStyle} /></Field>
+        <Field label="Clock out (leave blank if still in progress)"><input type="datetime-local" value={clockOutVal} onChange={e => setClockOutVal(e.target.value)} style={inputStyle} /></Field>
+        {error && <div style={{ fontSize: 12.5, color: COLORS.danger }}>{error}</div>}
+        <div style={{ display: "flex", justifyContent: canDelete ? "space-between" : "flex-end", gap: 8, marginTop: 4 }}>
+          {canDelete && (
+            <button disabled={saving} onClick={handleDelete} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.dangerSoft}`, color: COLORS.danger, padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
+              Delete entry
+            </button>
+          )}
+          <button disabled={saving} onClick={handleSave} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEntry, deleteTimeEntry }) {
   const isOwner = user.role === "OWNER";
   const [filterUser, setFilterUser] = useState("all");
+  const [filterGroup, setFilterGroup] = useState("all");
+  const [editingEntry, setEditingEntry] = useState(null);
   const eligibleUsers = users.filter(u => u.role !== "CLIENT");
+  const groupOptions = groups.filter(g => eligibleUsers.some(u => u.role === g.id));
 
   const visible = timeEntries
-    .filter(e => isOwner ? (filterUser === "all" || e.userId === filterUser) : e.userId === user.id)
+    .filter(e => {
+      if (!isOwner) return e.userId === user.id;
+      if (filterUser !== "all" && e.userId !== filterUser) return false;
+      if (filterGroup !== "all") {
+        const eu = users.find(u => u.id === e.userId);
+        if (!eu || eu.role !== filterGroup) return false;
+      }
+      return true;
+    })
     .sort((a, b) => b.clockIn - a.clockIn);
 
   return (
     <div className="cly-fade-in" style={{ padding: 28 }}>
       {isOwner && (
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <select value={filterGroup} onChange={e => { setFilterGroup(e.target.value); setFilterUser("all"); }} style={{ ...inputStyle, width: "auto", minWidth: 160 }}>
+            <option value="all">All groups</option>
+            {groupOptions.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
           <select value={filterUser} onChange={e => setFilterUser(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 220 }}>
             <option value="all">All team members</option>
-            {eligibleUsers.map(u => {
+            {eligibleUsers.filter(u => filterGroup === "all" || u.role === filterGroup).map(u => {
               const person = personForUser(people, u.id);
               return <option key={u.id} value={u.id}>{u.name}{person ? ` — ${person.department}` : ""}</option>;
             })}
@@ -1901,6 +1990,7 @@ function TimeInOutPage({ user, users, people, timeEntries }) {
               <span style={{ width: 110 }}>Clock in</span>
               <span style={{ width: 110 }}>Clock out</span>
               <span style={{ width: 100 }}>Duration</span>
+              {isOwner && <span style={{ width: 32 }}></span>}
             </div>
             {visible.map(e => {
               const person = personForUser(people, e.userId);
@@ -1921,24 +2011,58 @@ function TimeInOutPage({ user, users, people, timeEntries }) {
                   <span style={{ width: 110 }}>{formatClockTime(e.clockIn)}</span>
                   <span style={{ width: 110 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>In progress</span>}</span>
                   <span style={{ width: 100 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
+                  {isOwner && (
+                    <span style={{ width: 32, textAlign: "right" }}>
+                      <button title="Edit for correction" onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}>
+                        <Pencil size={14} />
+                      </button>
+                    </span>
+                  )}
                 </div>
               );
             })}
           </>
         )}
       </div>
+
+      {editingEntry && (
+        <TimeEntryEditModal
+          entry={editingEntry}
+          userName={editingEntry.userName}
+          onSave={updateTimeEntry}
+          onDelete={deleteTimeEntry}
+          onClose={() => setEditingEntry(null)}
+        />
+      )}
     </div>
   );
 }
 
-function AttendancePage({ user, users, people, timeEntries }) {
+function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEntry, createTimeEntry, deleteTimeEntry }) {
   const isOwner = user.role === "OWNER";
   const eligibleUsers = users.filter(u => u.role !== "CLIENT");
+  const [filterGroup, setFilterGroup] = useState("all");
+  const groupOptions = groups.filter(g => eligibleUsers.some(u => u.role === g.id));
+  const filteredUsers = filterGroup === "all" ? eligibleUsers : eligibleUsers.filter(u => u.role === filterGroup);
   const [selectedId, setSelectedId] = useState(isOwner ? (eligibleUsers.find(u => u.id !== user.id)?.id || user.id) : user.id);
   const [today] = useState(new Date());
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
   const todayStr = today.toISOString().slice(0, 10);
+  // Owner-only "correct this day" flow: click a day cell to see its
+  // clock-in/out sessions and edit, delete, or add one (e.g. a missed punch
+  // that's showing as Absent).
+  const [correctingDate, setCorrectingDate] = useState(null);
+  const [editingEntry, setEditingEntry] = useState(null); // "new" | an entry object
+
+  // If narrowing to a group drops the currently-selected person, fall back
+  // to the first person in that group.
+  useEffect(() => {
+    if (isOwner && !filteredUsers.some(u => u.id === selectedId)) {
+      setSelectedId(filteredUsers[0]?.id || user.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterGroup]);
 
   const selectedUser = eligibleUsers.find(u => u.id === selectedId) || user;
   const person = personForUser(people, selectedUser.id);
@@ -1955,16 +2079,24 @@ function AttendancePage({ user, users, people, timeEntries }) {
   const counts = { Present: 0, Late: 0, "Half day": 0, Absent: 0, "Left early": 0 };
   Object.values(dayMap).forEach(v => { if (v.status && counts[v.status] !== undefined) counts[v.status]++; });
 
+  const dayEntries = correctingDate ? monthEntries.filter(e => e.date === correctingDate).sort((a, b) => a.clockIn - b.clockIn) : [];
+
   return (
     <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         {isOwner ? (
-          <select value={selectedId} onChange={e => setSelectedId(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 240 }}>
-            {eligibleUsers.map(u => {
-              const p = personForUser(people, u.id);
-              return <option key={u.id} value={u.id}>{u.name}{u.role === "OWNER" ? " (You)" : ""}{p ? ` — ${p.department}` : ""}</option>;
-            })}
-          </select>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <select value={filterGroup} onChange={e => setFilterGroup(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 150 }}>
+              <option value="all">All groups</option>
+              {groupOptions.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+            <select value={selectedId} onChange={e => setSelectedId(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 220 }}>
+              {filteredUsers.map(u => {
+                const p = personForUser(people, u.id);
+                return <option key={u.id} value={u.id}>{u.name}{u.role === "OWNER" ? " (You)" : ""}{p ? ` — ${p.department}` : ""}</option>;
+              })}
+            </select>
+          </div>
         ) : (
           <div style={{ fontSize: 14, fontWeight: 700 }}>My attendance{person ? ` · ${person.department}, ${person.role}` : ""}</div>
         )}
@@ -1975,7 +2107,7 @@ function AttendancePage({ user, users, people, timeEntries }) {
         </div>
       </div>
 
-      {isOwner && person && <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>{selectedUser.name} — {person.department}, {person.role}</div>}
+      {isOwner && person && <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>{selectedUser.name} — {person.department}, {person.role}{isOwner && " · click a day to add or correct a session"}</div>}
 
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
         {Object.entries(counts).filter(([, n]) => n > 0).map(([status, n]) => {
@@ -1996,6 +2128,7 @@ function AttendancePage({ user, users, people, timeEntries }) {
             const dateStr = toDateStr(viewYear, viewMonth, d);
             const info = dayMap[dateStr] || {};
             const isToday = dateStr === todayStr;
+            const clickable = isOwner && !info.future;
             let bg = "#fff", fg = COLORS.text, border = COLORS.line, label = "";
             if (info.dayOff) { bg = COLORS.cream; fg = COLORS.mute; label = "Off"; }
             else if (info.future) { bg = "#fff"; fg = COLORS.line; }
@@ -2007,11 +2140,13 @@ function AttendancePage({ user, users, people, timeEntries }) {
               label = info.status === "In progress" ? "Active" : info.status;
             }
             return (
-              <div key={i} title={info.status ? `${info.status}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}` : (info.dayOff ? "Day off" : "")}
+              <div key={i} onClick={clickable ? () => { setCorrectingDate(dateStr); setEditingEntry(null); } : undefined}
+                title={info.status ? `${info.status}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}` : (info.dayOff ? "Day off" : (clickable ? "Click to add or correct a session" : ""))}
                 style={{
                   aspectRatio: "1", borderRadius: 6, background: bg, color: fg,
                   border: isToday ? `1.5px solid ${COLORS.ink}` : `1px solid ${border}`,
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1,
+                  cursor: clickable ? "pointer" : "default",
                 }}>
                 <span style={{ fontSize: 11.5, fontWeight: 700 }}>{d}</span>
                 {label && <span style={{ fontSize: 7.5, fontWeight: 600, textAlign: "center", lineHeight: 1 }}>{label}</span>}
@@ -2020,6 +2155,36 @@ function AttendancePage({ user, users, people, timeEntries }) {
           })}
         </div>
       </div>
+
+      {isOwner && correctingDate && !editingEntry && (
+        <Modal title={`${formatPeopleDate(correctingDate)} — ${selectedUser.name}`} onClose={() => setCorrectingDate(null)} width={380}>
+          <div style={{ display: "grid", gap: 10 }}>
+            {dayEntries.length === 0 && <div style={{ fontSize: 13, color: COLORS.mute }}>No clock-in/out sessions recorded for this day.</div>}
+            {dayEntries.map(e => (
+              <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "8px 12px" }}>
+                <span style={{ fontSize: 13 }}>{formatClockTime(e.clockIn)} – {e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>in progress</span>}</span>
+                <button onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><Pencil size={14} /></button>
+              </div>
+            ))}
+            <button onClick={() => setEditingEntry("new")} className="cly-btn" style={{ background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 600 }}>
+              + Add session
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {isOwner && correctingDate && editingEntry && (
+        <TimeEntryEditModal
+          entry={editingEntry === "new" ? null : editingEntry}
+          userId={selectedUser.id}
+          userName={selectedUser.name}
+          defaultDate={correctingDate}
+          onSave={updateTimeEntry}
+          onCreate={createTimeEntry}
+          onDelete={editingEntry === "new" ? undefined : deleteTimeEntry}
+          onClose={() => setEditingEntry(null)}
+        />
+      )}
     </div>
   );
 }
@@ -2076,10 +2241,15 @@ function AuthTab({ auth, setAuth, canEdit }) {
 /* ---------------------------------------------------------------- */
 /* Admin settings — Users tab                                         */
 /* ---------------------------------------------------------------- */
-function UsersTab({ user, users, people, addUserRequest, removeUser, groups }) {
+function UsersTab({ user, users, people, addUserRequest, removeUser, groups, updateUserRole, requestRoleChange }) {
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({ email: "", name: "", role: "EMPLOYEE" });
   const isOwner = user.role === "OWNER";
+  // Admins can't change a role directly (only the owner can write to the
+  // users collection) — instead they pick a new group here, which opens a
+  // small confirm step that files a role_change request for the owner.
+  const [roleRequest, setRoleRequest] = useState(null); // { targetUser, newRole } | null
+  const assignableGroups = groups.filter(g => g.id !== "OWNER");
 
   function submit(e) {
     e.preventDefault();
@@ -2098,11 +2268,12 @@ function UsersTab({ user, users, people, addUserRequest, removeUser, groups }) {
       </div>
       <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
         <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
-          <span style={{ flex: 1 }}>Name</span><span style={{ width: 150 }}>Role</span><span style={{ width: 100 }}>Status</span><span style={{ width: 50 }}></span>
+          <span style={{ flex: 1 }}>Name</span><span style={{ width: 170 }}>Role</span><span style={{ width: 100 }}>Status</span><span style={{ width: 50 }}></span>
         </div>
         {users.map((u, i) => {
           const meta = ROLE_META[u.role];
           const person = personForUser(people, u.id);
+          const editable = u.role !== "OWNER"; // the OWNER role is a singleton and never reassigned
           return (
             <div key={u.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
               <span style={{ flex: 1, minWidth: 0 }}>
@@ -2110,7 +2281,27 @@ function UsersTab({ user, users, people, addUserRequest, removeUser, groups }) {
                 <div style={{ fontSize: 11.5, color: COLORS.mute }}>{u.email}</div>
                 {person && <div style={{ fontSize: 11, color: COLORS.mute }}>{person.department} · {person.role}</div>}
               </span>
-              <span style={{ width: 150 }}><Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge></span>
+              <span style={{ width: 170 }}>
+                {!editable ? (
+                  <Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge>
+                ) : isOwner ? (
+                  <select
+                    value={u.role}
+                    onChange={e => updateUserRole(u.id, e.target.value)}
+                    style={{ ...selStyle, width: 140, fontWeight: 600, borderColor: meta.color }}
+                    title="Change this person's group/role"
+                  >
+                    {assignableGroups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                  </select>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge>
+                    <button title="Request a role change" onClick={() => setRoleRequest({ targetUser: u, newRole: u.role })} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}>
+                      <Pencil size={12} />
+                    </button>
+                  </div>
+                )}
+              </span>
               <span style={{ width: 100 }}><Badge color={COLORS.success} soft={COLORS.successSoft} text={COLORS.success}>{u.status}</Badge></span>
               <span style={{ width: 50 }}>
                 {isOwner && u.role !== "OWNER" && (
@@ -2137,6 +2328,27 @@ function UsersTab({ user, users, people, addUserRequest, removeUser, groups }) {
               {isOwner ? "Add user" : "Send request"}
             </button>
           </form>
+        </Modal>
+      )}
+
+      {roleRequest && (
+        <Modal onClose={() => setRoleRequest(null)} title={`Request role change — ${roleRequest.targetUser.name}`} width={360}>
+          <div style={{ display: "grid", gap: 12 }}>
+            <Field label="New group">
+              <select value={roleRequest.newRole} onChange={e => setRoleRequest({ ...roleRequest, newRole: e.target.value })} style={{ ...inputStyle, padding: "9px 10px" }}>
+                {assignableGroups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            </Field>
+            <div style={noteStyle}>This creates a request the owner needs to approve.</div>
+            <button
+              disabled={roleRequest.newRole === roleRequest.targetUser.role}
+              onClick={async () => { await requestRoleChange(roleRequest.targetUser, roleRequest.newRole); setRoleRequest(null); }}
+              className="cly-btn"
+              style={{ background: COLORS.ink, color: "#fff", padding: "10px 0", borderRadius: 8, fontSize: 13.5, fontWeight: 700, opacity: roleRequest.newRole === roleRequest.targetUser.role ? 0.5 : 1 }}
+            >
+              Send request
+            </button>
+          </div>
         </Modal>
       )}
     </div>
@@ -2293,7 +2505,7 @@ function AdminSettings(props) {
         ))}
       </div>
       {tab === "auth" && <AuthTab auth={props.auth} setAuth={props.setAuth} canEdit={isOwner} />}
-      {tab === "users" && <UsersTab user={user} users={props.users} people={props.people} addUserRequest={props.addUserRequest} removeUser={props.removeUser} groups={props.groups} />}
+      {tab === "users" && <UsersTab user={user} users={props.users} people={props.people} addUserRequest={props.addUserRequest} removeUser={props.removeUser} groups={props.groups} updateUserRole={props.updateUserRole} requestRoleChange={props.requestRoleChange} />}
       {tab === "groups" && <GroupsTab user={user} groups={props.groups} addGroup={props.addGroup} />}
       {tab === "restrictions" && <RestrictionsTab user={user} groups={props.groups} restrictions={props.restrictions} setRestrictions={props.setRestrictions} />}
       {tab === "notif" && <NotifTab notif={props.notif} setNotif={props.setNotif} canEdit={isOwner} />}
@@ -2597,6 +2809,35 @@ export default function App() {
     setUsers(users.filter(u => u.id !== id));
     notify("User removed from the workspace.");
   }
+  // Owner-only direct role change. The OWNER role itself is a singleton and
+  // is never offered as an option or as an editable row (enforced in
+  // UsersTab), so this never needs to guard against reassigning it.
+  async function updateUserRole(userId, newRole) {
+    try {
+      await updateDocIn("users", userId, { role: newRole });
+      setUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
+      notify("Role updated.");
+    } catch (e) {
+      console.error("Failed to update role:", e);
+      notify("Couldn't update role — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Admins can't write to the users collection directly, so a role change
+  // they propose goes through the same approval queue as adding a user.
+  async function requestRoleChange(targetUser, newRole) {
+    const req = {
+      type: "role_change",
+      title: `Change ${targetUser.name}'s group to ${ROLE_META[newRole].label}`,
+      detail: targetUser.email,
+      requestedBy: user.id, requestedByName: user.name,
+      status: "pending", createdAt: Date.now(),
+      payload: { userId: targetUser.id, role: newRole },
+    };
+    const id = await addDocIn("requests", req);
+    setRequests([{ id, ...req }, ...requests]);
+    notify("Request sent to the owner for approval.");
+  }
   async function addGroup(g) {
     await setDocIn("groups", g.id, g);
     setGroups([...groups, g]);
@@ -2671,6 +2912,42 @@ export default function App() {
       throw e;
     }
   }
+  // Owner-only corrections: fix a mistaken clock-in/out, fill in a missed
+  // punch that's showing as Absent, or remove a bad entry entirely.
+  async function updateTimeEntry(entryId, patch) {
+    try {
+      await updateDocIn("time-entries", entryId, patch);
+      setTimeEntries(timeEntries.map(e => e.id === entryId ? { ...e, ...patch } : e));
+      notify("Time entry updated.");
+    } catch (e) {
+      console.error("Failed to update time entry:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function createTimeEntry(data) {
+    const entry = { userId: data.userId, userName: data.userName, date: data.date, clockIn: data.clockIn, clockOut: data.clockOut ?? null, createdAt: Date.now() };
+    try {
+      const id = await addDocIn("time-entries", entry);
+      setTimeEntries([{ id, ...entry }, ...timeEntries]);
+      notify("Time entry added.");
+    } catch (e) {
+      console.error("Failed to add time entry:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function deleteTimeEntry(entryId) {
+    try {
+      await deleteDocIn("time-entries", entryId);
+      setTimeEntries(timeEntries.filter(e => e.id !== entryId));
+      notify("Time entry deleted.");
+    } catch (e) {
+      console.error("Failed to delete time entry:", e);
+      notify("Couldn't delete — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
   async function setUserTimeTrackingEnabled(userId, enabled) {
     try {
       await updateDocIn("users", userId, { timeTrackingEnabled: enabled });
@@ -2699,6 +2976,9 @@ export default function App() {
     setRequests(requests.map(r => r.id === id ? { ...r, status } : r));
     if (status === "approved" && req?.type === "new_user") {
       await addUserRequest(req.payload, true);
+    }
+    if (status === "approved" && req?.type === "role_change") {
+      await updateUserRole(req.payload.userId, req.payload.role);
     }
     notify(status === "approved" ? "Request approved." : "Request denied.");
   }
@@ -2762,11 +3042,12 @@ export default function App() {
               {page === "people-info" && <PeopleInfoPage user={user} users={users} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
               {page === "org-chart" && <OrgChartPage user={user} people={people} updatePerson={updatePerson} />}
               {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
-              {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} />}
-              {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} />}
+              {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
+              {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
+                  updateUserRole={updateUserRole} requestRoleChange={requestRoleChange}
                   groups={groups} addGroup={addGroup} restrictions={restrictions} setRestrictions={persistRestrictions}
                   notif={notif} setNotif={persistNotif}
                 />
