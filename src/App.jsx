@@ -6,7 +6,7 @@ import {
   ChevronDown, Search, FileText, Settings, UserPlus, AlertCircle,
   Loader2, Building2, KeyRound, Image as ImageIcon, File as FileIcon,
   ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
-  Database, Smile, CalendarCheck, Timer,
+  Database, Smile, CalendarCheck, Timer, Network, LayoutGrid,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------- */
@@ -323,6 +323,7 @@ function Sidebar({ user, page, setPage, pendingCount }) {
   ];
   const peopleItems = [
     { key: "people-info", label: "People Information", icon: Smile, show: user.role !== "CLIENT" },
+    { key: "org-chart", label: "Organizational Chart", icon: Network, show: user.role !== "CLIENT" },
   ];
   const timeAttendanceItems = [
     { key: "time-tracking", label: "Time Tracking", icon: Timer, show: user.role !== "CLIENT" },
@@ -1252,6 +1253,260 @@ function ManagePeopleListModal({ title, items, placeholder, onAdd, onRemove, onC
         <button onClick={onClose} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>Done</button>
       </div>
     </Modal>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Organizational Chart — built from People Information, hierarchy   */
+/* comes from each person's `reportsTo`, layout comes from each        */
+/* person's `chartX`/`chartY` (falls back to an auto tree layout       */
+/* until someone drags a card, at which point that person's spot is  */
+/* pinned). All of it lives on the existing `people` docs — no new    */
+/* collection, no rules changes.                                     */
+/* ---------------------------------------------------------------- */
+const ORG_NODE_W = 208;
+const ORG_NODE_H = 84;
+const ORG_GAP_X = 32;
+const ORG_GAP_Y = 64;
+const ORG_PADDING = 40;
+const ORG_DEPT_PALETTE = [
+  { soft: COLORS.creativeSoft, text: COLORS.creativeText },
+  { soft: COLORS.dataSoft, text: COLORS.dataText },
+  { soft: COLORS.goldSoft, text: "#6B4A1A" },
+  { soft: COLORS.successSoft, text: COLORS.success },
+  { soft: COLORS.warningSoft, text: COLORS.warning },
+];
+function orgDeptColor(dept) {
+  if (!dept) return { soft: COLORS.line, text: COLORS.mute };
+  let hash = 0;
+  for (let i = 0; i < dept.length; i++) hash = (hash * 31 + dept.charCodeAt(i)) >>> 0;
+  return ORG_DEPT_PALETTE[hash % ORG_DEPT_PALETTE.length];
+}
+function orgInitials(name) {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] || "") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+}
+// Splits people into a manager -> direct-reports map and a list of roots
+// (no manager, or a manager who no longer exists). Ignores self-references.
+function buildOrgHierarchy(people) {
+  const byId = {};
+  people.forEach(p => { byId[p.id] = p; });
+  const childrenOf = {};
+  const roots = [];
+  people.forEach(p => {
+    const mgrId = p.reportsTo && p.reportsTo !== p.id && byId[p.reportsTo] ? p.reportsTo : null;
+    if (mgrId) (childrenOf[mgrId] = childrenOf[mgrId] || []).push(p);
+    else roots.push(p);
+  });
+  Object.values(childrenOf).forEach(list => list.sort((a, b) => a.name.localeCompare(b.name)));
+  roots.sort((a, b) => a.name.localeCompare(b.name));
+  return { byId, childrenOf, roots };
+}
+// All of a person's reports, and their reports, recursively — used to stop
+// someone from being set as their own (grand)manager, which would create a loop.
+function orgDescendantIds(personId, childrenOf) {
+  const result = new Set();
+  (function walk(id) {
+    (childrenOf[id] || []).forEach(child => {
+      if (!result.has(child.id)) { result.add(child.id); walk(child.id); }
+    });
+  })(personId);
+  return result;
+}
+// Default tree layout (grid column/depth per person) for anyone who hasn't
+// been manually dragged yet. Guards against cycles with a visited set so a
+// bad reportsTo chain can never recurse forever.
+function orgAutoLayout(roots, childrenOf) {
+  const positions = {};
+  let nextCol = 0;
+  function place(person, depth, visited) {
+    if (visited.has(person.id)) return nextCol++;
+    const seen = new Set(visited); seen.add(person.id);
+    const kids = childrenOf[person.id] || [];
+    let col;
+    if (kids.length === 0) {
+      col = nextCol++;
+    } else {
+      const childCols = kids.map(k => place(k, depth + 1, seen));
+      col = (Math.min(...childCols) + Math.max(...childCols)) / 2;
+    }
+    positions[person.id] = { col, depth };
+    return col;
+  }
+  roots.forEach(r => place(r, 0, new Set()));
+  return positions;
+}
+function orgElbowPath(x1, y1, x2, y2) {
+  const midY = y1 + (y2 - y1) / 2;
+  return `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`;
+}
+
+function OrgChartPage({ user, people, updatePerson }) {
+  const canEdit = user.role === "OWNER" || user.role === "ADMIN";
+  const { childrenOf, roots } = buildOrgHierarchy(people);
+  const autoPositions = orgAutoLayout(roots, childrenOf);
+  const [dragState, setDragState] = useState(null); // { id, startClientX, startClientY, origX, origY, curX, curY }
+  const [editingId, setEditingId] = useState(null);
+  const [reportsToDraft, setReportsToDraft] = useState("");
+
+  function basePos(p) {
+    if (typeof p.chartX === "number" && typeof p.chartY === "number") return { x: p.chartX, y: p.chartY };
+    const auto = autoPositions[p.id] || { col: 0, depth: 0 };
+    return { x: auto.col * (ORG_NODE_W + ORG_GAP_X) + ORG_PADDING, y: auto.depth * (ORG_NODE_H + ORG_GAP_Y) + ORG_PADDING };
+  }
+  function livePos(p) {
+    if (dragState && dragState.id === p.id) return { x: dragState.curX, y: dragState.curY };
+    return basePos(p);
+  }
+
+  function onCardPointerDown(e, p) {
+    if (!canEdit) return;
+    e.stopPropagation();
+    const pos = basePos(p);
+    setDragState({ id: p.id, startClientX: e.clientX, startClientY: e.clientY, origX: pos.x, origY: pos.y, curX: pos.x, curY: pos.y });
+    e.target.setPointerCapture(e.pointerId);
+  }
+  function onCanvasPointerMove(e) {
+    if (!dragState) return;
+    const dx = e.clientX - dragState.startClientX;
+    const dy = e.clientY - dragState.startClientY;
+    setDragState(d => d && { ...d, curX: Math.max(0, d.origX + dx), curY: Math.max(0, d.origY + dy) });
+  }
+  function onCanvasPointerUp() {
+    if (!dragState) return;
+    const { id, curX, curY } = dragState;
+    setDragState(null);
+    updatePerson(id, { chartX: Math.round(curX), chartY: Math.round(curY) });
+  }
+  function openEdit(p) {
+    setEditingId(p.id);
+    setReportsToDraft(p.reportsTo || "");
+  }
+  async function saveReportsTo() {
+    await updatePerson(editingId, { reportsTo: reportsToDraft });
+    setEditingId(null);
+  }
+  async function resetLayout() {
+    await Promise.all(people.filter(p => typeof p.chartX === "number").map(p => updatePerson(p.id, { chartX: null, chartY: null })));
+  }
+
+  let canvasW = 400, canvasH = 300;
+  people.forEach(p => {
+    const pos = livePos(p);
+    canvasW = Math.max(canvasW, pos.x + ORG_NODE_W + ORG_PADDING);
+    canvasH = Math.max(canvasH, pos.y + ORG_NODE_H + ORG_PADDING);
+  });
+
+  const edges = people
+    .map(p => {
+      const mgrId = p.reportsTo && p.reportsTo !== p.id && people.some(x => x.id === p.reportsTo) ? p.reportsTo : null;
+      if (!mgrId) return null;
+      const mgr = people.find(x => x.id === mgrId);
+      const from = livePos(mgr), to = livePos(p);
+      return { id: p.id, x1: from.x + ORG_NODE_W / 2, y1: from.y + ORG_NODE_H, x2: to.x + ORG_NODE_W / 2, y2: to.y };
+    })
+    .filter(Boolean);
+
+  const editingPerson = editingId ? people.find(p => p.id === editingId) : null;
+  const editOptions = editingId
+    ? (() => {
+        const excluded = new Set([editingId, ...orgDescendantIds(editingId, childrenOf)]);
+        return people.filter(p => !excluded.has(p.id)).sort((a, b) => a.name.localeCompare(b.name));
+      })()
+    : [];
+
+  return (
+    <div className="cly-fade-in" style={{ padding: 28 }}>
+      {people.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: COLORS.mute }}>
+          <Network size={28} style={{ opacity: 0.4, marginBottom: 10 }} />
+          <div style={{ fontSize: 13.5 }}>Add people in People Information first — the chart builds itself from that list.</div>
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12 }}>
+            <div style={{ fontSize: 12.5, color: COLORS.mute }}>
+              {canEdit
+                ? "Drag any card to arrange the chart. Use \u201CSet manager\u201D to change who someone reports to."
+                : "View only — ask an Owner or Admin to update the hierarchy."}
+            </div>
+            {canEdit && (
+              <button type="button" onClick={resetLayout} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, padding: "8px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, flexShrink: 0 }}>
+                <LayoutGrid size={14} /> Reset layout
+              </button>
+            )}
+          </div>
+          <div
+            style={{ position: "relative", overflow: "auto", border: `1px solid ${COLORS.line}`, borderRadius: 12, background: COLORS.cream, maxHeight: "calc(100vh - 230px)" }}
+            onPointerMove={onCanvasPointerMove}
+            onPointerUp={onCanvasPointerUp}
+            onPointerLeave={onCanvasPointerUp}
+          >
+            <div style={{ position: "relative", width: canvasW, height: canvasH }}>
+              <svg width={canvasW} height={canvasH} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+                {edges.map(e => (
+                  <path key={e.id} d={orgElbowPath(e.x1, e.y1, e.x2, e.y2)} stroke={COLORS.line} strokeWidth={2} fill="none" />
+                ))}
+              </svg>
+              {people.map(p => {
+                const pos = livePos(p);
+                const dc = orgDeptColor(p.department);
+                const dragging = dragState?.id === p.id;
+                const sm = p.status && p.status !== "Active" ? peopleStatusMeta(p.status) : null;
+                return (
+                  <div
+                    key={p.id}
+                    onPointerDown={e => onCardPointerDown(e, p)}
+                    className="cly-fade-in"
+                    style={{
+                      position: "absolute", left: pos.x, top: pos.y, width: ORG_NODE_W, minHeight: ORG_NODE_H,
+                      background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: "10px 12px",
+                      boxShadow: dragging ? "0 10px 24px rgba(0,0,0,0.18)" : "0 1px 3px rgba(0,0,0,0.06)",
+                      cursor: canEdit ? (dragging ? "grabbing" : "grab") : "default",
+                      userSelect: "none", touchAction: "none", zIndex: dragging ? 5 : 1,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ width: 32, height: 32, borderRadius: "50%", background: dc.soft, color: dc.text, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12.5, fontWeight: 700, flexShrink: 0 }}>
+                        {orgInitials(p.name)}
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+                        <div style={{ fontSize: 11.5, color: COLORS.mute, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.role || "—"}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8, gap: 6 }}>
+                      <span style={{ fontSize: 10.5, color: COLORS.mute, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.department || "—"}</span>
+                      {sm && <Badge soft={sm.soft} text={sm.text}>{p.status}</Badge>}
+                    </div>
+                    {canEdit && (
+                      <button type="button" onPointerDown={e => e.stopPropagation()} onClick={() => openEdit(p)} style={{ ...manageLinkStyle, marginTop: 8, fontSize: 11 }}>
+                        Set manager
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+      {editingPerson && (
+        <Modal title={`Set manager for ${editingPerson.name}`} onClose={() => setEditingId(null)} width={420}>
+          <Field label="Reports to">
+            <select value={reportsToDraft} onChange={e => setReportsToDraft(e.target.value)} style={inputStyle}>
+              <option value="">— No manager (top-level) —</option>
+              {editOptions.map(p => <option key={p.id} value={p.id}>{p.name}{p.role ? ` — ${p.role}` : ""}</option>)}
+            </select>
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
+            <button type="button" onClick={() => setEditingId(null)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
+            <button type="button" onClick={saveReportsTo} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>Save</button>
+          </div>
+        </Modal>
+      )}
+    </div>
   );
 }
 
@@ -2487,7 +2742,7 @@ export default function App() {
           <div style={{ flex: 1, background: COLORS.cream, minWidth: 0, display: "flex", flexDirection: "column" }}>
             <Topbar user={user} onLogout={() => fbLogout()} title={
               page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" :
-              page === "people-info" ? "People Information" : page === "time-tracking" ? "Time Tracking" :
+              page === "people-info" ? "People Information" : page === "org-chart" ? "Organizational Chart" : page === "time-tracking" ? "Time Tracking" :
               page === "time-inout" ? "Time in/Time out information" :
               page === "attendance" ? "Attendance" : "Admin settings"
             } subtitle={
@@ -2495,6 +2750,7 @@ export default function App() {
               page === "files" ? "Shared storage for your team and clients." :
               page === "requests" ? "Owner approval queue." :
               page === "people-info" ? "Team member profiles and details." :
+              page === "org-chart" ? "Reporting structure, built from People Information." :
               page === "time-tracking" ? "Live time-tracking sessions." :
               page === "time-inout" ? "Clock-in and clock-out records." :
               page === "attendance" ? "Daily attendance summaries." : "Authentication, users, groups, and restrictions."
@@ -2504,6 +2760,7 @@ export default function App() {
               {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
               {page === "people-info" && <PeopleInfoPage user={user} users={users} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
+              {page === "org-chart" && <OrgChartPage user={user} people={people} updatePerson={updatePerson} />}
               {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} />}
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} />}
