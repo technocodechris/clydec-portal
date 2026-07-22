@@ -1558,18 +1558,59 @@ function getAttendanceRules(u) {
     fullDayHours: r.fullDayHours ?? SEED_TIME_SETTINGS.fullDayHours,
     halfDayHours: r.halfDayHours ?? SEED_TIME_SETTINGS.halfDayHours,
     weeklyWorkDays: r.weeklyWorkDays || DEFAULT_WEEKLY_WORK_DAYS,
-    dateOverrides: r.dateOverrides || {}, // "YYYY-MM-DD" -> "work" | "off"
+    // "YYYY-MM-DD" -> either the legacy plain string "work" | "off", or an
+    // object { dayType?: "work" | "off", startTime?: "HH:MM", endTime?: "HH:MM" }
+    // for a specific-date schedule correction (different hours that day)
+    // and/or a forced working-day/day-off flag. Both old and new shapes are
+    // read via normalizeDateOverride() below.
+    dateOverrides: r.dateOverrides || {},
   };
+}
+// Reads a raw dateOverrides[dateStr] entry in either the legacy plain-string
+// shape ("work" | "off") or the newer object shape, always returning the
+// object shape (or null if there's no override for that date).
+function normalizeDateOverride(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "string") return { dayType: raw };
+  return raw;
 }
 // Whether a given date is a working day for someone, honoring their weekly
 // pattern (weekdays on / weekends off by default) plus any specific-date
 // overrides (holidays marked off, or an off-day flipped to a working day).
 function isWorkingDay(dateStr, rules) {
-  const override = rules.dateOverrides?.[dateStr];
-  if (override === "off") return false;
-  if (override === "work") return true;
+  const o = normalizeDateOverride(rules.dateOverrides?.[dateStr]);
+  if (o?.dayType === "off") return false;
+  if (o?.dayType === "work") return true;
   const dow = new Date(dateStr + "T00:00:00").getDay();
   return !!rules.weeklyWorkDays[dow];
+}
+// The work start/end time that actually applies on a given date — a
+// per-date schedule correction if one is set there, otherwise the person's
+// normal hours. This is what every late/early/overtime calculation should
+// read from (never rules.workStartTime/workEndTime directly), so a one-off
+// schedule change on a specific date is reflected everywhere consistently.
+function effectiveHoursForDate(dateStr, rules) {
+  const o = normalizeDateOverride(rules.dateOverrides?.[dateStr]);
+  return {
+    workStartTime: (o && o.startTime) || rules.workStartTime,
+    workEndTime: (o && o.endTime) || rules.workEndTime,
+  };
+}
+// Turns a "HH:MM" work-start/work-end pair into actual timestamps anchored
+// to the calendar day of anchorMs. Rolls the end time to the next calendar
+// day whenever it's not strictly after the start time, so overnight shifts
+// (e.g. 6:00 PM - 3:00 AM) get a scheduled *end* that's actually after the
+// scheduled *start* — without this, a 6:23 PM clock-in on that shift would
+// compare against a 3:00 AM "end" earlier the same day and look like it
+// happened many hours past end-of-shift (this was the cause of an "Overtime
+// 15h 25m" bug on a same-day 2-minute session).
+function scheduledWindow(anchorMs, workStartTime, workEndTime) {
+  const [sh, sm] = (workStartTime || "00:00").split(":").map(Number);
+  const [eh, em] = (workEndTime || "00:00").split(":").map(Number);
+  const start = new Date(anchorMs); start.setHours(sh || 0, sm || 0, 0, 0);
+  let end = new Date(anchorMs); end.setHours(eh || 0, em || 0, 0, 0);
+  if (end.getTime() <= start.getTime()) end = new Date(end.getTime() + 24 * 3600 * 1000);
+  return { startMs: start.getTime(), endMs: end.getTime() };
 }
 function toDateStr(y, m, d) {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
@@ -1598,8 +1639,6 @@ const WEEKDAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
 function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
   const isOwner = u.role === "OWNER";
   const rules = getAttendanceRules(u);
-  const [wsH, wsM] = rules.workStartTime.split(":").map(Number);
-  const [weH, weM] = rules.workEndTime.split(":").map(Number);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const byDate = {};
   entries.filter(e => e.userId === u.id).forEach(e => {
@@ -1618,18 +1657,17 @@ function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
       result[dateStr] = { status: "Absent", hours: 0 };
       continue;
     }
+    const { workStartTime, workEndTime } = effectiveHoursForDate(dateStr, rules);
     const sorted = [...dayEntries].sort((a, b) => a.clockIn - b.clockIn);
     const earliest = sorted[0].clockIn;
     const stillOpen = sorted.some(e => !e.clockOut);
     const latestOut = stillOpen ? null : Math.max(...sorted.map(e => e.clockOut));
     const totalMs = sorted.reduce((sum, e) => sum + ((e.clockOut || Date.now()) - e.clockIn), 0);
     const hours = totalMs / 3_600_000;
-    const expectedIn = new Date(earliest);
-    expectedIn.setHours(wsH || 0, (wsM || 0) + (rules.lateThresholdMinutes || 0), 0, 0);
-    const isLate = new Date(earliest) > expectedIn;
-    const expectedOut = new Date(earliest);
-    expectedOut.setHours(weH || 0, (weM || 0) - (rules.lateThresholdMinutes || 0), 0, 0);
-    const leftEarly = !stillOpen && new Date(latestOut) < expectedOut;
+    const { startMs: schedStartMs, endMs: schedEndMs } = scheduledWindow(earliest, workStartTime, workEndTime);
+    const graceMs = (rules.lateThresholdMinutes || 0) * 60000;
+    const isLate = earliest > schedStartMs + graceMs;
+    const leftEarly = !stillOpen && latestOut < (schedEndMs - graceMs);
     let status;
     if (stillOpen) status = "In progress";
     else if (hours < rules.halfDayHours) status = "Incomplete";
@@ -1655,10 +1693,17 @@ function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
   });
   return result;
 }
-// Early-in / undertime / overtime for a single Time in/out row, measured
-// against that person's own scheduled work start/end time. Early arrival
-// isn't credited as extra work time — it's purely informational — so this
-// never touches the Duration column, it just adds context alongside it.
+// Early-in / late / undertime / overtime for a single Time in/out row,
+// measured against the work start/end time that actually applied on that
+// entry's date (effectiveHoursForDate — a per-date schedule correction if
+// one is set, otherwise the person's normal hours), with scheduledWindow()
+// correctly rolling an overnight shift's end time into the next day. Early
+// arrival isn't credited as extra work time — it's purely informational —
+// so none of this touches the Duration column, it just adds context
+// alongside it.
+//
+// Late is how far the clock-in landed past the (grace-period-adjusted)
+// scheduled start — 0 whenever the clock-in is within the grace period.
 //
 // Undertime is the shortfall against the *full scheduled shift* (schedEnd -
 // schedStart), not just "clocked out before schedEnd" — a late arrival
@@ -1667,14 +1712,13 @@ function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
 // Overtime is purely extra time worked past the scheduled end, and can
 // occur alongside undertime (e.g. arrived late, then also stayed late).
 function computeEntryTimingFlags(entry, ruleUser) {
-  if (!ruleUser) return { earlyMs: 0, undertimeMs: 0, overtimeMs: 0 };
+  if (!ruleUser) return { earlyMs: 0, lateMs: 0, undertimeMs: 0, overtimeMs: 0 };
   const rules = getAttendanceRules(ruleUser);
-  const [sh, sm] = rules.workStartTime.split(":").map(Number);
-  const [eh, em] = rules.workEndTime.split(":").map(Number);
-  const schedStart = new Date(entry.clockIn); schedStart.setHours(sh || 0, sm || 0, 0, 0);
-  const schedEnd = new Date(entry.clockIn); schedEnd.setHours(eh || 0, em || 0, 0, 0);
-  const schedStartMs = schedStart.getTime(), schedEndMs = schedEnd.getTime();
+  const { workStartTime, workEndTime } = effectiveHoursForDate(entry.date, rules);
+  const { startMs: schedStartMs, endMs: schedEndMs } = scheduledWindow(entry.clockIn, workStartTime, workEndTime);
+  const graceMs = (rules.lateThresholdMinutes || 0) * 60000;
   const earlyMs = entry.clockIn < schedStartMs ? schedStartMs - entry.clockIn : 0;
+  const lateMs = entry.clockIn > schedStartMs + graceMs ? entry.clockIn - schedStartMs : 0;
   let undertimeMs = 0, overtimeMs = 0;
   if (entry.clockOut) {
     const scheduledShiftMs = Math.max(0, schedEndMs - schedStartMs);
@@ -1684,7 +1728,14 @@ function computeEntryTimingFlags(entry, ruleUser) {
     undertimeMs = Math.max(0, scheduledShiftMs - effectiveWorkedMs);
     if (entry.clockOut > schedEndMs) overtimeMs = entry.clockOut - schedEndMs;
   }
-  return { earlyMs, undertimeMs, overtimeMs };
+  return { earlyMs, lateMs, undertimeMs, overtimeMs };
+}
+// "18:00" -> "6:00 PM", for displaying a person's schedule read-only.
+function formatTimeStrTo12h(hhmm) {
+  if (!hhmm) return "—";
+  const [h, m] = hhmm.split(":").map(Number);
+  const d = new Date(); d.setHours(h || 0, m || 0, 0, 0);
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
 
@@ -1697,10 +1748,9 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
   const [expandedId, setExpandedId] = useState(null);
 
   useEffect(() => {
-    if (!myOpenEntry) return;
     const t = setInterval(() => forceTick(n => n + 1), 1000);
     return () => clearInterval(t);
-  }, [myOpenEntry?.id]);
+  }, []);
 
   async function handleClockIn() {
     setBusy(true);
@@ -1721,6 +1771,14 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
   return (
     <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 24 }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "baseline", gap: 6, marginBottom: 14 }}>
+          <span style={{ fontSize: 12, color: COLORS.mute }}>
+            {new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+          </span>
+          <span className="cly-mono" style={{ fontSize: 15, fontWeight: 700 }}>
+            {new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}
+          </span>
+        </div>
         {!enabled ? (
           <EmptyState icon={Timer} title="Time tracking isn't enabled for your account" body="Ask your workspace owner to turn this on for you from this page." />
         ) : (
@@ -1822,7 +1880,8 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
 
 // Per-person hours (start/end time, grace period, full/half-day thresholds)
 // plus a work calendar (weekly pattern + specific-date overrides for
-// holidays/leave). Used inside each team member's expanded row above.
+// holidays/leave, and per-date schedule corrections). Used inside each team
+// member's expanded row above.
 function AttendanceRulesEditor({ user, onSave }) {
   const initial = getAttendanceRules(user);
   const [rules, setRules] = useState(initial);
@@ -1831,20 +1890,64 @@ function AttendanceRulesEditor({ user, onSave }) {
   const [viewMonth, setViewMonth] = useState(today.getMonth());
   const dirty = JSON.stringify(rules) !== JSON.stringify(initial);
 
+  // Multi-select mode: pick several dates at once and apply one day type
+  // and/or a schedule correction (different start/end time) to all of them.
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedDates, setSelectedDates] = useState([]);
+  const [bulkDayType, setBulkDayType] = useState("default"); // "default" | "work" | "off"
+  const [bulkStart, setBulkStart] = useState("");
+  const [bulkEnd, setBulkEnd] = useState("");
+
   function patch(k, v) { setRules(r => ({ ...r, [k]: v })); }
   function toggleWeekday(i) {
     const next = [...rules.weeklyWorkDays];
     next[i] = !next[i];
     patch("weeklyWorkDays", next);
   }
+  // Single-click (outside bulk mode): cycles the day-type only — default ->
+  // forced opposite -> back to default — without touching any schedule
+  // correction already set on that date.
   function cycleDate(dateStr) {
-    const current = rules.dateOverrides[dateStr];
+    const cur = normalizeDateOverride(rules.dateOverrides[dateStr]) || {};
     const defaultsToWork = rules.weeklyWorkDays[new Date(dateStr + "T00:00:00").getDay()];
+    const nextDayType = cur.dayType === undefined ? (defaultsToWork ? "off" : "work") : undefined;
+    const merged = { ...cur };
+    if (nextDayType === undefined) delete merged.dayType; else merged.dayType = nextDayType;
     const next = { ...rules.dateOverrides };
-    // Cycle: default -> forced opposite -> back to default.
-    if (current === undefined) next[dateStr] = defaultsToWork ? "off" : "work";
-    else delete next[dateStr];
+    if (Object.keys(merged).length === 0) delete next[dateStr]; else next[dateStr] = merged;
     patch("dateOverrides", next);
+  }
+  function toggleBulkMode() {
+    setBulkMode(m => !m);
+    setSelectedDates([]);
+    setBulkDayType("default"); setBulkStart(""); setBulkEnd("");
+  }
+  function toggleDateSelected(dateStr) {
+    setSelectedDates(prev => prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr]);
+  }
+  // Applies the bulk day type / schedule correction to every selected date
+  // in one go — e.g. "these 5 dates start at 8 AM instead of 6 PM" or "mark
+  // this whole week as a holiday." Leaving a field at its default/blank
+  // means "don't change that part" for dates that already had an override.
+  function applyBulkToSelection() {
+    const next = { ...rules.dateOverrides };
+    selectedDates.forEach(dateStr => {
+      const merged = { ...(normalizeDateOverride(next[dateStr]) || {}) };
+      if (bulkDayType === "default") delete merged.dayType; else merged.dayType = bulkDayType;
+      if (bulkStart) merged.startTime = bulkStart; 
+      if (bulkEnd) merged.endTime = bulkEnd;
+      if (Object.keys(merged).length === 0) delete next[dateStr]; else next[dateStr] = merged;
+    });
+    patch("dateOverrides", next);
+    setSelectedDates([]); setBulkMode(false); setBulkDayType("default"); setBulkStart(""); setBulkEnd("");
+  }
+  // Clears any override (day type + schedule correction) for every selected
+  // date, resetting them back to this person's normal weekly pattern/hours.
+  function clearBulkSelection() {
+    const next = { ...rules.dateOverrides };
+    selectedDates.forEach(dateStr => { delete next[dateStr]; });
+    patch("dateOverrides", next);
+    setSelectedDates([]); setBulkMode(false); setBulkDayType("default"); setBulkStart(""); setBulkEnd("");
   }
 
   const weeks = getMonthMatrix(viewYear, viewMonth);
@@ -1889,12 +1992,18 @@ function AttendanceRulesEditor({ user, onSave }) {
       </div>
 
       <div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
           <div>
             <div style={{ fontWeight: 700, fontSize: 13 }}>Work calendar</div>
-            <div style={{ color: COLORS.mute, fontSize: 11.5 }}>Click a date to mark it a day off (e.g. a holiday) or a working day. {overrideCount > 0 && `${overrideCount} custom date${overrideCount === 1 ? "" : "s"} set.`}</div>
+            <div style={{ color: COLORS.mute, fontSize: 11.5 }}>
+              {bulkMode ? "Click dates to select them, then set a day type and/or hours for all of them below." : "Click a date to mark it a day off or a working day. Select multiple to also adjust hours for specific dates."}
+              {" "}{overrideCount > 0 && `${overrideCount} custom date${overrideCount === 1 ? "" : "s"} set.`}
+            </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={toggleBulkMode} className="cly-btn" style={{ background: bulkMode ? COLORS.ink : "#fff", color: bulkMode ? "#fff" : COLORS.text, border: `1px solid ${bulkMode ? COLORS.ink : COLORS.line}`, borderRadius: 8, padding: "0 12px", height: 26, fontSize: 11.5, fontWeight: 600 }}>
+              {bulkMode ? "Cancel selection" : "Select multiple dates"}
+            </button>
             <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 26, height: 26 }}>‹</button>
             <span style={{ fontSize: 12.5, fontWeight: 700, minWidth: 110, textAlign: "center" }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
             <button onClick={() => setViewMonth(m => { if (m === 11) { setViewYear(y => y + 1); return 0; } return m + 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 26, height: 26 }}>›</button>
@@ -1906,18 +2015,55 @@ function AttendanceRulesEditor({ user, onSave }) {
             if (d === null) return <div key={i} />;
             const dateStr = toDateStr(viewYear, viewMonth, d);
             const working = isWorkingDay(dateStr, rules);
-            const isOverride = rules.dateOverrides[dateStr] !== undefined;
+            const override = normalizeDateOverride(rules.dateOverrides[dateStr]);
+            const hasSchedule = !!(override && (override.startTime || override.endTime));
+            const isOverride = !!override;
             const isToday = dateStr === today.toISOString().slice(0, 10);
+            const isSelected = bulkMode && selectedDates.includes(dateStr);
+            const eff = effectiveHoursForDate(dateStr, rules);
+            const title = `${working ? "Working day" : "Day off"}${hasSchedule ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""}${bulkMode ? " — click to select" : " — click to change"}`;
             return (
-              <button key={i} onClick={() => cycleDate(dateStr)} className="cly-btn" title={working ? "Working day — click to mark as day off" : "Day off — click to mark as working day"} style={{
-                aspectRatio: "1", borderRadius: 6, fontSize: 11.5, fontWeight: 600,
+              <button key={i} onClick={() => bulkMode ? toggleDateSelected(dateStr) : cycleDate(dateStr)} className="cly-btn" title={title} style={{
+                position: "relative", aspectRatio: "1", borderRadius: 6, fontSize: 11.5, fontWeight: 600,
                 background: working ? COLORS.successSoft : "#fff",
                 color: working ? COLORS.success : COLORS.mute,
-                border: isToday ? `1.5px solid ${COLORS.ink}` : isOverride ? `1.5px dashed ${COLORS.gold}` : `1px solid ${COLORS.line}`,
-              }}>{d}</button>
+                border: isSelected ? `2px solid ${COLORS.data}` : isToday ? `1.5px solid ${COLORS.ink}` : isOverride ? `1.5px dashed ${COLORS.gold}` : `1px solid ${COLORS.line}`,
+                boxShadow: isSelected ? `0 0 0 2px ${COLORS.dataSoft}` : "none",
+              }}>
+                {isSelected && <CheckCircle2 size={11} style={{ position: "absolute", top: 2, right: 2, color: COLORS.data }} />}
+                {d}
+              </button>
             );
           })}
         </div>
+        {bulkMode && (
+          <div style={{ marginTop: 12, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 10, maxWidth: 460 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{selectedDates.length} date{selectedDates.length === 1 ? "" : "s"} selected</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+              <label style={{ fontSize: 11.5, fontWeight: 600 }}>Day type
+                <select value={bulkDayType} onChange={e => setBulkDayType(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }}>
+                  <option value="default">Default</option>
+                  <option value="work">Working day</option>
+                  <option value="off">Day off</option>
+                </select>
+              </label>
+              <label style={{ fontSize: 11.5, fontWeight: 600 }}>Start time
+                <input type="time" value={bulkStart} onChange={e => setBulkStart(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
+              </label>
+              <label style={{ fontSize: 11.5, fontWeight: 600 }}>End time
+                <input type="time" value={bulkEnd} onChange={e => setBulkEnd(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
+              </label>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button disabled={selectedDates.length === 0} onClick={applyBulkToSelection} className="cly-btn" style={{ background: selectedDates.length ? COLORS.ink : COLORS.line, color: selectedDates.length ? "#fff" : COLORS.mute, borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700 }}>
+                Apply to selection
+              </button>
+              <button disabled={selectedDates.length === 0} onClick={clearBulkSelection} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 600 }}>
+                Clear overrides for selection
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <button disabled={!dirty} onClick={() => onSave(rules)} className="cly-btn"
@@ -2031,7 +2177,7 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
           <EmptyState icon={Clock} title="No time logs yet" body="Clock-in and clock-out records will appear here once someone uses Time Tracking." />
         ) : (
           <div style={{ overflowX: "auto" }}>
-            <div style={{ minWidth: isOwner ? 1060 : 760 }}>
+            <div style={{ minWidth: isOwner ? 1150 : 850 }}>
               <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
                 {isOwner && <span style={{ flex: 1.5, minWidth: 140 }}>Team member</span>}
                 <span style={{ width: 110 }}>Date</span>
@@ -2039,6 +2185,7 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
                 <span style={{ width: 100 }}>Clock out</span>
                 <span style={{ width: 90 }}>Duration</span>
                 <span style={{ width: 90 }}>Early in</span>
+                <span style={{ width: 90 }}>Late</span>
                 <span style={{ width: 100 }}>Undertime</span>
                 <span style={{ width: 100 }}>Overtime</span>
                 {isOwner && <span style={{ width: 32 }}></span>}
@@ -2066,6 +2213,9 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
                     <span style={{ width: 90 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
                     <span style={{ width: 90, color: flags.earlyMs >= 60000 ? COLORS.dataText : COLORS.mute, fontWeight: flags.earlyMs >= 60000 ? 700 : 400 }}>
                       {flags.earlyMs >= 60000 ? formatWorkedDuration(flags.earlyMs) : "—"}
+                    </span>
+                    <span style={{ width: 90, color: flags.lateMs >= 60000 ? COLORS.danger : COLORS.mute, fontWeight: flags.lateMs >= 60000 ? 700 : 400 }}>
+                      {flags.lateMs >= 60000 ? formatWorkedDuration(flags.lateMs) : "—"}
                     </span>
                     <span style={{ width: 100, color: flags.undertimeMs >= 60000 ? COLORS.warning : COLORS.mute, fontWeight: flags.undertimeMs >= 60000 ? 700 : 400 }}>
                       {flags.undertimeMs >= 60000 ? formatWorkedDuration(flags.undertimeMs) : "—"}
@@ -2203,7 +2353,12 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
 
       {isOwner && person && (
         <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
-          {selectedUser.name} — {person.department}, {person.role} · {bulkMode ? "click days to select them, then apply a day type below" : "click a day to add or correct a session"}
+          {selectedUser.name} — {person.department}, {person.role} · {formatTimeStrTo12h(rules.workStartTime)}–{formatTimeStrTo12h(rules.workEndTime)} · {bulkMode ? "click days to select them, then apply a day type below" : "click a day to add or correct a session"}
+        </div>
+      )}
+      {!isOwner && (
+        <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
+          Schedule: {formatTimeStrTo12h(rules.workStartTime)}–{formatTimeStrTo12h(rules.workEndTime)}
         </div>
       )}
 
