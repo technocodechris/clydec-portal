@@ -329,6 +329,7 @@ function Sidebar({ user, page, setPage, pendingCount }) {
     { key: "time-tracking", label: "Time Tracking", icon: Timer, show: user.role !== "CLIENT" },
     { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: user.role !== "CLIENT" },
     { key: "attendance", label: "Attendance", icon: CalendarCheck, show: user.role !== "CLIENT" },
+    { key: "leave-requests", label: "Leave Requests", icon: FileText, show: user.role !== "CLIENT" },
   ];
   const [storageOpen, setStorageOpen] = useState(true);
   const [portalOpen, setPortalOpen] = useState(true);
@@ -1545,6 +1546,8 @@ function attendanceStatusMeta(status) {
   if (status === "Half day") return { soft: COLORS.dataSoft, text: COLORS.dataText };
   if (status === "In progress") return { soft: COLORS.goldSoft, text: "#6B4A1A" };
   if (status === "Absent") return { soft: COLORS.dangerSoft, text: COLORS.danger };
+  if (status === "Sick Leave") return { soft: COLORS.dataSoft, text: COLORS.dataText };
+  if (status === "Voluntary Leave") return { soft: COLORS.creativeSoft, text: COLORS.creativeText };
   return { soft: COLORS.line, text: COLORS.mute }; // "Incomplete"
 }
 // Merge a user's saved attendance rules with sensible defaults, so users
@@ -1576,21 +1579,34 @@ function normalizeDateOverride(raw) {
 }
 // Whether a given date is a working day for someone, honoring their weekly
 // pattern (weekdays on / weekends off by default) plus any specific-date
-// overrides (holidays marked off, or an off-day flipped to a working day).
+// overrides (holidays marked off, an off-day flipped to a working day, or a
+// Sick/Voluntary Leave day — both are non-working days).
 function isWorkingDay(dateStr, rules) {
   const o = normalizeDateOverride(rules.dateOverrides?.[dateStr]);
-  if (o?.dayType === "off") return false;
+  if (o?.dayType === "off" || o?.dayType === "sick" || o?.dayType === "voluntary") return false;
   if (o?.dayType === "work") return true;
   const dow = new Date(dateStr + "T00:00:00").getDay();
   return !!rules.weeklyWorkDays[dow];
+}
+// A human-readable label for a non-working day set via the Work calendar
+// (Time Tracking) — "Sick Leave" / "Voluntary Leave", or null for a plain
+// day off/weekend with nothing special to call out.
+function dateOverrideLeaveLabel(dateStr, rules) {
+  const o = normalizeDateOverride(rules.dateOverrides?.[dateStr]);
+  if (o?.dayType === "sick") return "Sick Leave";
+  if (o?.dayType === "voluntary") return "Voluntary Leave";
+  return null;
 }
 // The work start/end time that actually applies on a given date — a
 // per-date schedule correction if one is set there, otherwise the person's
 // normal hours. This is what every late/early/overtime calculation should
 // read from (never rules.workStartTime/workEndTime directly), so a one-off
 // schedule change on a specific date is reflected everywhere consistently.
+// Returns null for a Sick/Voluntary Leave date — there's no schedule to
+// speak of on a day someone isn't expected to work at all.
 function effectiveHoursForDate(dateStr, rules) {
   const o = normalizeDateOverride(rules.dateOverrides?.[dateStr]);
+  if (o?.dayType === "sick" || o?.dayType === "voluntary") return null;
   return {
     workStartTime: (o && o.startTime) || rules.workStartTime,
     workEndTime: (o && o.endTime) || rules.workEndTime,
@@ -1614,6 +1630,20 @@ function scheduledWindow(anchorMs, workStartTime, workEndTime) {
 }
 function toDateStr(y, m, d) {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+// Inclusive array of "YYYY-MM-DD" strings between two date strings — used to
+// turn an approved leave request's date range into individual calendar
+// overrides.
+function dateRangeArray(startStr, endStr) {
+  const out = [];
+  let cur = new Date(startStr + "T00:00:00");
+  const end = new Date(endStr + "T00:00:00");
+  if (isNaN(cur) || isNaN(end) || cur > end) return out;
+  while (cur <= end) {
+    out.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`);
+    cur = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1);
+  }
+  return out;
 }
 // Weeks (arrays of 7 cells, null = padding outside the month) for a
 // month-grid calendar view.
@@ -1649,7 +1679,7 @@ function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
   for (let d = 1; d <= daysInMonth; d++) {
     const dateStr = toDateStr(year, month, d);
     if (dateStr > todayStr) { result[dateStr] = { future: true }; continue; }
-    if (!isOwner && !isWorkingDay(dateStr, rules)) { result[dateStr] = { dayOff: true }; continue; }
+    if (!isOwner && !isWorkingDay(dateStr, rules)) { result[dateStr] = { dayOff: true, manualLabel: dateOverrideLeaveLabel(dateStr, rules) || undefined }; continue; }
     const dayEntries = byDate[dateStr];
     if (!dayEntries || dayEntries.length === 0) {
       if (dateStr === todayStr) { result[dateStr] = { pending: true }; continue; }
@@ -1714,7 +1744,7 @@ function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
 function computeEntryTimingFlags(entry, ruleUser) {
   if (!ruleUser) return { earlyMs: 0, lateMs: 0, undertimeMs: 0, overtimeMs: 0 };
   const rules = getAttendanceRules(ruleUser);
-  const { workStartTime, workEndTime } = effectiveHoursForDate(entry.date, rules);
+  const { workStartTime, workEndTime } = effectiveHoursForDate(entry.date, rules) || { workStartTime: rules.workStartTime, workEndTime: rules.workEndTime };
   const { startMs: schedStartMs, endMs: schedEndMs } = scheduledWindow(entry.clockIn, workStartTime, workEndTime);
   const graceMs = (rules.lateThresholdMinutes || 0) * 60000;
   const earlyMs = entry.clockIn < schedStartMs ? schedStartMs - entry.clockIn : 0;
@@ -1736,6 +1766,15 @@ function formatTimeStrTo12h(hhmm) {
   const [h, m] = hhmm.split(":").map(Number);
   const d = new Date(); d.setHours(h || 0, m || 0, 0, 0);
   return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+// "18:00" -> "6P", "09:30" -> "9:30A" — a shorter form for tight calendar
+// cells, where formatTimeStrTo12h's "9:00 AM" wouldn't fit two of.
+function formatTimeShort(hhmm) {
+  if (!hhmm) return "";
+  const [h, m] = hhmm.split(":").map(Number);
+  const period = h < 12 ? "A" : "P";
+  let hour12 = h % 12; if (hour12 === 0) hour12 = 12;
+  return m ? `${hour12}:${String(m).padStart(2, "0")}${period}` : `${hour12}${period}`;
 }
 
 
@@ -1934,8 +1973,14 @@ function AttendanceRulesEditor({ user, onSave }) {
     selectedDates.forEach(dateStr => {
       const merged = { ...(normalizeDateOverride(next[dateStr]) || {}) };
       if (bulkDayType === "default") delete merged.dayType; else merged.dayType = bulkDayType;
-      if (bulkStart) merged.startTime = bulkStart; 
-      if (bulkEnd) merged.endTime = bulkEnd;
+      if (bulkDayType === "sick" || bulkDayType === "voluntary") {
+        // A leave day has no schedule to speak of — drop any hours that
+        // might already be set on this date so nothing stale lingers.
+        delete merged.startTime; delete merged.endTime;
+      } else {
+        if (bulkStart) merged.startTime = bulkStart;
+        if (bulkEnd) merged.endTime = bulkEnd;
+      }
       if (Object.keys(merged).length === 0) delete next[dateStr]; else next[dateStr] = merged;
     });
     patch("dateOverrides", next);
@@ -1996,7 +2041,7 @@ function AttendanceRulesEditor({ user, onSave }) {
           <div>
             <div style={{ fontWeight: 700, fontSize: 13 }}>Work calendar</div>
             <div style={{ color: COLORS.mute, fontSize: 11.5 }}>
-              {bulkMode ? "Click dates to select them, then set a day type and/or hours for all of them below." : "Click a date to mark it a day off or a working day. Select multiple to also adjust hours for specific dates."}
+              {bulkMode ? "Click dates to select them, then set a day type and/or hours for all of them below." : "Click a date to mark it a day off or a working day. Select multiple to also adjust hours or tag Sick/Voluntary Leave for specific dates."}
               {" "}{overrideCount > 0 && `${overrideCount} custom date${overrideCount === 1 ? "" : "s"} set.`}
             </div>
           </div>
@@ -2021,17 +2066,23 @@ function AttendanceRulesEditor({ user, onSave }) {
             const isToday = dateStr === today.toISOString().slice(0, 10);
             const isSelected = bulkMode && selectedDates.includes(dateStr);
             const eff = effectiveHoursForDate(dateStr, rules);
-            const title = `${working ? "Working day" : "Day off"}${hasSchedule ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""}${bulkMode ? " — click to select" : " — click to change"}`;
+            const leaveLabel = override?.dayType === "sick" ? "SL" : override?.dayType === "voluntary" ? "VL" : null;
+            const title = `${leaveLabel ? (override.dayType === "sick" ? "Sick Leave" : "Voluntary Leave") : working ? "Working day" : "Day off"}${eff && hasSchedule ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""}${bulkMode ? " — click to select" : " — click to change"}`;
+            let cellBg = working ? COLORS.successSoft : "#fff";
+            let cellFg = working ? COLORS.success : COLORS.mute;
+            if (leaveLabel === "SL") { cellBg = COLORS.dataSoft; cellFg = COLORS.dataText; }
+            else if (leaveLabel === "VL") { cellBg = COLORS.creativeSoft; cellFg = COLORS.creativeText; }
             return (
               <button key={i} onClick={() => bulkMode ? toggleDateSelected(dateStr) : cycleDate(dateStr)} className="cly-btn" title={title} style={{
                 position: "relative", aspectRatio: "1", borderRadius: 6, fontSize: 11.5, fontWeight: 600,
-                background: working ? COLORS.successSoft : "#fff",
-                color: working ? COLORS.success : COLORS.mute,
+                background: cellBg, color: cellFg,
                 border: isSelected ? `2px solid ${COLORS.data}` : isToday ? `1.5px solid ${COLORS.ink}` : isOverride ? `1.5px dashed ${COLORS.gold}` : `1px solid ${COLORS.line}`,
                 boxShadow: isSelected ? `0 0 0 2px ${COLORS.dataSoft}` : "none",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 0,
               }}>
                 {isSelected && <CheckCircle2 size={11} style={{ position: "absolute", top: 2, right: 2, color: COLORS.data }} />}
-                {d}
+                <span>{d}</span>
+                {leaveLabel && <span style={{ fontSize: 7.5, fontWeight: 700, lineHeight: 1 }}>{leaveLabel}</span>}
               </button>
             );
           })}
@@ -2045,15 +2096,20 @@ function AttendanceRulesEditor({ user, onSave }) {
                   <option value="default">Default</option>
                   <option value="work">Working day</option>
                   <option value="off">Day off</option>
+                  <option value="sick">Sick Leave (SL)</option>
+                  <option value="voluntary">Voluntary Leave (VL)</option>
                 </select>
               </label>
-              <label style={{ fontSize: 11.5, fontWeight: 600 }}>Start time
-                <input type="time" value={bulkStart} onChange={e => setBulkStart(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
+              <label style={{ fontSize: 11.5, fontWeight: 600, opacity: (bulkDayType === "sick" || bulkDayType === "voluntary") ? 0.4 : 1 }}>Start time
+                <input type="time" disabled={bulkDayType === "sick" || bulkDayType === "voluntary"} value={bulkStart} onChange={e => setBulkStart(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
               </label>
-              <label style={{ fontSize: 11.5, fontWeight: 600 }}>End time
-                <input type="time" value={bulkEnd} onChange={e => setBulkEnd(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
+              <label style={{ fontSize: 11.5, fontWeight: 600, opacity: (bulkDayType === "sick" || bulkDayType === "voluntary") ? 0.4 : 1 }}>End time
+                <input type="time" disabled={bulkDayType === "sick" || bulkDayType === "voluntary"} value={bulkEnd} onChange={e => setBulkEnd(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
               </label>
             </div>
+            {(bulkDayType === "sick" || bulkDayType === "voluntary") && (
+              <div style={{ fontSize: 11, color: COLORS.mute }}>No work start/end time is needed for a leave day — hours are cleared automatically.</div>
+            )}
             <div style={{ display: "flex", gap: 8 }}>
               <button disabled={selectedDates.length === 0} onClick={applyBulkToSelection} className="cly-btn" style={{ background: selectedDates.length ? COLORS.ink : COLORS.line, color: selectedDates.length ? "#fff" : COLORS.mute, borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700 }}>
                 Apply to selection
@@ -2317,8 +2373,11 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
   const dayMap = computeMonthCalendarForUser(monthEntries, selectedUser, viewYear, viewMonth, todayStr);
   const weeks = getMonthMatrix(viewYear, viewMonth);
 
-  const counts = { Present: 0, Late: 0, "Half day": 0, Absent: 0, "Left early": 0 };
-  Object.values(dayMap).forEach(v => { if (v.status && counts[v.status] !== undefined) counts[v.status]++; });
+  const counts = { Present: 0, Late: 0, "Half day": 0, Absent: 0, "Left early": 0, "Sick Leave": 0, "Voluntary Leave": 0 };
+  Object.values(dayMap).forEach(v => {
+    if (v.status && counts[v.status] !== undefined) counts[v.status]++;
+    else if (v.dayOff && (v.manualLabel === "Sick Leave" || v.manualLabel === "Voluntary Leave")) counts[v.manualLabel]++;
+  });
 
   const dayEntries = correctingDate ? monthEntries.filter(e => e.date === correctingDate).sort((a, b) => a.clockIn - b.clockIn) : [];
 
@@ -2353,12 +2412,12 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
 
       {isOwner && person && (
         <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
-          {selectedUser.name} — {person.department}, {person.role} · {formatTimeStrTo12h(rules.workStartTime)}–{formatTimeStrTo12h(rules.workEndTime)} · {bulkMode ? "click days to select them, then apply a day type below" : "click a day to add or correct a session"}
+          {selectedUser.name} — {person.department}, {person.role} · {bulkMode ? "click days to select them, then apply a day type below" : "click a day to add or correct a session"}. Hours shown per day — they can differ day to day.
         </div>
       )}
       {!isOwner && (
         <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
-          Schedule: {formatTimeStrTo12h(rules.workStartTime)}–{formatTimeStrTo12h(rules.workEndTime)}
+          Hours shown per day below — your schedule can differ day to day.
         </div>
       )}
 
@@ -2374,7 +2433,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
       </div>
 
       <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20, display: "flex", justifyContent: "center" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, width: "100%", maxWidth: 380 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, width: "100%", maxWidth: 460 }}>
           {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
           {weeks.flat().map((d, i) => {
             if (d === null) return <div key={i} />;
@@ -2383,8 +2442,13 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             const isToday = dateStr === todayStr;
             const clickable = isOwner && !info.future;
             const isSelected = bulkMode && selectedDates.includes(dateStr);
+            const eff = (!info.future && !info.dayOff) ? effectiveHoursForDate(dateStr, rules) : null;
             let bg = "#fff", fg = COLORS.text, border = COLORS.line, label = "";
-            if (info.dayOff) { bg = COLORS.cream; fg = COLORS.mute; label = info.manualLabel || "Off"; }
+            if (info.dayOff) {
+              if (info.manualLabel === "Sick Leave") { bg = COLORS.dataSoft; fg = COLORS.dataText; label = "SL"; }
+              else if (info.manualLabel === "Voluntary Leave") { bg = COLORS.creativeSoft; fg = COLORS.creativeText; label = "VL"; }
+              else { bg = COLORS.cream; fg = COLORS.mute; label = info.manualLabel || "Off"; }
+            }
             else if (info.future) { bg = "#fff"; fg = COLORS.line; }
             else if (info.pending) { bg = "#fff"; fg = COLORS.mute; label = "Today"; }
             else if (info.empty) { bg = "#fff"; fg = COLORS.mute; }
@@ -2396,17 +2460,18 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             return (
               <div key={i}
                 onClick={clickable ? () => { if (bulkMode) { toggleDateSelected(dateStr); } else { setCorrectingDate(dateStr); setEditingEntry(null); } } : undefined}
-                title={info.status ? `${info.status}${info.manual ? " (manually set)" : ""}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}` : (info.dayOff ? (info.manualLabel || "Day off") : (clickable ? (bulkMode ? "Click to select" : "Click to add or correct a session") : ""))}
+                title={info.status ? `${info.status}${info.manual ? " (manually set)" : ""}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}${eff ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""}` : (info.dayOff ? (info.manualLabel || "Day off") : (clickable ? (bulkMode ? "Click to select" : "Click to add or correct a session") : ""))}
                 style={{
-                  position: "relative", aspectRatio: "1", borderRadius: 6, background: bg, color: fg,
+                  position: "relative", minHeight: 58, borderRadius: 6, background: bg, color: fg,
                   border: isSelected ? `2px solid ${COLORS.data}` : isToday ? `1.5px solid ${COLORS.ink}` : info.manual ? `1.5px dashed ${COLORS.gold}` : `1px solid ${border}`,
                   boxShadow: isSelected ? `0 0 0 2px ${COLORS.dataSoft}` : "none",
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1,
-                  cursor: clickable ? "pointer" : "default",
+                  cursor: clickable ? "pointer" : "default", padding: "2px 1px",
                 }}>
                 {isSelected && <CheckCircle2 size={12} style={{ position: "absolute", top: 3, right: 3, color: COLORS.data }} />}
                 <span style={{ fontSize: 11.5, fontWeight: 700 }}>{d}</span>
                 {label && <span style={{ fontSize: 7.5, fontWeight: 600, textAlign: "center", lineHeight: 1 }}>{label}</span>}
+                {eff && <span style={{ fontSize: 6.5, fontWeight: 500, textAlign: "center", lineHeight: 1, opacity: 0.8, marginTop: 1 }}>{formatTimeShort(eff.workStartTime)}–{formatTimeShort(eff.workEndTime)}</span>}
               </div>
             );
           })}
@@ -2423,6 +2488,8 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             <option value="Off">Off</option>
             <option value="Restday">Restday</option>
             <option value="Holiday Off">Holiday Off</option>
+            <option value="Sick Leave">Sick Leave</option>
+            <option value="Voluntary Leave">Voluntary Leave</option>
             <option value="Present">Present (clear override)</option>
           </select>
           <button
@@ -2459,6 +2526,8 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
                 <option value="Off">Off</option>
                 <option value="Restday">Restday</option>
                 <option value="Holiday Off">Holiday Off</option>
+                <option value="Sick Leave">Sick Leave</option>
+                <option value="Voluntary Leave">Voluntary Leave</option>
               </select>
               <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 5 }}>
                 Choosing anything but "Present" marks the day directly and overrides whatever the sessions below would otherwise compute. Switch back to "Present" any time to go back to following the recorded sessions.
@@ -2498,6 +2567,167 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
     </div>
   );
 }
+
+function leaveStatusMeta(status) {
+  if (status === "pending_admin") return { soft: COLORS.warningSoft, text: COLORS.warning, label: "Pending Admin Approval" };
+  if (status === "pending_owner") return { soft: COLORS.goldSoft, text: "#6B4A1A", label: "Pending Owner Approval" };
+  if (status === "approved") return { soft: COLORS.successSoft, text: COLORS.success, label: "Approved" };
+  if (status === "denied") return { soft: COLORS.dangerSoft, text: COLORS.danger, label: "Denied" };
+  return { soft: COLORS.line, text: COLORS.mute, label: "Cancelled" }; // "cancelled"
+}
+function leaveTypeMeta(type) {
+  return type === "Sick Leave" ? { soft: COLORS.dataSoft, text: COLORS.dataText } : { soft: COLORS.creativeSoft, text: COLORS.creativeText };
+}
+function formatLeaveRange(startDate, endDate) {
+  if (startDate === endDate) return formatPeopleDate(startDate);
+  return `${formatPeopleDate(startDate)} – ${formatPeopleDate(endDate)}`;
+}
+// Leave Request: Employee/Admin file a Sick or Voluntary Leave request for
+// themselves; an Admin reviews it first (unless the requester IS an Admin,
+// in which case it skips straight to the Owner); the Owner always gives the
+// final approval, and approving writes the leave straight onto the
+// requester's Work calendar so it's reflected in Time Tracking/Attendance
+// automatically.
+function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, adminDecideLeave, ownerDecideLeave, cancelLeaveRequest }) {
+  const isOwner = user.role === "OWNER";
+  const isAdmin = user.role === "ADMIN";
+  const [form, setForm] = useState({ type: "Sick Leave", startDate: "", endDate: "", reason: "" });
+  const [submitting, setSubmitting] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+
+  const myRequests = [...leaveRequests].filter(r => r.userId === user.id).sort((a, b) => b.createdAt - a.createdAt);
+  const adminQueue = isAdmin ? leaveRequests.filter(r => r.status === "pending_admin" && r.userId !== user.id) : [];
+  const ownerQueue = isOwner ? leaveRequests.filter(r => r.status === "pending_owner") : [];
+  const fullHistory = (isOwner || isAdmin) ? [...leaveRequests].sort((a, b) => b.createdAt - a.createdAt) : [];
+
+  function patch(k, v) { setForm(f => ({ ...f, [k]: v })); }
+  const canSubmit = form.startDate && form.endDate && form.startDate <= form.endDate;
+
+  async function handleSubmit() {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    try {
+      await submitLeaveRequest(form);
+      setForm({ type: "Sick Leave", startDate: "", endDate: "", reason: "" });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+  async function act(fn, id) {
+    setBusyId(id);
+    try { await fn(id); } finally { setBusyId(null); }
+  }
+
+  function RequestRow({ r, showRequester, actions }) {
+    const sm = leaveStatusMeta(r.status);
+    const tm = leaveTypeMeta(r.type);
+    const p = showRequester ? people.find(pp => pp.linkedUserId === r.userId) : null;
+    return (
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: "13px 16px", borderTop: `1px solid ${COLORS.line}`, flexWrap: "wrap" }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {showRequester && <span style={{ fontSize: 13.5, fontWeight: 700 }}>{r.userName}</span>}
+            <Badge soft={tm.soft} text={tm.text}>{r.type === "Sick Leave" ? "SL" : "VL"}</Badge>
+            <Badge soft={sm.soft} text={sm.text}>{sm.label}</Badge>
+          </div>
+          <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: 3 }}>
+            {formatLeaveRange(r.startDate, r.endDate)}{showRequester && p ? ` · ${p.department}` : ""} · requested {timeAgo(r.createdAt)}
+          </div>
+          {r.reason && <div style={{ fontSize: 12.5, marginTop: 4 }}>{r.reason}</div>}
+          {r.adminDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 4 }}>Admin ({r.adminDecision.byName}): {r.adminDecision.decision === "approve" ? "approved" : "denied"}{r.adminDecision.note ? ` — ${r.adminDecision.note}` : ""}</div>}
+          {r.ownerDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 2 }}>Owner ({r.ownerDecision.byName}): {r.ownerDecision.decision === "approve" ? "approved" : "denied"}{r.ownerDecision.note ? ` — ${r.ownerDecision.note}` : ""}</div>}
+        </div>
+        {actions}
+      </div>
+    );
+  }
+
+  return (
+    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 24 }}>
+      {!isOwner && (
+        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>New leave request</div>
+          <div style={{ fontSize: 12.5, color: COLORS.mute, marginBottom: 14 }}>
+            {isAdmin ? "Goes straight to the Owner for approval." : "Goes to an Admin first, then the Owner for final approval."}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, maxWidth: 560 }}>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Type
+              <select value={form.type} onChange={e => patch("type", e.target.value)} style={{ ...inputStyle, marginTop: 5 }}>
+                <option value="Sick Leave">Sick Leave</option>
+                <option value="Voluntary Leave">Voluntary Leave</option>
+              </select>
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Start date
+              <input type="date" value={form.startDate} onChange={e => patch("startDate", e.target.value)} style={{ ...inputStyle, marginTop: 5 }} />
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>End date
+              <input type="date" value={form.endDate} min={form.startDate || undefined} onChange={e => patch("endDate", e.target.value)} style={{ ...inputStyle, marginTop: 5 }} />
+            </label>
+          </div>
+          <label style={{ fontSize: 12, fontWeight: 600, display: "block", marginTop: 12, maxWidth: 560 }}>Reason (optional)
+            <input type="text" value={form.reason} onChange={e => patch("reason", e.target.value)} placeholder="A short note for whoever's reviewing this" style={{ ...inputStyle, marginTop: 5 }} />
+          </label>
+          <button disabled={!canSubmit || submitting} onClick={handleSubmit} className="cly-btn"
+            style={{ marginTop: 14, background: canSubmit ? COLORS.ink : COLORS.line, color: canSubmit ? "#fff" : COLORS.mute, borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 700 }}>
+            {submitting ? "Submitting…" : "Submit request"}
+          </button>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Needs your approval</div>
+          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+            {adminQueue.length === 0 ? <EmptyState icon={CalendarCheck} title="Nothing pending" body="No leave requests are waiting on you." /> :
+              adminQueue.map(r => (
+                <RequestRow key={r.id} r={r} showRequester actions={
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    <button disabled={busyId === r.id} onClick={() => act(id => adminDecideLeave(id, "deny"), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>Deny</button>
+                    <button disabled={busyId === r.id} onClick={() => act(id => adminDecideLeave(id, "approve"), r.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>Approve</button>
+                  </div>
+                } />
+              ))}
+          </div>
+        </div>
+      )}
+
+      {isOwner && (
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Needs your final approval</div>
+          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+            {ownerQueue.length === 0 ? <EmptyState icon={CalendarCheck} title="Nothing pending" body="No leave requests are waiting on your approval." /> :
+              ownerQueue.map(r => (
+                <RequestRow key={r.id} r={r} showRequester actions={
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    <button disabled={busyId === r.id} onClick={() => act(id => ownerDecideLeave(id, "deny"), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>Deny</button>
+                    <button disabled={busyId === r.id} onClick={() => act(id => ownerDecideLeave(id, "approve"), r.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>Approve</button>
+                  </div>
+                } />
+              ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>{isOwner || isAdmin ? "All leave requests" : "My leave request history"}</div>
+        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+          {(isOwner || isAdmin ? fullHistory : myRequests).length === 0 ? (
+            <EmptyState icon={CalendarCheck} title="No leave requests yet" body={isOwner || isAdmin ? "Nothing's been filed yet." : "Submit one above when you need time off."} />
+          ) : (isOwner || isAdmin ? fullHistory : myRequests).map(r => (
+            <RequestRow key={r.id} r={r} showRequester={isOwner || isAdmin} actions={
+              (!isOwner && !isAdmin && (r.status === "pending_admin" || r.status === "pending_owner")) ? (
+                <button disabled={busyId === r.id} onClick={() => act(id => cancelLeaveRequest(id), r.id)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12.5, fontWeight: 600 }}>
+                  Cancel
+                </button>
+              ) : null
+            } />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------- */
 function AuthTab({ auth, setAuth, canEdit }) {
   const patch = (k, v) => canEdit && setAuth({ ...auth, [k]: v });
@@ -2910,6 +3140,7 @@ export default function App() {
   const [peopleConfig, setPeopleConfig] = useState(SEED_PEOPLE_CONFIG);
   const [timeEntries, setTimeEntries] = useState([]);
   const [requests, setRequests] = useState([]);
+  const [leaveRequests, setLeaveRequests] = useState([]);
   const [auth, setAuth] = useState(SEED_AUTH);
   const [notif, setNotif] = useState(SEED_NOTIF);
   const [restrictions, setRestrictions] = useState(SEED_RESTRICTIONS);
@@ -2951,6 +3182,7 @@ export default function App() {
     (async () => {
       const canReadRequests = user.role === "OWNER" || user.role === "ADMIN";
       const canReadPeople = user.role !== "CLIENT";
+      const canReadAllLeave = user.role === "OWNER" || user.role === "ADMIN";
       const jobs = [
         { key: "users", run: () => listCollection("users"), fallback: [] },
         { key: "groups", run: () => listCollection("groups").then(g => g.length ? g : SEED_GROUPS), fallback: SEED_GROUPS },
@@ -2968,6 +3200,9 @@ export default function App() {
         // Only the Owner can read every user's time entries (per firestore.rules);
         // everyone else's query is scoped to their own uid so it isn't denied.
         { key: "timeEntries", run: () => (user.role === "OWNER" ? listCollection("time-entries") : listCollectionWhere("time-entries", "userId", user.id)), fallback: [] },
+        // Same pattern as time-entries: Admin/Owner see every leave request
+        // (they're the approvers), everyone else only their own.
+        { key: "leaveRequests", run: () => (canReadAllLeave ? listCollection("leave-requests") : listCollectionWhere("leave-requests", "userId", user.id)), fallback: [] },
       ];
       const results = await Promise.allSettled(jobs.map(j => j.run()));
       const values = {};
@@ -2987,6 +3222,7 @@ export default function App() {
       setFiles([...values.files].sort((x, y) => y.uploadedAt - x.uploadedAt));
       setPeople(values.people); setPeopleConfig(values.peopleConfig);
       setTimeEntries(values.timeEntries);
+      setLeaveRequests(values.leaveRequests);
       if (failed.length) {
         // Most common cause: a Firestore security rule for one of these
         // collections hasn't been deployed yet (committing firestore.rules
@@ -3338,6 +3574,86 @@ export default function App() {
       throw e;
     }
   }
+  // Leave requests: Employee -> Admin -> Owner. An Admin's own request skips
+  // straight to the Owner (an Admin can't approve their own leave). Approval
+  // at every stage is Owner-only for an Admin requester, and Admin-then-Owner
+  // for everyone else — the Owner always has the final say.
+  async function submitLeaveRequest({ type, startDate, endDate, reason }) {
+    try {
+      const startsAsOwnerStage = user.role === "ADMIN";
+      const payload = {
+        userId: user.id, userName: user.name, type, startDate, endDate, reason: reason || "",
+        status: startsAsOwnerStage ? "pending_owner" : "pending_admin",
+        createdAt: Date.now(),
+      };
+      const id = await addDocIn("leave-requests", payload);
+      setLeaveRequests([...leaveRequests, { id, ...payload }]);
+      notify("Leave request submitted.");
+    } catch (e) {
+      console.error("Failed to submit leave request:", e);
+      notify("Couldn't submit — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function adminDecideLeave(reqId, decision, note) {
+    try {
+      const patch = decision === "approve"
+        ? { status: "pending_owner", adminDecision: { by: user.id, byName: user.name, decision: "approve", note: note || "", at: Date.now() } }
+        : { status: "denied", adminDecision: { by: user.id, byName: user.name, decision: "deny", note: note || "", at: Date.now() } };
+      await updateDocIn("leave-requests", reqId, patch);
+      setLeaveRequests(leaveRequests.map(r => r.id === reqId ? { ...r, ...patch } : r));
+      notify(decision === "approve" ? "Sent to the Owner for final approval." : "Leave request denied.");
+    } catch (e) {
+      console.error("Failed to record admin decision:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Owner's approval is final. On approve, the leave dates are written
+  // straight onto the requester's Work calendar (dateOverrides) as a
+  // Sick/Voluntary Leave day type, so Time Tracking and Attendance both pick
+  // it up automatically — no separate step to block off their schedule.
+  async function ownerDecideLeave(reqId, decision, note) {
+    const req = leaveRequests.find(r => r.id === reqId);
+    if (!req) return;
+    try {
+      const patch = { status: decision === "approve" ? "approved" : "denied", ownerDecision: { by: user.id, byName: user.name, decision, note: note || "", at: Date.now() } };
+      await updateDocIn("leave-requests", reqId, patch);
+      setLeaveRequests(leaveRequests.map(r => r.id === reqId ? { ...r, ...patch } : r));
+      if (decision === "approve") {
+        const targetUser = users.find(u => u.id === req.userId);
+        if (targetUser) {
+          const rules = getAttendanceRules(targetUser);
+          const nextOverrides = { ...rules.dateOverrides };
+          const dayType = req.type === "Sick Leave" ? "sick" : "voluntary";
+          dateRangeArray(req.startDate, req.endDate).forEach(dateStr => {
+            nextOverrides[dateStr] = { dayType };
+          });
+          const nextRules = { ...rules, dateOverrides: nextOverrides };
+          await updateDocIn("users", targetUser.id, { attendanceRules: nextRules });
+          setUsers(prev => prev.map(u => u.id === targetUser.id ? { ...u, attendanceRules: nextRules } : u));
+        }
+      }
+      notify(decision === "approve" ? "Leave approved." : "Leave denied.");
+    } catch (e) {
+      console.error("Failed to record owner decision:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Lets the requester pull back their own request while it's still
+  // somewhere in the approval chain (not yet approved/denied).
+  async function cancelLeaveRequest(reqId) {
+    try {
+      await updateDocIn("leave-requests", reqId, { status: "cancelled" });
+      setLeaveRequests(leaveRequests.map(r => r.id === reqId ? { ...r, status: "cancelled" } : r));
+      notify("Leave request cancelled.");
+    } catch (e) {
+      console.error("Failed to cancel leave request:", e);
+      notify("Couldn't cancel — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
   async function resolveRequest(id, status) {
     const req = requests.find(r => r.id === id);
     await updateDocIn("requests", id, { status });
@@ -3392,7 +3708,7 @@ export default function App() {
               page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" :
               page === "people-info" ? "People Information" : page === "org-chart" ? "Organizational Chart" : page === "time-tracking" ? "Time Tracking" :
               page === "time-inout" ? "Time in/Time out information" :
-              page === "attendance" ? "Attendance" : "Admin settings"
+              page === "attendance" ? "Attendance" : page === "leave-requests" ? "Leave Requests" : "Admin settings"
             } subtitle={
               page === "dashboard" ? "Your workspace at a glance." :
               page === "files" ? "Shared storage for your team and clients." :
@@ -3401,7 +3717,8 @@ export default function App() {
               page === "org-chart" ? "Reporting structure, built from People Information." :
               page === "time-tracking" ? "Live time-tracking sessions." :
               page === "time-inout" ? "Clock-in and clock-out records." :
-              page === "attendance" ? "Daily attendance summaries." : "Authentication, users, groups, and restrictions."
+              page === "attendance" ? "Daily attendance summaries." :
+              page === "leave-requests" ? "Request Sick or Voluntary Leave and track approvals." : "Authentication, users, groups, and restrictions."
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
               {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
@@ -3412,6 +3729,7 @@ export default function App() {
               {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
+              {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
