@@ -58,5 +58,19 @@ service cloud.firestore {
       allow update: if signedIn() && (resource.data.userId == request.auth.uid || isOwner());
       allow delete: if isOwner();
     }
+
+    // Leave requests: an Employee/Admin files one for themselves (never the
+    // Owner, who has no personal schedule to take leave from). The
+    // Admin-then-Owner approval chain is enforced by the app via the
+    // status field (pending_admin -> pending_owner -> approved/denied) —
+    // this rule just gates who can read/write the underlying doc: the
+    // requester (to view their own and cancel it) or any Admin/Owner (to
+    // review and decide).
+    match /leave-requests/{requestId} {
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdminOrOwner());
+      allow create: if signedIn() && myRole() != 'CLIENT' && myRole() != 'OWNER' && request.resource.data.userId == request.auth.uid;
+      allow update: if signedIn() && (resource.data.userId == request.auth.uid || isAdminOrOwner());
+      allow delete: if isOwner();
+    }
   }
 }
