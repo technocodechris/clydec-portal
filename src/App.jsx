@@ -1767,15 +1767,6 @@ function formatTimeStrTo12h(hhmm) {
   const d = new Date(); d.setHours(h || 0, m || 0, 0, 0);
   return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
-// "18:00" -> "6P", "09:30" -> "9:30A" — a shorter form for tight calendar
-// cells, where formatTimeStrTo12h's "9:00 AM" wouldn't fit two of.
-function formatTimeShort(hhmm) {
-  if (!hhmm) return "";
-  const [h, m] = hhmm.split(":").map(Number);
-  const period = h < 12 ? "A" : "P";
-  let hour12 = h % 12; if (hour12 === 0) hour12 = 12;
-  return m ? `${hour12}:${String(m).padStart(2, "0")}${period}` : `${hour12}${period}`;
-}
 
 
 function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut, setUserTimeTrackingEnabled, saveUserAttendanceRules }) {
@@ -1785,6 +1776,7 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
   const [busy, setBusy] = useState(false);
   const [, forceTick] = useState(0);
   const [expandedId, setExpandedId] = useState(null);
+  const [editorDirty, setEditorDirty] = useState(false);
 
   useEffect(() => {
     const t = setInterval(() => forceTick(n => n + 1), 1000);
@@ -1892,7 +1884,11 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
                         {person && <span style={{ fontSize: 11.5, color: COLORS.mute }}>{person.department} · {person.role}</span>}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                        <button onClick={() => setExpandedId(isExpanded ? null : u.id)} className="cly-btn" style={{ background: "none", color: COLORS.data, fontSize: 12, fontWeight: 700 }}>
+                        <button onClick={() => {
+                          if (isExpanded && editorDirty && !window.confirm("You have unsaved changes to this person's hours/calendar. Close without saving?")) return;
+                          setEditorDirty(false);
+                          setExpandedId(isExpanded ? null : u.id);
+                        }} className="cly-btn" style={{ background: "none", color: COLORS.data, fontSize: 12, fontWeight: 700 }}>
                           {isExpanded ? "Close" : "Edit hours & calendar"}
                         </button>
                         <Toggle checked={!!u.timeTrackingEnabled} onChange={(v) => setUserTimeTrackingEnabled(u.id, v)} />
@@ -1900,7 +1896,7 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
                     </div>
                     {isExpanded && (
                       <div style={{ paddingBottom: 18 }}>
-                        <AttendanceRulesEditor user={u} onSave={(rules) => saveUserAttendanceRules(u.id, rules)} />
+                        <AttendanceRulesEditor user={u} onSave={(rules) => { saveUserAttendanceRules(u.id, rules); setEditorDirty(false); }} onDirtyChange={setEditorDirty} />
                       </div>
                     )}
                   </div>
@@ -1919,23 +1915,44 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
 
 // Per-person hours (start/end time, grace period, full/half-day thresholds)
 // plus a work calendar (weekly pattern + specific-date overrides for
-// holidays/leave, and per-date schedule corrections). Used inside each team
-// member's expanded row above.
-function AttendanceRulesEditor({ user, onSave }) {
+// holidays/leave/Sick/Voluntary Leave, and per-date schedule corrections).
+// Used inside each team member's expanded row above.
+//
+// Calendar interaction is a single, unambiguous flow: click any date(s) —
+// they get a selection ring — and a panel appears below with a Day type
+// and, for working days, Start/End time, plus an Apply button. There is no
+// separate "bulk mode" toggle or silent click-to-cycle; one date selected
+// behaves exactly like several, just with the panel pre-filled from that
+// date's current setting.
+function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
   const initial = getAttendanceRules(user);
   const [rules, setRules] = useState(initial);
   const [today] = useState(new Date());
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
   const dirty = JSON.stringify(rules) !== JSON.stringify(initial);
+  useEffect(() => { onDirtyChange && onDirtyChange(dirty); }, [dirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Multi-select mode: pick several dates at once and apply one day type
-  // and/or a schedule correction (different start/end time) to all of them.
-  const [bulkMode, setBulkMode] = useState(false);
   const [selectedDates, setSelectedDates] = useState([]);
-  const [bulkDayType, setBulkDayType] = useState("default"); // "default" | "work" | "off"
-  const [bulkStart, setBulkStart] = useState("");
-  const [bulkEnd, setBulkEnd] = useState("");
+  const [panelDayType, setPanelDayType] = useState("default"); // "default" | "work" | "off" | "sick" | "voluntary"
+  const [panelStart, setPanelStart] = useState("");
+  const [panelEnd, setPanelEnd] = useState("");
+  const hoursApply = panelDayType === "default" || panelDayType === "work";
+
+  // Selecting exactly one date pre-fills the panel from what's already set
+  // on it, so clicking a date behaves like "open its settings." Adding a
+  // 2nd+ date leaves the panel as-is (that's the bulk-apply case).
+  useEffect(() => {
+    if (selectedDates.length === 1) {
+      const o = normalizeDateOverride(rules.dateOverrides[selectedDates[0]]) || {};
+      setPanelDayType(o.dayType || "default");
+      setPanelStart(o.startTime || "");
+      setPanelEnd(o.endTime || "");
+    } else if (selectedDates.length === 0) {
+      setPanelDayType("default"); setPanelStart(""); setPanelEnd("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDates.join(",")]);
 
   function patch(k, v) { setRules(r => ({ ...r, [k]: v })); }
   function toggleWeekday(i) {
@@ -1943,56 +1960,33 @@ function AttendanceRulesEditor({ user, onSave }) {
     next[i] = !next[i];
     patch("weeklyWorkDays", next);
   }
-  // Single-click (outside bulk mode): cycles the day-type only — default ->
-  // forced opposite -> back to default — without touching any schedule
-  // correction already set on that date.
-  function cycleDate(dateStr) {
-    const cur = normalizeDateOverride(rules.dateOverrides[dateStr]) || {};
-    const defaultsToWork = rules.weeklyWorkDays[new Date(dateStr + "T00:00:00").getDay()];
-    const nextDayType = cur.dayType === undefined ? (defaultsToWork ? "off" : "work") : undefined;
-    const merged = { ...cur };
-    if (nextDayType === undefined) delete merged.dayType; else merged.dayType = nextDayType;
-    const next = { ...rules.dateOverrides };
-    if (Object.keys(merged).length === 0) delete next[dateStr]; else next[dateStr] = merged;
-    patch("dateOverrides", next);
-  }
-  function toggleBulkMode() {
-    setBulkMode(m => !m);
-    setSelectedDates([]);
-    setBulkDayType("default"); setBulkStart(""); setBulkEnd("");
-  }
   function toggleDateSelected(dateStr) {
     setSelectedDates(prev => prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr]);
   }
-  // Applies the bulk day type / schedule correction to every selected date
-  // in one go — e.g. "these 5 dates start at 8 AM instead of 6 PM" or "mark
-  // this whole week as a holiday." Leaving a field at its default/blank
-  // means "don't change that part" for dates that already had an override.
-  function applyBulkToSelection() {
+  // Applies the panel's Day type (and, for a working day, Start/End time) to
+  // every selected date in one go.
+  function applyToSelection() {
     const next = { ...rules.dateOverrides };
     selectedDates.forEach(dateStr => {
-      const merged = { ...(normalizeDateOverride(next[dateStr]) || {}) };
-      if (bulkDayType === "default") delete merged.dayType; else merged.dayType = bulkDayType;
-      if (bulkDayType === "sick" || bulkDayType === "voluntary") {
-        // A leave day has no schedule to speak of — drop any hours that
-        // might already be set on this date so nothing stale lingers.
-        delete merged.startTime; delete merged.endTime;
-      } else {
-        if (bulkStart) merged.startTime = bulkStart;
-        if (bulkEnd) merged.endTime = bulkEnd;
+      const merged = {};
+      if (panelDayType !== "default") merged.dayType = panelDayType;
+      if (hoursApply) {
+        if (panelStart) merged.startTime = panelStart;
+        if (panelEnd) merged.endTime = panelEnd;
       }
       if (Object.keys(merged).length === 0) delete next[dateStr]; else next[dateStr] = merged;
     });
     patch("dateOverrides", next);
-    setSelectedDates([]); setBulkMode(false); setBulkDayType("default"); setBulkStart(""); setBulkEnd("");
+    setSelectedDates([]);
   }
-  // Clears any override (day type + schedule correction) for every selected
-  // date, resetting them back to this person's normal weekly pattern/hours.
-  function clearBulkSelection() {
+  // Resets every selected date back to this person's normal weekly
+  // pattern/hours — removes the override entirely rather than setting it to
+  // something.
+  function clearSelection() {
     const next = { ...rules.dateOverrides };
     selectedDates.forEach(dateStr => { delete next[dateStr]; });
     patch("dateOverrides", next);
-    setSelectedDates([]); setBulkMode(false); setBulkDayType("default"); setBulkStart(""); setBulkEnd("");
+    setSelectedDates([]);
   }
 
   const weeks = getMonthMatrix(viewYear, viewMonth);
@@ -2041,14 +2035,11 @@ function AttendanceRulesEditor({ user, onSave }) {
           <div>
             <div style={{ fontWeight: 700, fontSize: 13 }}>Work calendar</div>
             <div style={{ color: COLORS.mute, fontSize: 11.5 }}>
-              {bulkMode ? "Click dates to select them, then set a day type and/or hours for all of them below." : "Click a date to mark it a day off or a working day. Select multiple to also adjust hours or tag Sick/Voluntary Leave for specific dates."}
+              Click one or more dates below, then set what applies to them in the panel that appears.
               {" "}{overrideCount > 0 && `${overrideCount} custom date${overrideCount === 1 ? "" : "s"} set.`}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button onClick={toggleBulkMode} className="cly-btn" style={{ background: bulkMode ? COLORS.ink : "#fff", color: bulkMode ? "#fff" : COLORS.text, border: `1px solid ${bulkMode ? COLORS.ink : COLORS.line}`, borderRadius: 8, padding: "0 12px", height: 26, fontSize: 11.5, fontWeight: 600 }}>
-              {bulkMode ? "Cancel selection" : "Select multiple dates"}
-            </button>
             <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 26, height: 26 }}>‹</button>
             <span style={{ fontSize: 12.5, fontWeight: 700, minWidth: 110, textAlign: "center" }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
             <button onClick={() => setViewMonth(m => { if (m === 11) { setViewYear(y => y + 1); return 0; } return m + 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 26, height: 26 }}>›</button>
@@ -2064,16 +2055,16 @@ function AttendanceRulesEditor({ user, onSave }) {
             const hasSchedule = !!(override && (override.startTime || override.endTime));
             const isOverride = !!override;
             const isToday = dateStr === today.toISOString().slice(0, 10);
-            const isSelected = bulkMode && selectedDates.includes(dateStr);
+            const isSelected = selectedDates.includes(dateStr);
             const eff = effectiveHoursForDate(dateStr, rules);
             const leaveLabel = override?.dayType === "sick" ? "SL" : override?.dayType === "voluntary" ? "VL" : null;
-            const title = `${leaveLabel ? (override.dayType === "sick" ? "Sick Leave" : "Voluntary Leave") : working ? "Working day" : "Day off"}${eff && hasSchedule ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""}${bulkMode ? " — click to select" : " — click to change"}`;
+            const title = `${leaveLabel ? (override.dayType === "sick" ? "Sick Leave" : "Voluntary Leave") : working ? "Working day" : "Day off"}${eff && hasSchedule ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""} — click to select`;
             let cellBg = working ? COLORS.successSoft : "#fff";
             let cellFg = working ? COLORS.success : COLORS.mute;
             if (leaveLabel === "SL") { cellBg = COLORS.dataSoft; cellFg = COLORS.dataText; }
             else if (leaveLabel === "VL") { cellBg = COLORS.creativeSoft; cellFg = COLORS.creativeText; }
             return (
-              <button key={i} onClick={() => bulkMode ? toggleDateSelected(dateStr) : cycleDate(dateStr)} className="cly-btn" title={title} style={{
+              <button key={i} onClick={() => toggleDateSelected(dateStr)} className="cly-btn" title={title} style={{
                 position: "relative", aspectRatio: "1", borderRadius: 6, fontSize: 11.5, fontWeight: 600,
                 background: cellBg, color: cellFg,
                 border: isSelected ? `2px solid ${COLORS.data}` : isToday ? `1.5px solid ${COLORS.ink}` : isOverride ? `1.5px dashed ${COLORS.gold}` : `1px solid ${COLORS.line}`,
@@ -2087,41 +2078,57 @@ function AttendanceRulesEditor({ user, onSave }) {
             );
           })}
         </div>
-        {bulkMode && (
-          <div style={{ marginTop: 12, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 10, maxWidth: 460 }}>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>{selectedDates.length} date{selectedDates.length === 1 ? "" : "s"} selected</div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: COLORS.mute, marginTop: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.successSoft, border: `1px solid ${COLORS.success}` }} /> Working day</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: "#fff", border: `1px solid ${COLORS.line}` }} /> Day off</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.dataSoft, border: `1px solid ${COLORS.dataText}` }} /> Sick Leave</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.creativeSoft, border: `1px solid ${COLORS.creativeText}` }} /> Voluntary Leave</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, border: `1.5px dashed ${COLORS.gold}` }} /> Has a custom override</span>
+        </div>
+
+        {selectedDates.length > 0 && (
+          <div style={{ marginTop: 12, background: "#fff", border: `2px solid ${COLORS.data}`, borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 10, maxWidth: 460 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{selectedDates.length} date{selectedDates.length === 1 ? "" : "s"} selected — {selectedDates.length === 1 ? formatPeopleDate(selectedDates[0]) : `${formatPeopleDate([...selectedDates].sort()[0])} and others`}</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
               <label style={{ fontSize: 11.5, fontWeight: 600 }}>Day type
-                <select value={bulkDayType} onChange={e => setBulkDayType(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }}>
-                  <option value="default">Default</option>
+                <select value={panelDayType} onChange={e => setPanelDayType(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }}>
+                  <option value="default">Default (follow weekly pattern)</option>
                   <option value="work">Working day</option>
                   <option value="off">Day off</option>
                   <option value="sick">Sick Leave (SL)</option>
                   <option value="voluntary">Voluntary Leave (VL)</option>
                 </select>
               </label>
-              <label style={{ fontSize: 11.5, fontWeight: 600, opacity: (bulkDayType === "sick" || bulkDayType === "voluntary") ? 0.4 : 1 }}>Start time
-                <input type="time" disabled={bulkDayType === "sick" || bulkDayType === "voluntary"} value={bulkStart} onChange={e => setBulkStart(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
+              <label style={{ fontSize: 11.5, fontWeight: 600, opacity: hoursApply ? 1 : 0.4 }}>Start time
+                <input type="time" disabled={!hoursApply} value={panelStart} onChange={e => setPanelStart(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
               </label>
-              <label style={{ fontSize: 11.5, fontWeight: 600, opacity: (bulkDayType === "sick" || bulkDayType === "voluntary") ? 0.4 : 1 }}>End time
-                <input type="time" disabled={bulkDayType === "sick" || bulkDayType === "voluntary"} value={bulkEnd} onChange={e => setBulkEnd(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
+              <label style={{ fontSize: 11.5, fontWeight: 600, opacity: hoursApply ? 1 : 0.4 }}>End time
+                <input type="time" disabled={!hoursApply} value={panelEnd} onChange={e => setPanelEnd(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }} />
               </label>
             </div>
-            {(bulkDayType === "sick" || bulkDayType === "voluntary") && (
-              <div style={{ fontSize: 11, color: COLORS.mute }}>No work start/end time is needed for a leave day — hours are cleared automatically.</div>
+            {!hoursApply && (
+              <div style={{ fontSize: 11, color: COLORS.mute }}>No work start/end time is needed for {panelDayType === "off" ? "a day off" : "a leave day"} — hours are cleared automatically.</div>
             )}
-            <div style={{ display: "flex", gap: 8 }}>
-              <button disabled={selectedDates.length === 0} onClick={applyBulkToSelection} className="cly-btn" style={{ background: selectedDates.length ? COLORS.ink : COLORS.line, color: selectedDates.length ? "#fff" : COLORS.mute, borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700 }}>
-                Apply to selection
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={applyToSelection} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700 }}>
+                Apply to {selectedDates.length === 1 ? "this date" : "selection"}
               </button>
-              <button disabled={selectedDates.length === 0} onClick={clearBulkSelection} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 600 }}>
-                Clear overrides for selection
+              <button onClick={clearSelection} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 600 }}>
+                Clear override{selectedDates.length === 1 ? "" : "s"}
+              </button>
+              <button onClick={() => setSelectedDates([])} className="cly-btn" style={{ background: "none", color: COLORS.mute, padding: "7px 6px", fontSize: 12, fontWeight: 600 }}>
+                Cancel
               </button>
             </div>
           </div>
         )}
       </div>
 
+      {dirty && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.goldSoft, color: "#6B4A1A", borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600 }}>
+          <CircleAlert size={15} /> You have unsaved changes — click Save to apply them.
+        </div>
+      )}
       <button disabled={!dirty} onClick={() => onSave(rules)} className="cly-btn"
         style={{ alignSelf: "flex-start", padding: "9px 18px", borderRadius: 8, fontWeight: 700, fontSize: 13, background: dirty ? COLORS.ink : COLORS.line, color: dirty ? "#fff" : COLORS.mute }}>
         Save
@@ -2314,6 +2321,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
   const groupOptions = groups.filter(g => eligibleUsers.some(u => u.role === g.id));
   const filteredUsers = filterGroup === "all" ? eligibleUsers : eligibleUsers.filter(u => u.role === filterGroup);
   const [selectedId, setSelectedId] = useState(isOwner ? (eligibleUsers.find(u => u.id !== user.id)?.id || user.id) : user.id);
+  const [view, setView] = useState("attendance"); // "attendance" | "schedule"
   const [today] = useState(new Date());
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
@@ -2396,12 +2404,14 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
                 return <option key={u.id} value={u.id}>{u.name}{u.role === "OWNER" ? " (You)" : ""}{p ? ` — ${p.department}` : ""}</option>;
               })}
             </select>
-            <button onClick={toggleBulkMode} className="cly-btn" style={{ background: bulkMode ? COLORS.ink : "#fff", color: bulkMode ? "#fff" : COLORS.text, border: `1px solid ${bulkMode ? COLORS.ink : COLORS.line}`, borderRadius: 8, padding: "0 14px", fontSize: 13, fontWeight: 600 }}>
-              {bulkMode ? "Cancel selection" : "Select multiple days"}
-            </button>
+            {view === "attendance" && (
+              <button onClick={toggleBulkMode} className="cly-btn" style={{ background: bulkMode ? COLORS.ink : "#fff", color: bulkMode ? "#fff" : COLORS.text, border: `1px solid ${bulkMode ? COLORS.ink : COLORS.line}`, borderRadius: 8, padding: "0 14px", fontSize: 13, fontWeight: 600 }}>
+                {bulkMode ? "Cancel selection" : "Select multiple days"}
+              </button>
+            )}
           </div>
         ) : (
-          <div style={{ fontSize: 14, fontWeight: 700 }}>My attendance{person ? ` · ${person.department}, ${person.role}` : ""}</div>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{view === "attendance" ? "My attendance" : "My schedule"}{person ? ` · ${person.department}, ${person.role}` : ""}</div>
         )}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 28, height: 28 }}>‹</button>
@@ -2410,14 +2420,22 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
         </div>
       </div>
 
+      <div style={{ display: "flex", gap: 4, background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 9, padding: 3, width: "fit-content" }}>
+        {[{ key: "attendance", label: "Attendance" }, { key: "schedule", label: "Schedule" }].map(t => (
+          <button key={t.key} onClick={() => setView(t.key)} className="cly-btn" style={{
+            padding: "6px 16px", borderRadius: 7, fontSize: 12.5, fontWeight: 700,
+            background: view === t.key ? "#fff" : "transparent",
+            color: view === t.key ? COLORS.ink : COLORS.mute,
+            boxShadow: view === t.key ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+          }}>{t.label}</button>
+        ))}
+      </div>
+
+      {view === "attendance" ? (
+        <>
       {isOwner && person && (
         <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
-          {selectedUser.name} — {person.department}, {person.role} · {bulkMode ? "click days to select them, then apply a day type below" : "click a day to add or correct a session"}. Hours shown per day — they can differ day to day.
-        </div>
-      )}
-      {!isOwner && (
-        <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
-          Hours shown per day below — your schedule can differ day to day.
+          {selectedUser.name} — {person.department}, {person.role} · {bulkMode ? "click days to select them, then apply a day type below" : "click a day to add or correct a session"}.
         </div>
       )}
 
@@ -2433,7 +2451,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
       </div>
 
       <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20, display: "flex", justifyContent: "center" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, width: "100%", maxWidth: 460 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, width: "100%", maxWidth: 640 }}>
           {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
           {weeks.flat().map((d, i) => {
             if (d === null) return <div key={i} />;
@@ -2445,8 +2463,8 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             const eff = (!info.future && !info.dayOff) ? effectiveHoursForDate(dateStr, rules) : null;
             let bg = "#fff", fg = COLORS.text, border = COLORS.line, label = "";
             if (info.dayOff) {
-              if (info.manualLabel === "Sick Leave") { bg = COLORS.dataSoft; fg = COLORS.dataText; label = "SL"; }
-              else if (info.manualLabel === "Voluntary Leave") { bg = COLORS.creativeSoft; fg = COLORS.creativeText; label = "VL"; }
+              if (info.manualLabel === "Sick Leave") { bg = COLORS.dataSoft; fg = COLORS.dataText; label = "Sick Leave"; }
+              else if (info.manualLabel === "Voluntary Leave") { bg = COLORS.creativeSoft; fg = COLORS.creativeText; label = "Voluntary Leave"; }
               else { bg = COLORS.cream; fg = COLORS.mute; label = info.manualLabel || "Off"; }
             }
             else if (info.future) { bg = "#fff"; fg = COLORS.line; }
@@ -2462,16 +2480,20 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
                 onClick={clickable ? () => { if (bulkMode) { toggleDateSelected(dateStr); } else { setCorrectingDate(dateStr); setEditingEntry(null); } } : undefined}
                 title={info.status ? `${info.status}${info.manual ? " (manually set)" : ""}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}${eff ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""}` : (info.dayOff ? (info.manualLabel || "Day off") : (clickable ? (bulkMode ? "Click to select" : "Click to add or correct a session") : ""))}
                 style={{
-                  position: "relative", minHeight: 58, borderRadius: 6, background: bg, color: fg,
+                  position: "relative", minHeight: 74, borderRadius: 6, background: bg, color: fg,
                   border: isSelected ? `2px solid ${COLORS.data}` : isToday ? `1.5px solid ${COLORS.ink}` : info.manual ? `1.5px dashed ${COLORS.gold}` : `1px solid ${border}`,
                   boxShadow: isSelected ? `0 0 0 2px ${COLORS.dataSoft}` : "none",
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1,
-                  cursor: clickable ? "pointer" : "default", padding: "2px 1px",
+                  cursor: clickable ? "pointer" : "default", padding: "3px 2px",
                 }}>
                 {isSelected && <CheckCircle2 size={12} style={{ position: "absolute", top: 3, right: 3, color: COLORS.data }} />}
-                <span style={{ fontSize: 11.5, fontWeight: 700 }}>{d}</span>
-                {label && <span style={{ fontSize: 7.5, fontWeight: 600, textAlign: "center", lineHeight: 1 }}>{label}</span>}
-                {eff && <span style={{ fontSize: 6.5, fontWeight: 500, textAlign: "center", lineHeight: 1, opacity: 0.8, marginTop: 1 }}>{formatTimeShort(eff.workStartTime)}–{formatTimeShort(eff.workEndTime)}</span>}
+                <span style={{ fontSize: 12, fontWeight: 700 }}>{d}</span>
+                {label && <span style={{ fontSize: 8.5, fontWeight: 600, textAlign: "center", lineHeight: 1.2 }}>{label}</span>}
+                {eff && (
+                  <span style={{ fontSize: 8.5, fontWeight: 500, textAlign: "center", lineHeight: 1.3, opacity: 0.85, marginTop: 1 }}>
+                    {formatTimeStrTo12h(eff.workStartTime)}<br />{formatTimeStrTo12h(eff.workEndTime)}
+                  </span>
+                )}
               </div>
             );
           })}
@@ -2506,6 +2528,65 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             </button>
           )}
         </div>
+      )}
+        </>
+      ) : (
+        <>
+          {isOwner && person && (
+            <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
+              {selectedUser.name} — {person.department}, {person.role} · this is a read-only view of their Work calendar. Editable from Time Tracking → "Edit hours & calendar."
+            </div>
+          )}
+          {!isOwner && (
+            <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
+              Your schedule for the month — this can differ day to day. Ask an Owner/Admin if anything here needs correcting.
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: COLORS.mute }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.successSoft, border: `1px solid ${COLORS.success}` }} /> Working day</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.cream, border: `1px solid ${COLORS.line}` }} /> Day off</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.dataSoft, border: `1px solid ${COLORS.dataText}` }} /> Sick Leave</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.creativeSoft, border: `1px solid ${COLORS.creativeText}` }} /> Voluntary Leave</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, border: `1.5px dashed ${COLORS.gold}` }} /> Custom date</span>
+          </div>
+          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20, display: "flex", justifyContent: "center" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, width: "100%", maxWidth: 640 }}>
+              {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
+              {weeks.flat().map((d, i) => {
+                if (d === null) return <div key={i} />;
+                const dateStr = toDateStr(viewYear, viewMonth, d);
+                const working = isWorkingDay(dateStr, rules);
+                const override = normalizeDateOverride(rules.dateOverrides[dateStr]);
+                const isOverride = !!override;
+                const isToday = dateStr === todayStr;
+                const eff = effectiveHoursForDate(dateStr, rules);
+                const leaveLabel = override?.dayType === "sick" ? "Sick Leave" : override?.dayType === "voluntary" ? "Voluntary Leave" : null;
+                let cellBg = working ? COLORS.successSoft : COLORS.cream;
+                let cellFg = working ? COLORS.success : COLORS.mute;
+                if (leaveLabel === "Sick Leave") { cellBg = COLORS.dataSoft; cellFg = COLORS.dataText; }
+                else if (leaveLabel === "Voluntary Leave") { cellBg = COLORS.creativeSoft; cellFg = COLORS.creativeText; }
+                return (
+                  <div key={i}
+                    title={`${leaveLabel || (working ? "Working day" : "Day off")}${eff ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""}`}
+                    style={{
+                      minHeight: 74, borderRadius: 6, background: cellBg, color: cellFg,
+                      border: isToday ? `1.5px solid ${COLORS.ink}` : isOverride ? `1.5px dashed ${COLORS.gold}` : `1px solid ${COLORS.line}`,
+                      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, padding: "3px 2px",
+                    }}>
+                    <span style={{ fontSize: 12, fontWeight: 700 }}>{d}</span>
+                    {leaveLabel && <span style={{ fontSize: 8.5, fontWeight: 600, textAlign: "center", lineHeight: 1.2 }}>{leaveLabel}</span>}
+                    {!leaveLabel && !working && <span style={{ fontSize: 8.5, fontWeight: 600, textAlign: "center", lineHeight: 1.2 }}>Off</span>}
+                    {eff && (
+                      <span style={{ fontSize: 8.5, fontWeight: 500, textAlign: "center", lineHeight: 1.3, opacity: 0.85, marginTop: 1 }}>
+                        {formatTimeStrTo12h(eff.workStartTime)}<br />{formatTimeStrTo12h(eff.workEndTime)}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
       )}
 
       {isOwner && !bulkMode && correctingDate && !editingEntry && (
@@ -2597,7 +2678,10 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
 
   const myRequests = [...leaveRequests].filter(r => r.userId === user.id).sort((a, b) => b.createdAt - a.createdAt);
   const adminQueue = isAdmin ? leaveRequests.filter(r => r.status === "pending_admin" && r.userId !== user.id) : [];
-  const ownerQueue = isOwner ? leaveRequests.filter(r => r.status === "pending_owner") : [];
+  // The Owner can see and act on everything still awaiting a decision —
+  // whether it's sitting with an Admin or already passed to them — so they
+  // can approve/deny directly without waiting on the Admin stage if they want to.
+  const ownerQueue = isOwner ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner") : [];
   const fullHistory = (isOwner || isAdmin) ? [...leaveRequests].sort((a, b) => b.createdAt - a.createdAt) : [];
 
   function patch(k, v) { setForm(f => ({ ...f, [k]: v })); }
@@ -2693,7 +2777,8 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
 
       {isOwner && (
         <div>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Needs your final approval</div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Needs your approval</div>
+          <div style={{ fontSize: 12.5, color: COLORS.mute, marginBottom: 10 }}>Everything still awaiting a decision — including requests an Admin hasn't looked at yet. Approve or deny any of these directly; you don't have to wait for the Admin stage.</div>
           <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
             {ownerQueue.length === 0 ? <EmptyState icon={CalendarCheck} title="Nothing pending" body="No leave requests are waiting on your approval." /> :
               ownerQueue.map(r => (
