@@ -311,7 +311,7 @@ function LoginScreen({ onLogin, loading, error, onForgot }) {
 /* ---------------------------------------------------------------- */
 /* App shell: sidebar + topbar                                        */
 /* ---------------------------------------------------------------- */
-function Sidebar({ user, page, setPage, pendingCount }) {
+function Sidebar({ user, page, setPage, pendingCount, leavePendingCount }) {
   const meta = ROLE_META[user.role];
   const storageItems = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, show: true },
@@ -329,7 +329,7 @@ function Sidebar({ user, page, setPage, pendingCount }) {
     { key: "time-tracking", label: "Time Tracking", icon: Timer, show: user.role !== "CLIENT" },
     { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: user.role !== "CLIENT" },
     { key: "attendance", label: "Attendance", icon: CalendarCheck, show: user.role !== "CLIENT" },
-    { key: "leave-requests", label: "Leave Requests", icon: FileText, show: user.role !== "CLIENT" },
+    { key: "leave-requests", label: "Leave Requests", icon: FileText, show: user.role !== "CLIENT", badge: leavePendingCount || 0 },
   ];
   const [storageOpen, setStorageOpen] = useState(true);
   const [portalOpen, setPortalOpen] = useState(true);
@@ -436,6 +436,7 @@ function Sidebar({ user, page, setPage, pendingCount }) {
                   }}>
                     <i.icon size={16} style={{ opacity: 0.85 }} />
                     <span style={{ flex: 1 }}>{i.label}</span>
+                    {!!i.badge && <span style={{ background: COLORS.creative, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
                   </button>
                 ))}
               </div>
@@ -2559,7 +2560,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
                 const override = normalizeDateOverride(rules.dateOverrides[dateStr]);
                 const isOverride = !!override;
                 const isToday = dateStr === todayStr;
-                const eff = effectiveHoursForDate(dateStr, rules);
+                const eff = working ? effectiveHoursForDate(dateStr, rules) : null;
                 const leaveLabel = override?.dayType === "sick" ? "Sick Leave" : override?.dayType === "voluntary" ? "Voluntary Leave" : null;
                 let cellBg = working ? COLORS.successSoft : COLORS.cream;
                 let cellFg = working ? COLORS.success : COLORS.mute;
@@ -2669,12 +2670,18 @@ function formatLeaveRange(startDate, endDate) {
 // final approval, and approving writes the leave straight onto the
 // requester's Work calendar so it's reflected in Time Tracking/Attendance
 // automatically.
-function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, adminDecideLeave, ownerDecideLeave, cancelLeaveRequest }) {
+function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, adminDecideLeave, ownerDecideLeave, cancelLeaveRequest, deleteLeaveRequest, deleteLeaveRequestsBulk }) {
   const isOwner = user.role === "OWNER";
   const isAdmin = user.role === "ADMIN";
   const [form, setForm] = useState({ type: "Sick Leave", startDate: "", endDate: "", reason: "" });
   const [submitting, setSubmitting] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  // History filters (Owner/Admin only) — by requester name, department, or
+  // position/job title (from the linked People record).
+  const [search, setSearch] = useState("");
+  const [deptFilter, setDeptFilter] = useState("All");
+  const [titleFilter, setTitleFilter] = useState("All");
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const myRequests = [...leaveRequests].filter(r => r.userId === user.id).sort((a, b) => b.createdAt - a.createdAt);
   const adminQueue = isAdmin ? leaveRequests.filter(r => r.status === "pending_admin" && r.userId !== user.id) : [];
@@ -2683,6 +2690,19 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
   // can approve/deny directly without waiting on the Admin stage if they want to.
   const ownerQueue = isOwner ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner") : [];
   const fullHistory = (isOwner || isAdmin) ? [...leaveRequests].sort((a, b) => b.createdAt - a.createdAt) : [];
+  const departments = [...new Set(people.map(p => p.department).filter(Boolean))].sort();
+  const titles = [...new Set(people.map(p => p.role).filter(Boolean))].sort();
+  const visibleHistory = (isOwner || isAdmin ? fullHistory : myRequests).filter(r => {
+    if (!(isOwner || isAdmin)) return true;
+    if (search && !r.userName.toLowerCase().includes(search.trim().toLowerCase())) return false;
+    if (deptFilter !== "All" || titleFilter !== "All") {
+      const p = people.find(pp => pp.linkedUserId === r.userId);
+      if (deptFilter !== "All" && (!p || p.department !== deptFilter)) return false;
+      if (titleFilter !== "All" && (!p || p.role !== titleFilter)) return false;
+    }
+    return true;
+  });
+  const filtersActive = search.trim() !== "" || deptFilter !== "All" || titleFilter !== "All";
 
   function patch(k, v) { setForm(f => ({ ...f, [k]: v })); }
   const canSubmit = form.startDate && form.endDate && form.startDate <= form.endDate;
@@ -2701,6 +2721,18 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
     setBusyId(id);
     try { await fn(id); } finally { setBusyId(null); }
   }
+  async function handleDeleteOne(id) {
+    if (!window.confirm("Delete this leave request permanently? This can't be undone.")) return;
+    setBusyId(id);
+    try { await deleteLeaveRequest(id); } finally { setBusyId(null); }
+  }
+  async function handleDeleteVisible() {
+    if (visibleHistory.length === 0) return;
+    const label = filtersActive ? `${visibleHistory.length} filtered` : `all ${visibleHistory.length}`;
+    if (!window.confirm(`Delete ${label} leave request${visibleHistory.length !== 1 ? "s" : ""} from history? This can't be undone.`)) return;
+    setBulkDeleting(true);
+    try { await deleteLeaveRequestsBulk(visibleHistory.map(r => r.id)); } finally { setBulkDeleting(false); }
+  }
 
   function RequestRow({ r, showRequester, actions }) {
     const sm = leaveStatusMeta(r.status);
@@ -2715,7 +2747,7 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
             <Badge soft={sm.soft} text={sm.text}>{sm.label}</Badge>
           </div>
           <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: 3 }}>
-            {formatLeaveRange(r.startDate, r.endDate)}{showRequester && p ? ` · ${p.department}` : ""} · requested {timeAgo(r.createdAt)}
+            {formatLeaveRange(r.startDate, r.endDate)}{showRequester && p ? ` · ${p.department}${p.role ? ` · ${p.role}` : ""}` : ""} · requested {timeAgo(r.createdAt)}
           </div>
           {r.reason && <div style={{ fontSize: 12.5, marginTop: 4 }}>{r.reason}</div>}
           {r.adminDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 4 }}>Admin ({r.adminDecision.byName}): {r.adminDecision.decision === "approve" ? "approved" : "denied"}{r.adminDecision.note ? ` — ${r.adminDecision.note}` : ""}</div>}
@@ -2794,13 +2826,39 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
       )}
 
       <div>
-        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>{isOwner || isAdmin ? "All leave requests" : "My leave request history"}</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>{isOwner || isAdmin ? "All leave requests" : "My leave request history"}</div>
+          {(isOwner || isAdmin) && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name"
+                style={{ ...inputStyle, width: "auto", minWidth: 160, padding: "7px 10px", fontSize: 12.5 }} />
+              <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "7px 10px", fontSize: 12.5 }}>
+                <option value="All">All departments</option>
+                {departments.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+              <select value={titleFilter} onChange={e => setTitleFilter(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "7px 10px", fontSize: 12.5 }}>
+                <option value="All">All positions</option>
+                {titles.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              {isOwner && visibleHistory.length > 0 && (
+                <button disabled={bulkDeleting} onClick={handleDeleteVisible} className="cly-btn"
+                  style={{ background: "#fff", border: `1px solid ${COLORS.dangerSoft}`, color: COLORS.danger, borderRadius: 7, padding: "7px 12px", fontSize: 12.5, fontWeight: 600 }}>
+                  {bulkDeleting ? "Deleting…" : `Delete ${filtersActive ? "filtered" : "all"} (${visibleHistory.length})`}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
-          {(isOwner || isAdmin ? fullHistory : myRequests).length === 0 ? (
-            <EmptyState icon={CalendarCheck} title="No leave requests yet" body={isOwner || isAdmin ? "Nothing's been filed yet." : "Submit one above when you need time off."} />
-          ) : (isOwner || isAdmin ? fullHistory : myRequests).map(r => (
+          {visibleHistory.length === 0 ? (
+            <EmptyState icon={CalendarCheck} title={filtersActive ? "No matches" : "No leave requests yet"} body={filtersActive ? "Try a different name, department, or position." : (isOwner || isAdmin ? "Nothing's been filed yet." : "Submit one above when you need time off.")} />
+          ) : visibleHistory.map(r => (
             <RequestRow key={r.id} r={r} showRequester={isOwner || isAdmin} actions={
-              (!isOwner && !isAdmin && (r.status === "pending_admin" || r.status === "pending_owner")) ? (
+              isOwner ? (
+                <button disabled={busyId === r.id} title="Delete permanently" onClick={() => handleDeleteOne(r.id)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer" }}>
+                  <Trash2 size={14} />
+                </button>
+              ) : (!isOwner && !isAdmin && (r.status === "pending_admin" || r.status === "pending_owner")) ? (
                 <button disabled={busyId === r.id} onClick={() => act(id => cancelLeaveRequest(id), r.id)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12.5, fontWeight: 600 }}>
                   Cancel
                 </button>
@@ -3739,6 +3797,34 @@ export default function App() {
       throw e;
     }
   }
+  // Owner-only: permanently remove a request from history (matches the
+  // Firestore rule, which only allows the Owner to delete leave-requests
+  // docs at all). Cancelling (above) just changes status and keeps the
+  // record; this actually deletes it.
+  async function deleteLeaveRequest(reqId) {
+    try {
+      await deleteDocIn("leave-requests", reqId);
+      setLeaveRequests(leaveRequests.filter(r => r.id !== reqId));
+      notify("Leave request deleted.");
+    } catch (e) {
+      console.error("Failed to delete leave request:", e);
+      notify("Couldn't delete — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Bulk version for the "Delete all / Delete filtered" button — one toast
+  // instead of one per row.
+  async function deleteLeaveRequestsBulk(reqIds) {
+    try {
+      await Promise.all(reqIds.map(id => deleteDocIn("leave-requests", id)));
+      setLeaveRequests(leaveRequests.filter(r => !reqIds.includes(r.id)));
+      notify(`${reqIds.length} leave request${reqIds.length !== 1 ? "s" : ""} deleted.`);
+    } catch (e) {
+      console.error("Failed to bulk-delete leave requests:", e);
+      notify("Couldn't delete all — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
   async function resolveRequest(id, status) {
     const req = requests.find(r => r.id === id);
     await updateDocIn("requests", id, { status });
@@ -3787,7 +3873,10 @@ export default function App() {
         <LoginScreen onLogin={handleLogin} loading={loginLoading} error={loginError} onForgot={handleForgot} />
       ) : (
         <div style={{ display: "flex", minHeight: "100vh" }}>
-          <Sidebar user={user} page={page} setPage={setPage} pendingCount={requests.filter(r => r.status === "pending").length} />
+          <Sidebar user={user} page={page} setPage={setPage} pendingCount={requests.filter(r => r.status === "pending").length} leavePendingCount={
+            user.role === "OWNER" ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner").length :
+            user.role === "ADMIN" ? leaveRequests.filter(r => r.status === "pending_admin" && r.userId !== user.id).length : 0
+          } />
           <div style={{ flex: 1, background: COLORS.cream, minWidth: 0, display: "flex", flexDirection: "column" }}>
             <Topbar user={user} onLogout={() => fbLogout()} title={
               page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" :
@@ -3814,7 +3903,7 @@ export default function App() {
               {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
-              {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} />}
+              {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
