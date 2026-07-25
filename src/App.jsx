@@ -7,6 +7,7 @@ import {
   Loader2, Building2, KeyRound, Image as ImageIcon, File as FileIcon,
   ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
   Database, Smile, CalendarCheck, Timer, Network, LayoutGrid, Pencil,
+  Layers, ListChecks, Flag,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------- */
@@ -326,6 +327,9 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount }) {
     { key: "people-info", label: "People Information", icon: Smile, show: user.role !== "CLIENT" },
     { key: "org-chart", label: "Organizational Chart", icon: Network, show: user.role !== "CLIENT" },
   ];
+  const projectItems = [
+    { key: "projects", label: "Projects", icon: Layers, show: user.role !== "CLIENT" },
+  ];
   const timeAttendanceItems = [
     { key: "time-tracking", label: "Time Tracking", icon: Timer, show: user.role !== "CLIENT" },
     { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: user.role !== "CLIENT" },
@@ -335,9 +339,11 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount }) {
   const [storageOpen, setStorageOpen] = useState(true);
   const [portalOpen, setPortalOpen] = useState(true);
   const [peopleOpen, setPeopleOpen] = useState(true);
+  const [projectsOpen, setProjectsOpen] = useState(true);
   const [timeAttendanceOpen, setTimeAttendanceOpen] = useState(true);
   const showPortalGroup = portalItems.some(i => i.show);
   const showPeopleGroup = peopleItems.some(i => i.show);
+  const showProjectsGroup = projectItems.some(i => i.show);
   const showTimeAttendanceGroup = timeAttendanceItems.some(i => i.show);
   return (
     <div className="cly-scan" style={{ width: 216, flexShrink: 0, background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px" }}>
@@ -406,6 +412,31 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount }) {
             {peopleOpen && (
               <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
                 {peopleItems.filter(i => i.show).map(i => (
+                  <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
+                    color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
+                  }}>
+                    <i.icon size={16} style={{ opacity: 0.85 }} />
+                    <span style={{ flex: 1 }}>{i.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {showProjectsGroup && (
+          <>
+            <button onClick={() => setProjectsOpen(o => !o)} className="cly-navitem cly-btn" style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
+              color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left", marginTop: 6,
+            }}>
+              <Layers size={16} style={{ opacity: 0.85 }} />
+              <span style={{ flex: 1 }}>Project Management</span>
+              <ChevronDown size={14} style={{ opacity: 0.7, transform: projectsOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
+            </button>
+            {projectsOpen && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
+                {projectItems.filter(i => i.show).map(i => (
                   <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
                     color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
@@ -2987,6 +3018,361 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
 }
 
 /* ---------------------------------------------------------------- */
+/* Project Management                                                 */
+/* ---------------------------------------------------------------- */
+const PROJECT_STATUSES = ["Not started", "In progress", "In review", "On hold", "Done"];
+const TASK_COLUMNS = ["To do", "In progress", "Done"];
+const PROJECT_EMPTY_FORM = { name: "", description: "", clientUserId: "", wing: "", status: "Not started", assignedUserIds: [], startDate: "", dueDate: "" };
+function projectStatusMeta(status) {
+  if (status === "Done") return { soft: COLORS.successSoft, text: COLORS.success };
+  if (status === "In progress") return { soft: COLORS.dataSoft, text: COLORS.dataText };
+  if (status === "In review") return { soft: COLORS.goldSoft, text: "#6B4A1A" };
+  if (status === "On hold") return { soft: COLORS.dangerSoft, text: COLORS.danger };
+  return { soft: COLORS.line, text: COLORS.mute }; // "Not started"
+}
+
+function ProjectsPage({ user, users, people, projects, tasks, createProject, updateProject, deleteProject, createTask, updateTask, deleteTask }) {
+  const isManager = user.role === "OWNER" || user.role === "ADMIN";
+  const eligibleUsers = users.filter(u => u.role !== "CLIENT");
+  const clientUsers = users.filter(u => u.role === "CLIENT");
+  const [selectedId, setSelectedId] = useState(null);
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingProject, setEditingProject] = useState(null);
+  const [form, setForm] = useState(PROJECT_EMPTY_FORM);
+  const [saving, setSaving] = useState(false);
+
+  const visibleProjects = (statusFilter === "All" ? projects : projects.filter(p => p.status === statusFilter))
+    .slice().sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
+  const selected = projects.find(p => p.id === selectedId);
+
+  function patch(k, v) { setForm(f => ({ ...f, [k]: v })); }
+  function toggleAssignee(id) {
+    setForm(f => ({ ...f, assignedUserIds: f.assignedUserIds.includes(id) ? f.assignedUserIds.filter(x => x !== id) : [...f.assignedUserIds, id] }));
+  }
+  function openCreate() {
+    setForm(PROJECT_EMPTY_FORM); setEditingProject(null); setModalOpen(true);
+  }
+  function openEdit(p) {
+    setForm({ name: p.name, description: p.description || "", clientUserId: p.clientUserId || "", wing: p.wing || "", status: p.status, assignedUserIds: p.assignedUserIds || [], startDate: p.startDate || "", dueDate: p.dueDate || "" });
+    setEditingProject(p); setModalOpen(true);
+  }
+  async function handleSave() {
+    if (!form.name.trim()) return;
+    setSaving(true);
+    try {
+      if (editingProject) await updateProject(editingProject.id, form);
+      else { const id = await createProject(form); setSelectedId(id); }
+      setModalOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function handleDelete(p) {
+    if (!window.confirm(`Delete "${p.name}" and all its tasks? This can't be undone.`)) return;
+    await deleteProject(p.id);
+    if (selectedId === p.id) setSelectedId(null);
+  }
+
+  if (selected) {
+    return (
+      <ProjectDetail
+        project={selected} isManager={isManager} eligibleUsers={eligibleUsers} clientUsers={clientUsers}
+        tasks={tasks} onBack={() => setSelectedId(null)}
+        onEdit={() => openEdit(selected)} onDelete={() => handleDelete(selected)}
+        createTask={createTask} updateTask={updateTask} deleteTask={deleteTask}
+        modal={modalOpen && (
+          <ProjectFormModal form={form} patch={patch} toggleAssignee={toggleAssignee} eligibleUsers={eligibleUsers} clientUsers={clientUsers}
+            editingProject={editingProject} saving={saving} onSave={handleSave} onClose={() => setModalOpen(false)} />
+        )}
+      />
+    );
+  }
+
+  return (
+    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 160 }}>
+          <option value="All">All statuses</option>
+          {PROJECT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        {isManager && (
+          <button onClick={openCreate} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.ink, color: "#fff", borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 700 }}>
+            <Plus size={15} /> New project
+          </button>
+        )}
+      </div>
+
+      {visibleProjects.length === 0 ? (
+        <EmptyState icon={Layers} title={projects.length === 0 ? "No projects yet" : "No matches"} body={projects.length === 0 ? (isManager ? "Create your first project to start organizing work." : "Nothing's been set up yet — check back soon.") : "Try a different status filter."} />
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
+          {visibleProjects.map(p => {
+            const sm = projectStatusMeta(p.status);
+            const client = p.clientUserId ? clientUsers.find(u => u.id === p.clientUserId) : null;
+            const projectTasks = tasks.filter(t => t.projectId === p.id);
+            const doneCount = projectTasks.filter(t => t.status === "Done").length;
+            return (
+              <button key={p.id} onClick={() => setSelectedId(p.id)} className="cly-btn cly-row" style={{
+                textAlign: "left", background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 16,
+                display: "flex", flexDirection: "column", gap: 8,
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{p.name}</div>
+                  <Badge soft={sm.soft} text={sm.text}>{p.status}</Badge>
+                </div>
+                {p.description && <div style={{ fontSize: 12, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{p.description}</div>}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 11, color: COLORS.mute, marginTop: 2 }}>
+                  {client && <span>{client.name}</span>}
+                  {p.wing && <span>{WING_LABELS[p.wing] || p.wing}</span>}
+                  {p.dueDate && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Flag size={10} /> {formatPeopleDate(p.dueDate)}</span>}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                  <span style={{ fontSize: 11, color: COLORS.mute, display: "flex", alignItems: "center", gap: 4 }}><ListChecks size={12} /> {doneCount}/{projectTasks.length}</span>
+                  <div style={{ display: "flex" }}>
+                    {(p.assignedUserIds || []).slice(0, 4).map((uid, i) => {
+                      const u = eligibleUsers.find(x => x.id === uid);
+                      if (!u) return null;
+                      return <span key={uid} title={u.name} style={{ width: 20, height: 20, borderRadius: "50%", background: peopleColorFor(u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, marginLeft: i > 0 ? -6 : 0, border: "1.5px solid #fff" }}>{peopleInitials(u.name)}</span>;
+                    })}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {modalOpen && (
+        <ProjectFormModal form={form} patch={patch} toggleAssignee={toggleAssignee} eligibleUsers={eligibleUsers} clientUsers={clientUsers}
+          editingProject={editingProject} saving={saving} onSave={handleSave} onClose={() => setModalOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+function ProjectFormModal({ form, patch, toggleAssignee, eligibleUsers, clientUsers, editingProject, saving, onSave, onClose }) {
+  return (
+    <Modal title={editingProject ? "Edit project" : "New project"} onClose={onClose} width={520}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Field label="Project name">
+          <input type="text" value={form.name} onChange={e => patch("name", e.target.value)} style={inputStyle} autoFocus />
+        </Field>
+        <Field label="Description (optional)">
+          <input type="text" value={form.description} onChange={e => patch("description", e.target.value)} style={inputStyle} />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Client (optional)">
+            <select value={form.clientUserId} onChange={e => patch("clientUserId", e.target.value)} style={inputStyle}>
+              <option value="">No client</option>
+              {clientUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Wing (optional)">
+            <select value={form.wing} onChange={e => patch("wing", e.target.value)} style={inputStyle}>
+              <option value="">Not tied to a Wing</option>
+              <option value="creative">Creative Wing</option>
+              <option value="data">Data Wing</option>
+              <option value="hybrid">Both</option>
+            </select>
+          </Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          <Field label="Status">
+            <select value={form.status} onChange={e => patch("status", e.target.value)} style={inputStyle}>
+              {PROJECT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Start date (optional)">
+            <input type="date" value={form.startDate} onChange={e => patch("startDate", e.target.value)} style={inputStyle} />
+          </Field>
+          <Field label="Due date (optional)">
+            <input type="date" value={form.dueDate} onChange={e => patch("dueDate", e.target.value)} style={inputStyle} />
+          </Field>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Assigned people</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 130, overflowY: "auto" }}>
+            {eligibleUsers.map(u => {
+              const on = form.assignedUserIds.includes(u.id);
+              return (
+                <button key={u.id} type="button" onClick={() => toggleAssignee(u.id)} className="cly-btn" style={{
+                  background: on ? COLORS.ink : "#fff", color: on ? "#fff" : COLORS.text,
+                  border: `1px solid ${on ? COLORS.ink : COLORS.line}`, borderRadius: 20, padding: "5px 12px", fontSize: 12, fontWeight: 600,
+                }}>{u.name}</button>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+          <button onClick={onClose} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
+          <button disabled={!form.name.trim() || saving} onClick={onSave} className="cly-btn" style={{ background: form.name.trim() ? COLORS.ink : COLORS.line, color: form.name.trim() ? "#fff" : COLORS.mute, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
+            {saving ? "Saving…" : editingProject ? "Save changes" : "Create project"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+const TASK_EMPTY_FORM = { title: "", description: "", assigneeId: "", status: "To do", dueDate: "" };
+
+function ProjectDetail({ project, isManager, eligibleUsers, clientUsers, tasks, onBack, onEdit, onDelete, createTask, updateTask, deleteTask, modal }) {
+  const projectTasks = tasks.filter(t => t.projectId === project.id);
+  const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
+  const [taskForm, setTaskForm] = useState(TASK_EMPTY_FORM);
+  const [savingTask, setSavingTask] = useState(false);
+
+  const client = project.clientUserId ? clientUsers.find(u => u.id === project.clientUserId) : null;
+  const sm = projectStatusMeta(project.status);
+  const doneCount = projectTasks.filter(t => t.status === "Done").length;
+
+  function openAddTask(column) {
+    setTaskForm({ ...TASK_EMPTY_FORM, status: column }); setEditingTask(null); setTaskModalOpen(true);
+  }
+  function openEditTask(t) {
+    setTaskForm({ title: t.title, description: t.description || "", assigneeId: t.assigneeId || "", status: t.status, dueDate: t.dueDate || "" });
+    setEditingTask(t); setTaskModalOpen(true);
+  }
+  async function handleSaveTask() {
+    if (!taskForm.title.trim()) return;
+    setSavingTask(true);
+    try {
+      if (editingTask) await updateTask(editingTask.id, taskForm);
+      else await createTask(project.id, taskForm);
+      setTaskModalOpen(false);
+    } finally {
+      setSavingTask(false);
+    }
+  }
+  async function handleDeleteTask(t) {
+    if (!window.confirm(`Delete task "${t.title}"?`)) return;
+    await deleteTask(t.id);
+  }
+
+  return (
+    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
+      <button onClick={onBack} className="cly-btn" style={{ alignSelf: "flex-start", background: "none", border: "none", color: COLORS.data, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}>
+        <ChevronRight size={14} style={{ transform: "rotate(180deg)" }} /> All projects
+      </button>
+
+      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 22 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <h2 style={{ margin: 0, fontSize: 19 }}>{project.name}</h2>
+              <Badge soft={sm.soft} text={sm.text}>{project.status}</Badge>
+            </div>
+            {project.description && <div style={{ color: COLORS.mute, fontSize: 13.5, marginTop: 6, maxWidth: 640 }}>{project.description}</div>}
+          </div>
+          {isManager && (
+            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              <button onClick={onEdit} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>Edit</button>
+              <button onClick={onDelete} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.dangerSoft}`, color: COLORS.danger, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>Delete</button>
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 18, marginTop: 16, fontSize: 12.5, color: COLORS.mute }}>
+          {client && <span>Client: <strong style={{ color: COLORS.text }}>{client.name}</strong></span>}
+          {project.wing && <span>Wing: <strong style={{ color: COLORS.text }}>{WING_LABELS[project.wing] || project.wing}</strong></span>}
+          {project.startDate && <span>Started {formatPeopleDate(project.startDate)}</span>}
+          {project.dueDate && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Flag size={12} /> Due {formatPeopleDate(project.dueDate)}</span>}
+          <span>{doneCount}/{projectTasks.length} tasks done</span>
+        </div>
+        {(project.assignedUserIds || []).length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
+            {(project.assignedUserIds || []).map(uid => {
+              const u = eligibleUsers.find(x => x.id === uid);
+              if (!u) return null;
+              return (
+                <span key={uid} style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.cream, borderRadius: 20, padding: "3px 10px 3px 3px", fontSize: 11.5 }}>
+                  <span style={{ width: 20, height: 20, borderRadius: "50%", background: peopleColorFor(u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9.5, fontWeight: 700 }}>{peopleInitials(u.name)}</span>
+                  {u.name}
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
+        {TASK_COLUMNS.map(col => {
+          const colTasks = projectTasks.filter(t => t.status === col);
+          return (
+            <div key={col} style={{ background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 12, display: "flex", flexDirection: "column", gap: 8, minHeight: 160 }}>
+              <div style={{ fontWeight: 700, fontSize: 12.5 }}>{col} <span style={{ color: COLORS.mute, fontWeight: 500 }}>({colTasks.length})</span></div>
+              {colTasks.map(t => {
+                const assignee = eligibleUsers.find(u => u.id === t.assigneeId);
+                return (
+                  <div key={t.id} style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>{t.title}</div>
+                    {t.dueDate && <div style={{ fontSize: 10.5, color: COLORS.mute, display: "flex", alignItems: "center", gap: 4 }}><Flag size={10} /> {formatPeopleDate(t.dueDate)}</div>}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
+                      {assignee ? (
+                        <span title={assignee.name} style={{ width: 20, height: 20, borderRadius: "50%", background: peopleColorFor(assignee.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700 }}>{peopleInitials(assignee.name)}</span>
+                      ) : <span style={{ fontSize: 10.5, color: COLORS.mute }}>Unassigned</span>}
+                      <div style={{ display: "flex", gap: 2 }}>
+                        <button onClick={() => openEditTask(t)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, padding: 3, cursor: "pointer" }}><Pencil size={12} /></button>
+                        <button onClick={() => handleDeleteTask(t)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, padding: 3, cursor: "pointer" }}><Trash2 size={12} /></button>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {TASK_COLUMNS.filter(c => c !== col).map(c => (
+                        <button key={c} onClick={() => updateTask(t.id, { status: c })} className="cly-btn" style={{ flex: 1, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: "4px 4px", fontSize: 9.5, fontWeight: 600, color: COLORS.mute }}>
+                            → {c}
+                          </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              <button onClick={() => openAddTask(col)} className="cly-btn" style={{ background: "none", border: `1px dashed ${COLORS.line}`, borderRadius: 8, padding: "8px 0", fontSize: 12, fontWeight: 600, color: COLORS.mute }}>+ Add task</button>
+            </div>
+          );
+        })}
+      </div>
+
+      {taskModalOpen && (
+        <Modal title={editingTask ? "Edit task" : "New task"} onClose={() => setTaskModalOpen(false)} width={420}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <Field label="Title">
+              <input type="text" value={taskForm.title} onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))} style={inputStyle} autoFocus />
+            </Field>
+            <Field label="Description (optional)">
+              <input type="text" value={taskForm.description} onChange={e => setTaskForm(f => ({ ...f, description: e.target.value }))} style={inputStyle} />
+            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <Field label="Assignee">
+                <select value={taskForm.assigneeId} onChange={e => setTaskForm(f => ({ ...f, assigneeId: e.target.value }))} style={inputStyle}>
+                  <option value="">Unassigned</option>
+                  {eligibleUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Due date (optional)">
+                <input type="date" value={taskForm.dueDate} onChange={e => setTaskForm(f => ({ ...f, dueDate: e.target.value }))} style={inputStyle} />
+              </Field>
+            </div>
+            <Field label="Status">
+              <select value={taskForm.status} onChange={e => setTaskForm(f => ({ ...f, status: e.target.value }))} style={inputStyle}>
+                {TASK_COLUMNS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+              <button onClick={() => setTaskModalOpen(false)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
+              <button disabled={!taskForm.title.trim() || savingTask} onClick={handleSaveTask} className="cly-btn" style={{ background: taskForm.title.trim() ? COLORS.ink : COLORS.line, color: taskForm.title.trim() ? "#fff" : COLORS.mute, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
+                {savingTask ? "Saving…" : editingTask ? "Save" : "Add task"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {modal}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
 function AuthTab({ auth, setAuth, canEdit }) {
   const patch = (k, v) => canEdit && setAuth({ ...auth, [k]: v });
   return (
@@ -3399,6 +3785,8 @@ export default function App() {
   const [timeEntries, setTimeEntries] = useState([]);
   const [requests, setRequests] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [auth, setAuth] = useState(SEED_AUTH);
   const [notif, setNotif] = useState(SEED_NOTIF);
   const [restrictions, setRestrictions] = useState(SEED_RESTRICTIONS);
@@ -3532,6 +3920,18 @@ export default function App() {
       unsubs.push(subscribeCollection("leave-requests", vals => { setLeaveRequests(vals); onOk("leaveRequests"); }, onErr("leaveRequests", [], setLeaveRequests)));
     } else {
       unsubs.push(subscribeCollectionWhere("leave-requests", "userId", user.id, vals => { setLeaveRequests(vals); onOk("leaveRequests"); }, onErr("leaveRequests", [], setLeaveRequests)));
+    }
+
+    // projects/tasks are hidden from CLIENT for now (Project Management is
+    // an internal-facing feature so far — a client-facing view is a
+    // planned follow-up, not built yet), same reasoning as people/requests.
+    if (canReadPeople) { // reuse the same "not a CLIENT" check people already uses
+      pending.add("projects");
+      unsubs.push(subscribeCollection("projects", vals => { setProjects(vals); onOk("projects"); }, onErr("projects", [], setProjects)));
+      pending.add("tasks");
+      unsubs.push(subscribeCollection("tasks", vals => { setTasks(vals); onOk("tasks"); }, onErr("tasks", [], setTasks)));
+    } else {
+      setProjects([]); setTasks([]);
     }
 
     return () => { unsubs.forEach(u => { try { u && u(); } catch (e) { /* already gone */ } }); };
@@ -3698,30 +4098,12 @@ export default function App() {
     persistRestrictions({ ...restrictions, [g.id]: [0, 0, 0, 0] });
     notify("Group created.");
   }
-  // Storage rules (Firebase provider) read a person's Wing tag directly off
-  // their linked user doc — rules can't do a reverse "which person links to
-  // me" query, only a get() by known path — so this mirror keeps that copy
-  // in sync. Harmless extra data for the Drive provider, which instead
-  // resolves the Wing tag server-side via a direct people-collection query
-  // in api/_driveClient.js.
-  async function syncWingToLinkedUser(linkedUserId, wing) {
-    if (!linkedUserId) return;
-    try {
-      await updateDocIn("users", linkedUserId, { wing: wing || null });
-      setUsers(prev => prev.map(u => u.id === linkedUserId ? { ...u, wing: wing || null } : u));
-    } catch (e) {
-      // Non-fatal: worst case the Storage-rules mirror is briefly stale;
-      // the Drive-path enforcement doesn't depend on this at all.
-      console.error("Failed to sync wing to linked user:", e);
-    }
-  }
   async function addPerson(form) {
     const id = uid();
     const record = { ...form, id, createdAt: Date.now() };
     try {
       await setDocIn("people", id, record);
       setPeople([...people, record]);
-      if (form.linkedUserId) await syncWingToLinkedUser(form.linkedUserId, form.wing);
       notify(`${form.name} added.`);
     } catch (e) {
       console.error("Failed to add person:", e);
@@ -3730,17 +4112,9 @@ export default function App() {
     }
   }
   async function updatePerson(id, form) {
-    const prev = people.find(p => p.id === id);
     try {
       await updateDocIn("people", id, form);
       setPeople(people.map(p => p.id === id ? { ...p, ...form } : p));
-      // If this person got relinked (or unlinked) to a different account,
-      // clear the stale mirror off the old one so it doesn't keep a wing
-      // restriction that no longer applies to it.
-      if (prev?.linkedUserId && prev.linkedUserId !== form.linkedUserId) {
-        await syncWingToLinkedUser(prev.linkedUserId, null);
-      }
-      if (form.linkedUserId) await syncWingToLinkedUser(form.linkedUserId, form.wing);
       notify("Changes saved.");
     } catch (e) {
       console.error("Failed to update person:", e);
@@ -4118,6 +4492,83 @@ export default function App() {
       throw e;
     }
   }
+  // Project Management. Projects and tasks are visible to everyone except
+  // Clients (matches the same "internal tool" visibility People and Time
+  // Tracking already use) — a client-facing project view is a planned
+  // follow-up, not built yet. Creating/editing/deleting a project is
+  // Owner/Admin only; any non-Client can create/update a task (so an
+  // assigned Employee can move their own work across the board), matching
+  // how the rest of this app trusts internal staff with day-to-day writes.
+  async function createProject(form) {
+    try {
+      const payload = { ...form, createdBy: user.id, createdByName: user.name, createdAt: Date.now() };
+      const id = await addDocIn("projects", payload);
+      setProjects([...projects, { id, ...payload }]);
+      notify("Project created.");
+      return id;
+    } catch (e) {
+      console.error("Failed to create project:", e);
+      notify("Couldn't create the project — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function updateProject(id, patch) {
+    try {
+      await updateDocIn("projects", id, patch);
+      setProjects(projects.map(p => p.id === id ? { ...p, ...patch } : p));
+      notify("Project updated.");
+    } catch (e) {
+      console.error("Failed to update project:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Deleting a project also removes its tasks, so the board doesn't end up
+  // with orphaned cards pointing at a project that no longer exists.
+  async function deleteProject(id) {
+    try {
+      const orphaned = tasks.filter(t => t.projectId === id);
+      await Promise.all([deleteDocIn("projects", id), ...orphaned.map(t => deleteDocIn("tasks", t.id))]);
+      setProjects(projects.filter(p => p.id !== id));
+      setTasks(tasks.filter(t => t.projectId !== id));
+      notify("Project deleted.");
+    } catch (e) {
+      console.error("Failed to delete project:", e);
+      notify("Couldn't delete — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function createTask(projectId, form) {
+    try {
+      const payload = { ...form, projectId, createdBy: user.id, createdAt: Date.now() };
+      const id = await addDocIn("tasks", payload);
+      setTasks([...tasks, { id, ...payload }]);
+    } catch (e) {
+      console.error("Failed to create task:", e);
+      notify("Couldn't add the task — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function updateTask(id, patch) {
+    try {
+      await updateDocIn("tasks", id, patch);
+      setTasks(tasks.map(t => t.id === id ? { ...t, ...patch } : t));
+    } catch (e) {
+      console.error("Failed to update task:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function deleteTask(id) {
+    try {
+      await deleteDocIn("tasks", id);
+      setTasks(tasks.filter(t => t.id !== id));
+    } catch (e) {
+      console.error("Failed to delete task:", e);
+      notify("Couldn't delete — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
   async function resolveRequest(id, status) {
     const req = requests.find(r => r.id === id);
     await updateDocIn("requests", id, { status });
@@ -4167,15 +4618,15 @@ export default function App() {
       ) : (
         <div style={{ display: "flex", minHeight: "100vh" }}>
           <Sidebar user={user} page={page} setPage={setPage} pendingCount={requests.filter(r => r.status === "pending").length} leavePendingCount={
-            user.role === "OWNER" ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner").length :
-            user.role === "ADMIN" ? leaveRequests.filter(r => r.status === "pending_admin" && r.userId !== user.id).length : 0
+            user.role === "OWNER" ? leaveRequests.filter(r => ["pending_admin", "pending_owner", "pending_cancel_admin", "pending_cancel_owner"].includes(r.status)).length :
+            user.role === "ADMIN" ? leaveRequests.filter(r => ["pending_admin", "pending_cancel_admin"].includes(r.status) && r.userId !== user.id).length : 0
           } />
           <div style={{ flex: 1, background: COLORS.cream, minWidth: 0, display: "flex", flexDirection: "column" }}>
             <Topbar user={user} onLogout={() => fbLogout()} title={
               page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" :
               page === "people-info" ? "People Information" : page === "org-chart" ? "Organizational Chart" : page === "time-tracking" ? "Time Tracking" :
               page === "time-inout" ? "Time in/Time out information" :
-              page === "attendance" ? "Attendance" : page === "leave-requests" ? "Leave Requests" : "Admin settings"
+              page === "attendance" ? "Attendance" : page === "leave-requests" ? "Leave Requests" : page === "projects" ? "Projects" : "Admin settings"
             } subtitle={
               page === "dashboard" ? "Your workspace at a glance." :
               page === "files" ? "Shared storage for your team and clients." :
@@ -4185,7 +4636,8 @@ export default function App() {
               page === "time-tracking" ? "Live time-tracking sessions." :
               page === "time-inout" ? "Clock-in and clock-out records." :
               page === "attendance" ? "Daily attendance summaries." :
-              page === "leave-requests" ? "Request Sick or Voluntary Leave and track approvals." : "Authentication, users, groups, and restrictions."
+              page === "leave-requests" ? "Request Sick or Voluntary Leave and track approvals." :
+              page === "projects" ? "Track projects, tasks, and who's working on what." : "Authentication, users, groups, and restrictions."
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
               {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} people={people} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
@@ -4197,6 +4649,7 @@ export default function App() {
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
               {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
+              {page === "projects" && <ProjectsPage user={user} users={users} people={people} projects={projects} tasks={tasks} createProject={createProject} updateProject={updateProject} deleteProject={deleteProject} createTask={createTask} updateTask={updateTask} deleteTask={deleteTask} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
