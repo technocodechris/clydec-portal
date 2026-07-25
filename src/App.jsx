@@ -76,7 +76,8 @@ const ROLE_META = {
 import {
   watchAuth, login as fbLogin, logout as fbLogout, createUserAccount,
   requestPasswordReset as requestPasswordResetFor,
-  sget, sset, listCollection, listCollectionWhere, setDocIn, addDocIn, updateDocIn, deleteDocIn, deleteDocFieldIn, setUserAttendanceOverridesBulk,
+  sset, setDocIn, addDocIn, updateDocIn, deleteDocIn, deleteDocFieldIn, setUserAttendanceOverridesBulk,
+  subscribeCollection, subscribeCollectionWhere, subscribeSetting,
   uploadFile, deleteFileFromStorage, db,
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
@@ -477,12 +478,12 @@ function Topbar({ user, onLogout, title, subtitle }) {
 /* ---------------------------------------------------------------- */
 /* Dashboard page                                                     */
 /* ---------------------------------------------------------------- */
-function DashboardPage({ user, users, files, requests, folders, syncAllVisibleFolders, verifyAllFiles }) {
+function DashboardPage({ user, users, files, requests, folders, people, syncAllVisibleFolders, verifyAllFiles }) {
   const [quota, setQuota] = useState(null);
   const [quotaError, setQuotaError] = useState(null);
 
   useEffect(() => {
-    const visible = folders.filter(f => f.access.includes(user.role));
+    const visible = folders.filter(f => canAccessFolder(f, user, people));
     syncAllVisibleFolders(visible);
     verifyAllFiles();
     if (user.role === "OWNER" && STORAGE_PROVIDER === "drive") {
@@ -557,8 +558,8 @@ function DashboardPage({ user, users, files, requests, folders, syncAllVisibleFo
 /* ---------------------------------------------------------------- */
 /* Files page                                                         */
 /* ---------------------------------------------------------------- */
-function FilesPage({ user, folders, files, addFile, deleteFile, downloadFile, syncDriveFolder, notify }) {
-  const visibleFolders = folders.filter(f => f.access.includes(user.role));
+function FilesPage({ user, folders, files, people, addFile, deleteFile, downloadFile, syncDriveFolder, notify }) {
+  const visibleFolders = folders.filter(f => canAccessFolder(f, user, people));
   const [activeFolder, setActiveFolder] = useState(visibleFolders[0]?.id);
   const [path, setPath] = useState([]); // [{id, name}] — subfolder trail within the active Wing
   const [subfolders, setSubfolders] = useState([]);
@@ -971,10 +972,28 @@ function personForUser(people, userId) {
 function userForPerson(users, person) {
   return person?.linkedUserId ? users.find(u => u.id === person.linkedUserId) || null : null;
 }
+// A person's Wing tag (Creative / Data / Hybrid, set in People Information)
+// further narrows Creative Wing / Data Wing folder access beyond the
+// existing role-based ACL — it only ever restricts, never grants access
+// the role-based list wouldn't already allow. No tag (or a non-EMPLOYEE
+// role, or a folder that isn't one of the two Wings) means no extra
+// restriction — this mirrors the server-side check in api/_driveClient.js,
+// which is what actually enforces it; this client-side copy just keeps the
+// UI from showing folders someone can't use.
+function canAccessFolder(folder, user, people) {
+  if (!folder.access.includes(user.role)) return false;
+  if (user.role === "EMPLOYEE" && (folder.id === "creative" || folder.id === "data")) {
+    const person = personForUser(people, user.id);
+    const wing = person?.wing;
+    if (wing === "creative" || wing === "data") return wing === folder.id;
+    // wing === "hybrid" or unset: no extra restriction beyond the role ACL.
+  }
+  return true;
+}
 const errorTextStyle = { color: COLORS.danger, fontSize: 11.5, marginTop: 4 };
 const manageLinkStyle = { background: "none", border: "none", color: COLORS.data, fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0 };
 
-const PEOPLE_EMPTY_FORM = { name: "", role: "", department: "", employmentStatus: "", email: "", phone: "", startDate: "", status: "Active", linkedUserId: "" };
+const PEOPLE_EMPTY_FORM = { name: "", role: "", department: "", employmentStatus: "", email: "", phone: "", startDate: "", status: "Active", linkedUserId: "", wing: "" };
 const PEOPLE_STATUSES = ["Active", "On leave", "Inactive"];
 
 function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePerson, removePerson, savePeopleConfig }) {
@@ -1089,6 +1108,7 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
               <span style={{ flex: 2, minWidth: 160 }}>Name</span>
               <span style={{ width: 120 }}>Department</span>
               <span style={{ width: 120 }}>Employment</span>
+              <span style={{ width: 90 }}>Wing</span>
               <span style={{ flex: 1.5, minWidth: 160 }}>Email</span>
               <span style={{ width: 130 }}>Phone</span>
               <span style={{ width: 100 }}>Start date</span>
@@ -1115,6 +1135,7 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
                     </div>
                   </span>
                   <span style={{ width: 120 }}>{p.employmentStatus || "—"}</span>
+                  <span style={{ width: 90 }}>{p.wing ? <Badge soft={COLORS.dataSoft} text={COLORS.dataText}>{p.wing === "hybrid" ? "Hybrid" : p.wing === "creative" ? "Creative" : "Data"}</Badge> : <span style={{ color: COLORS.mute }}>—</span>}</span>
                   <span style={{ flex: 1.5, minWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.email}</span>
                   <span style={{ width: 130 }}>{p.phone || "—"}</span>
                   <span style={{ width: 100 }}>{formatPeopleDate(p.startDate)}</span>
@@ -1177,6 +1198,17 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
                 {PEOPLE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </Field>
+            <Field label="Wing (Storage access)">
+              <select value={form.wing} onChange={e => updateField("wing", e.target.value)} style={inputStyle}>
+                <option value="">— Not set (default role access) —</option>
+                <option value="creative">Creative Wing</option>
+                <option value="data">Data Wing</option>
+                <option value="hybrid">Hybrid Wing (both)</option>
+              </select>
+            </Field>
+            <div style={{ gridColumn: "1 / -1", fontSize: 11, color: COLORS.mute, marginTop: -6 }}>
+              Only matters for someone whose role would otherwise see both Creative and Data Wing folders. Tag them Creative or Data to limit them to just that one, or Hybrid to keep both. Leave unset for the default role-based access (no extra restriction).
+            </div>
             <div style={{ gridColumn: "1 / -1" }}>
               <Field label="Linked portal account (optional)">
                 <select value={form.linkedUserId} onChange={e => updateField("linkedUserId", e.target.value)} style={inputStyle}>
@@ -2653,6 +2685,8 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
 function leaveStatusMeta(status) {
   if (status === "pending_admin") return { soft: COLORS.warningSoft, text: COLORS.warning, label: "Pending Admin Approval" };
   if (status === "pending_owner") return { soft: COLORS.goldSoft, text: "#6B4A1A", label: "Pending Owner Approval" };
+  if (status === "pending_cancel_admin") return { soft: COLORS.dangerSoft, text: COLORS.danger, label: "Cancellation — Needs Admin" };
+  if (status === "pending_cancel_owner") return { soft: COLORS.dangerSoft, text: COLORS.danger, label: "Cancellation — Needs Owner" };
   if (status === "approved") return { soft: COLORS.successSoft, text: COLORS.success, label: "Approved" };
   if (status === "denied") return { soft: COLORS.dangerSoft, text: COLORS.danger, label: "Denied" };
   return { soft: COLORS.line, text: COLORS.mute, label: "Cancelled" }; // "cancelled"
@@ -2670,31 +2704,48 @@ function formatLeaveRange(startDate, endDate) {
 // final approval, and approving writes the leave straight onto the
 // requester's Work calendar so it's reflected in Time Tracking/Attendance
 // automatically.
-function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, adminDecideLeave, ownerDecideLeave, cancelLeaveRequest, deleteLeaveRequest, deleteLeaveRequestsBulk }) {
+function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, adminDecideLeave, ownerDecideLeave, cancelLeaveRequest, requestLeaveCancellation, adminDecideCancel, ownerDecideCancel, ownerCancelLeave, deleteLeaveRequest, deleteLeaveRequestsBulk }) {
   const isOwner = user.role === "OWNER";
   const isAdmin = user.role === "ADMIN";
   const [form, setForm] = useState({ type: "Sick Leave", startDate: "", endDate: "", reason: "" });
   const [submitting, setSubmitting] = useState(false);
   const [busyId, setBusyId] = useState(null);
-  // History filters (Owner/Admin only) — by requester name, department, or
-  // position/job title (from the linked People record).
+  // History filters (Owner/Admin only) — by requester name, department,
+  // position/job title (from the linked People record), or month.
   const [search, setSearch] = useState("");
   const [deptFilter, setDeptFilter] = useState("All");
   const [titleFilter, setTitleFilter] = useState("All");
+  const [monthFilter, setMonthFilter] = useState(""); // "YYYY-MM" or ""
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  // Cancelling an already-APPROVED leave needs a reason (it goes through
+  // the same Admin/Owner review approving it did) — this holds which
+  // request that note-modal is open for.
+  const [cancelling, setCancelling] = useState(null);
+  const [cancelNote, setCancelNote] = useState("");
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
 
+  const cancelReviewStatuses = ["pending_cancel_admin", "pending_cancel_owner"];
   const myRequests = [...leaveRequests].filter(r => r.userId === user.id).sort((a, b) => b.createdAt - a.createdAt);
-  const adminQueue = isAdmin ? leaveRequests.filter(r => r.status === "pending_admin" && r.userId !== user.id) : [];
+  const adminQueue = isAdmin ? leaveRequests.filter(r => (r.status === "pending_admin" || r.status === "pending_cancel_admin") && r.userId !== user.id) : [];
   // The Owner can see and act on everything still awaiting a decision —
-  // whether it's sitting with an Admin or already passed to them — so they
-  // can approve/deny directly without waiting on the Admin stage if they want to.
-  const ownerQueue = isOwner ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner") : [];
+  // whether it's sitting with an Admin or already passed to them, and
+  // whether it's a new request or a cancellation of an approved one — so
+  // they can approve/deny directly without waiting on the Admin stage.
+  const ownerQueue = isOwner ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner" || cancelReviewStatuses.includes(r.status)) : [];
   const fullHistory = (isOwner || isAdmin) ? [...leaveRequests].sort((a, b) => b.createdAt - a.createdAt) : [];
   const departments = [...new Set(people.map(p => p.department).filter(Boolean))].sort();
   const titles = [...new Set(people.map(p => p.role).filter(Boolean))].sort();
+  function monthOverlaps(reqStart, reqEnd, monthStr) {
+    if (!monthStr) return true;
+    const [y, m] = monthStr.split("-").map(Number);
+    const monthStart = `${monthStr}-01`;
+    const monthEnd = `${monthStr}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+    return reqStart <= monthEnd && reqEnd >= monthStart;
+  }
   const visibleHistory = (isOwner || isAdmin ? fullHistory : myRequests).filter(r => {
     if (!(isOwner || isAdmin)) return true;
     if (search && !r.userName.toLowerCase().includes(search.trim().toLowerCase())) return false;
+    if (!monthOverlaps(r.startDate, r.endDate, monthFilter)) return false;
     if (deptFilter !== "All" || titleFilter !== "All") {
       const p = people.find(pp => pp.linkedUserId === r.userId);
       if (deptFilter !== "All" && (!p || p.department !== deptFilter)) return false;
@@ -2702,7 +2753,7 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
     }
     return true;
   });
-  const filtersActive = search.trim() !== "" || deptFilter !== "All" || titleFilter !== "All";
+  const filtersActive = search.trim() !== "" || deptFilter !== "All" || titleFilter !== "All" || monthFilter !== "";
 
   function patch(k, v) { setForm(f => ({ ...f, [k]: v })); }
   const canSubmit = form.startDate && form.endDate && form.startDate <= form.endDate;
@@ -2726,12 +2777,32 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
     setBusyId(id);
     try { await deleteLeaveRequest(id); } finally { setBusyId(null); }
   }
+  async function handleOwnerCancel(id) {
+    if (!window.confirm("Cancel this leave request now? If it was already approved, this also removes it from their Work calendar.")) return;
+    setBusyId(id);
+    try { await ownerCancelLeave(id); } finally { setBusyId(null); }
+  }
   async function handleDeleteVisible() {
     if (visibleHistory.length === 0) return;
     const label = filtersActive ? `${visibleHistory.length} filtered` : `all ${visibleHistory.length}`;
     if (!window.confirm(`Delete ${label} leave request${visibleHistory.length !== 1 ? "s" : ""} from history? This can't be undone.`)) return;
     setBulkDeleting(true);
     try { await deleteLeaveRequestsBulk(visibleHistory.map(r => r.id)); } finally { setBulkDeleting(false); }
+  }
+  function handleCancelClick(r) {
+    if (r.status === "approved") { setCancelling(r); setCancelNote(""); return; }
+    act(id => cancelLeaveRequest(id), r.id);
+  }
+  async function handleConfirmCancelWithNote() {
+    if (!cancelling || !cancelNote.trim()) return;
+    setCancelSubmitting(true);
+    try {
+      await requestLeaveCancellation(cancelling.id, cancelNote.trim());
+      setCancelling(null);
+      setCancelNote("");
+    } finally {
+      setCancelSubmitting(false);
+    }
   }
 
   function RequestRow({ r, showRequester, actions }) {
@@ -2750,8 +2821,11 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
             {formatLeaveRange(r.startDate, r.endDate)}{showRequester && p ? ` · ${p.department}${p.role ? ` · ${p.role}` : ""}` : ""} · requested {timeAgo(r.createdAt)}
           </div>
           {r.reason && <div style={{ fontSize: 12.5, marginTop: 4 }}>{r.reason}</div>}
+          {r.cancelRequest && <div style={{ fontSize: 11.5, color: COLORS.danger, marginTop: 4 }}>Cancellation requested: {r.cancelRequest.note}</div>}
           {r.adminDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 4 }}>Admin ({r.adminDecision.byName}): {r.adminDecision.decision === "approve" ? "approved" : "denied"}{r.adminDecision.note ? ` — ${r.adminDecision.note}` : ""}</div>}
           {r.ownerDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 2 }}>Owner ({r.ownerDecision.byName}): {r.ownerDecision.decision === "approve" ? "approved" : "denied"}{r.ownerDecision.note ? ` — ${r.ownerDecision.note}` : ""}</div>}
+          {r.cancelAdminDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 2 }}>Admin ({r.cancelAdminDecision.byName}) on cancellation: {r.cancelAdminDecision.decision === "approve" ? "approved" : "denied"}{r.cancelAdminDecision.note ? ` — ${r.cancelAdminDecision.note}` : ""}</div>}
+          {r.cancelOwnerDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 2 }}>Owner ({r.cancelOwnerDecision.byName}) on cancellation: {r.cancelOwnerDecision.decision === "approve" ? "approved" : "denied"}{r.cancelOwnerDecision.note ? ` — ${r.cancelOwnerDecision.note}` : ""}</div>}
         </div>
         {actions}
       </div>
@@ -2795,14 +2869,17 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Needs your approval</div>
           <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
             {adminQueue.length === 0 ? <EmptyState icon={CalendarCheck} title="Nothing pending" body="No leave requests are waiting on you." /> :
-              adminQueue.map(r => (
-                <RequestRow key={r.id} r={r} showRequester actions={
-                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                    <button disabled={busyId === r.id} onClick={() => act(id => adminDecideLeave(id, "deny"), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>Deny</button>
-                    <button disabled={busyId === r.id} onClick={() => act(id => adminDecideLeave(id, "approve"), r.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>Approve</button>
-                  </div>
-                } />
-              ))}
+              adminQueue.map(r => {
+                const isCancelFlow = r.status === "pending_cancel_admin";
+                return (
+                  <RequestRow key={r.id} r={r} showRequester actions={
+                    <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? adminDecideCancel(id, "deny") : adminDecideLeave(id, "deny")), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Keep leave" : "Deny"}</button>
+                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? adminDecideCancel(id, "approve") : adminDecideLeave(id, "approve")), r.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Approve cancel" : "Approve"}</button>
+                    </div>
+                  } />
+                );
+              })}
           </div>
         </div>
       )}
@@ -2810,17 +2887,20 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
       {isOwner && (
         <div>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Needs your approval</div>
-          <div style={{ fontSize: 12.5, color: COLORS.mute, marginBottom: 10 }}>Everything still awaiting a decision — including requests an Admin hasn't looked at yet. Approve or deny any of these directly; you don't have to wait for the Admin stage.</div>
+          <div style={{ fontSize: 12.5, color: COLORS.mute, marginBottom: 10 }}>Everything still awaiting a decision — new requests an Admin hasn't looked at yet, and cancellation requests for already-approved leave. Approve or deny any of these directly; you don't have to wait for the Admin stage.</div>
           <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
             {ownerQueue.length === 0 ? <EmptyState icon={CalendarCheck} title="Nothing pending" body="No leave requests are waiting on your approval." /> :
-              ownerQueue.map(r => (
-                <RequestRow key={r.id} r={r} showRequester actions={
-                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                    <button disabled={busyId === r.id} onClick={() => act(id => ownerDecideLeave(id, "deny"), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>Deny</button>
-                    <button disabled={busyId === r.id} onClick={() => act(id => ownerDecideLeave(id, "approve"), r.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>Approve</button>
-                  </div>
-                } />
-              ))}
+              ownerQueue.map(r => {
+                const isCancelFlow = cancelReviewStatuses.includes(r.status);
+                return (
+                  <RequestRow key={r.id} r={r} showRequester actions={
+                    <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? ownerDecideCancel(id, "deny") : ownerDecideLeave(id, "deny")), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Keep leave" : "Deny"}</button>
+                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? ownerDecideCancel(id, "approve") : ownerDecideLeave(id, "approve")), r.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Approve cancel" : "Approve"}</button>
+                    </div>
+                  } />
+                );
+              })}
           </div>
         </div>
       )}
@@ -2840,6 +2920,10 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
                 <option value="All">All positions</option>
                 {titles.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "7px 10px", fontSize: 12.5 }} />
+                {monthFilter && <button onClick={() => setMonthFilter("")} title="Clear month filter" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer" }}><X size={14} /></button>}
+              </div>
               {isOwner && visibleHistory.length > 0 && (
                 <button disabled={bulkDeleting} onClick={handleDeleteVisible} className="cly-btn"
                   style={{ background: "#fff", border: `1px solid ${COLORS.dangerSoft}`, color: COLORS.danger, borderRadius: 7, padding: "7px 12px", fontSize: 12.5, fontWeight: 600 }}>
@@ -2851,22 +2935,53 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
         </div>
         <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
           {visibleHistory.length === 0 ? (
-            <EmptyState icon={CalendarCheck} title={filtersActive ? "No matches" : "No leave requests yet"} body={filtersActive ? "Try a different name, department, or position." : (isOwner || isAdmin ? "Nothing's been filed yet." : "Submit one above when you need time off.")} />
-          ) : visibleHistory.map(r => (
-            <RequestRow key={r.id} r={r} showRequester={isOwner || isAdmin} actions={
-              isOwner ? (
-                <button disabled={busyId === r.id} title="Delete permanently" onClick={() => handleDeleteOne(r.id)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer" }}>
-                  <Trash2 size={14} />
-                </button>
-              ) : (!isOwner && !isAdmin && (r.status === "pending_admin" || r.status === "pending_owner")) ? (
-                <button disabled={busyId === r.id} onClick={() => act(id => cancelLeaveRequest(id), r.id)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12.5, fontWeight: 600 }}>
-                  Cancel
-                </button>
-              ) : null
-            } />
-          ))}
+            <EmptyState icon={CalendarCheck} title={filtersActive ? "No matches" : "No leave requests yet"} body={filtersActive ? "Try a different name, department, position, or month." : (isOwner || isAdmin ? "Nothing's been filed yet." : "Submit one above when you need time off.")} />
+          ) : visibleHistory.map(r => {
+            const isMine = r.userId === user.id;
+            const canCancelSimple = isMine && (r.status === "pending_admin" || r.status === "pending_owner");
+            const canCancelApproved = isMine && r.status === "approved";
+            const ownerCancellable = isOwner && ["approved", "pending_admin", "pending_owner", ...cancelReviewStatuses].includes(r.status);
+            return (
+              <RequestRow key={r.id} r={r} showRequester={isOwner || isAdmin} actions={
+                <div style={{ display: "flex", gap: 12, alignItems: "center", flexShrink: 0 }}>
+                  {(canCancelSimple || canCancelApproved) && (
+                    <button disabled={busyId === r.id} onClick={() => handleCancelClick(r)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                      Cancel
+                    </button>
+                  )}
+                  {ownerCancellable && (
+                    <button disabled={busyId === r.id} title="Cancel this leave" onClick={() => handleOwnerCancel(r.id)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                      Cancel
+                    </button>
+                  )}
+                  {isOwner && (
+                    <button disabled={busyId === r.id} title="Delete permanently" onClick={() => handleDeleteOne(r.id)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer" }}>
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+              } />
+            );
+          })}
         </div>
       </div>
+
+      {cancelling && (
+        <Modal title="Cancel approved leave" onClose={() => setCancelling(null)} width={400}>
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ fontSize: 12.5, color: COLORS.mute }}>
+              This leave has already been approved. Cancelling it now needs {isAdmin ? "the Owner's" : "an Admin's, then the Owner's,"} approval before it's reversed on your Work calendar — please explain why.
+            </div>
+            <Field label="Reason for cancelling (required)">
+              <textarea value={cancelNote} onChange={e => setCancelNote(e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} />
+            </Field>
+            <button disabled={!cancelNote.trim() || cancelSubmitting} onClick={handleConfirmCancelWithNote} className="cly-btn"
+              style={{ background: cancelNote.trim() ? COLORS.ink : COLORS.line, color: cancelNote.trim() ? "#fff" : COLORS.mute, borderRadius: 8, padding: "10px 0", fontSize: 13.5, fontWeight: 700 }}>
+              {cancelSubmitting ? "Submitting…" : "Submit cancellation request"}
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -3317,65 +3432,109 @@ export default function App() {
   // unconditionally on mount meant logged-out visitors always hit
   // permission-denied errors, which left `ready` stuck false forever (blank
   // spinner, no login screen). It also must never leave the app stuck if a
-  // fetch fails for any other reason, so `ready` is set in a finally block.
+  // fetch fails for any other reason, so `ready` is set once all initial
+  // snapshots have arrived (or failed), whichever comes first per job.
+  //
+  // These are realtime subscriptions (onSnapshot), not one-time fetches —
+  // any change to any of these collections, from this tab, another tab, or
+  // another person entirely, pushes fresh data in automatically. That's
+  // what keeps the whole app in sync without needing a page reload.
   useEffect(() => {
     if (!authChecked) return; // wait until we know whether someone's signed in
     if (!user) { setReady(true); return; } // nothing to load pre-login
 
-    (async () => {
-      const canReadRequests = user.role === "OWNER" || user.role === "ADMIN";
-      const canReadPeople = user.role !== "CLIENT";
-      const canReadAllLeave = user.role === "OWNER" || user.role === "ADMIN";
-      const jobs = [
-        { key: "users", run: () => listCollection("users"), fallback: [] },
-        { key: "groups", run: () => listCollection("groups").then(g => g.length ? g : SEED_GROUPS), fallback: SEED_GROUPS },
-        // requests/{id} is Admin/Owner-only per firestore.rules — querying it
-        // as anyone else is a guaranteed permission-denied, so skip the call
-        // entirely rather than let it fail and show a "data didn't load" banner.
-        { key: "requests", run: () => canReadRequests ? listCollection("requests") : Promise.resolve([]), fallback: [] },
-        { key: "auth", run: () => sget("auth-settings", SEED_AUTH), fallback: SEED_AUTH },
-        { key: "notif", run: () => sget("notif-settings", SEED_NOTIF), fallback: SEED_NOTIF },
-        { key: "restrictions", run: () => sget("restrictions", SEED_RESTRICTIONS), fallback: SEED_RESTRICTIONS },
-        { key: "files", run: () => listCollection("files"), fallback: [] },
-        // people/{id} is hidden from CLIENT per firestore.rules — same reasoning.
-        { key: "people", run: () => canReadPeople ? listCollection("people") : Promise.resolve([]), fallback: [] },
-        { key: "peopleConfig", run: () => sget("people-config", SEED_PEOPLE_CONFIG), fallback: SEED_PEOPLE_CONFIG },
-        // Only the Owner can read every user's time entries (per firestore.rules);
-        // everyone else's query is scoped to their own uid so it isn't denied.
-        { key: "timeEntries", run: () => (user.role === "OWNER" ? listCollection("time-entries") : listCollectionWhere("time-entries", "userId", user.id)), fallback: [] },
-        // Same pattern as time-entries: Admin/Owner see every leave request
-        // (they're the approvers), everyone else only their own.
-        { key: "leaveRequests", run: () => (canReadAllLeave ? listCollection("leave-requests") : listCollectionWhere("leave-requests", "userId", user.id)), fallback: [] },
-      ];
-      const results = await Promise.allSettled(jobs.map(j => j.run()));
-      const values = {};
-      const failed = [];
-      results.forEach((r, i) => {
-        const { key, fallback } = jobs[i];
-        if (r.status === "fulfilled") {
-          values[key] = r.value;
-        } else {
-          values[key] = fallback;
-          failed.push(key);
-          console.error(`Failed to load "${key}":`, r.reason);
-        }
-      });
-      setUsers(values.users); setGroups(values.groups); setRequests(values.requests);
-      setAuth(values.auth); setNotif(values.notif); setRestrictions(values.restrictions);
-      setFiles([...values.files].sort((x, y) => y.uploadedAt - x.uploadedAt));
-      setPeople(values.people); setPeopleConfig(values.peopleConfig);
-      setTimeEntries(values.timeEntries);
-      setLeaveRequests(values.leaveRequests);
-      if (failed.length) {
+    const canReadRequests = user.role === "OWNER" || user.role === "ADMIN";
+    const canReadPeople = user.role !== "CLIENT";
+    const canReadAllLeave = user.role === "OWNER" || user.role === "ADMIN";
+
+    const unsubs = [];
+    const pending = new Set();
+    const failed = new Set();
+    let readyFired = false;
+
+    function checkReady() {
+      if (readyFired) return; // only ever fires once, on the initial load
+      if (pending.size > 0) return;
+      readyFired = true;
+      if (failed.size) {
         // Most common cause: a Firestore security rule for one of these
         // collections hasn't been deployed yet (committing firestore.rules
         // to GitHub does NOT push it — run `firebase deploy --only
-        // firestore:rules` from the terminal). Check the browser console
-        // for the exact collection and error code.
-        notify(`Some data didn't load (${failed.join(", ")}) — check console for details.`, "error");
+        // firestore:rules` from the terminal, or publish it in the Firebase
+        // Console's Rules editor). Check the browser console for the exact
+        // collection and error code.
+        notify(`Some data didn't load (${[...failed].join(", ")}) — check console for details.`, "error");
       }
       setReady(true);
-    })();
+    }
+    function onOk(key) {
+      pending.delete(key);
+      checkReady();
+    }
+    function onErr(key, fallback, setter) {
+      return (e) => {
+        console.error(`Failed to load "${key}":`, e);
+        setter(fallback);
+        if (!readyFired) { failed.add(key); pending.delete(key); checkReady(); }
+        else notify(`Lost real-time updates for "${key}" — check console for details.`, "error");
+      };
+    }
+
+    pending.add("users");
+    unsubs.push(subscribeCollection("users", vals => { setUsers(vals); onOk("users"); }, onErr("users", [], setUsers)));
+
+    pending.add("groups");
+    unsubs.push(subscribeCollection("groups", vals => { setGroups(vals.length ? vals : SEED_GROUPS); onOk("groups"); }, onErr("groups", SEED_GROUPS, setGroups)));
+
+    // requests/{id} is Admin/Owner-only per firestore.rules — subscribing
+    // as anyone else is a guaranteed permission-denied, so skip it entirely
+    // rather than let it fail and show a "data didn't load" banner.
+    if (canReadRequests) {
+      pending.add("requests");
+      unsubs.push(subscribeCollection("requests", vals => { setRequests(vals); onOk("requests"); }, onErr("requests", [], setRequests)));
+    } else {
+      setRequests([]);
+    }
+
+    pending.add("auth");
+    unsubs.push(subscribeSetting("auth-settings", SEED_AUTH, val => { setAuth(val); onOk("auth"); }, onErr("auth", SEED_AUTH, setAuth)));
+    pending.add("notif");
+    unsubs.push(subscribeSetting("notif-settings", SEED_NOTIF, val => { setNotif(val); onOk("notif"); }, onErr("notif", SEED_NOTIF, setNotif)));
+    pending.add("restrictions");
+    unsubs.push(subscribeSetting("restrictions", SEED_RESTRICTIONS, val => { setRestrictions(val); onOk("restrictions"); }, onErr("restrictions", SEED_RESTRICTIONS, setRestrictions)));
+
+    pending.add("files");
+    unsubs.push(subscribeCollection("files", vals => { setFiles([...vals].sort((x, y) => y.uploadedAt - x.uploadedAt)); onOk("files"); }, onErr("files", [], setFiles)));
+
+    // people/{id} is hidden from CLIENT per firestore.rules — same reasoning as requests.
+    if (canReadPeople) {
+      pending.add("people");
+      unsubs.push(subscribeCollection("people", vals => { setPeople(vals); onOk("people"); }, onErr("people", [], setPeople)));
+    } else {
+      setPeople([]);
+    }
+    pending.add("peopleConfig");
+    unsubs.push(subscribeSetting("people-config", SEED_PEOPLE_CONFIG, val => { setPeopleConfig(val); onOk("peopleConfig"); }, onErr("peopleConfig", SEED_PEOPLE_CONFIG, setPeopleConfig)));
+
+    // Only the Owner can read every user's time entries (per firestore.rules);
+    // everyone else's query is scoped to their own uid so it isn't denied.
+    pending.add("timeEntries");
+    if (user.role === "OWNER") {
+      unsubs.push(subscribeCollection("time-entries", vals => { setTimeEntries(vals); onOk("timeEntries"); }, onErr("timeEntries", [], setTimeEntries)));
+    } else {
+      unsubs.push(subscribeCollectionWhere("time-entries", "userId", user.id, vals => { setTimeEntries(vals); onOk("timeEntries"); }, onErr("timeEntries", [], setTimeEntries)));
+    }
+
+    // Same pattern as time-entries: Admin/Owner see every leave request
+    // (they're the approvers), everyone else only their own.
+    pending.add("leaveRequests");
+    if (canReadAllLeave) {
+      unsubs.push(subscribeCollection("leave-requests", vals => { setLeaveRequests(vals); onOk("leaveRequests"); }, onErr("leaveRequests", [], setLeaveRequests)));
+    } else {
+      unsubs.push(subscribeCollectionWhere("leave-requests", "userId", user.id, vals => { setLeaveRequests(vals); onOk("leaveRequests"); }, onErr("leaveRequests", [], setLeaveRequests)));
+    }
+
+    return () => { unsubs.forEach(u => { try { u && u(); } catch (e) { /* already gone */ } }); };
   }, [authChecked, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function persistAuth(next) { setAuth(next); sset("auth-settings", next); }
@@ -3539,12 +3698,30 @@ export default function App() {
     persistRestrictions({ ...restrictions, [g.id]: [0, 0, 0, 0] });
     notify("Group created.");
   }
+  // Storage rules (Firebase provider) read a person's Wing tag directly off
+  // their linked user doc — rules can't do a reverse "which person links to
+  // me" query, only a get() by known path — so this mirror keeps that copy
+  // in sync. Harmless extra data for the Drive provider, which instead
+  // resolves the Wing tag server-side via a direct people-collection query
+  // in api/_driveClient.js.
+  async function syncWingToLinkedUser(linkedUserId, wing) {
+    if (!linkedUserId) return;
+    try {
+      await updateDocIn("users", linkedUserId, { wing: wing || null });
+      setUsers(prev => prev.map(u => u.id === linkedUserId ? { ...u, wing: wing || null } : u));
+    } catch (e) {
+      // Non-fatal: worst case the Storage-rules mirror is briefly stale;
+      // the Drive-path enforcement doesn't depend on this at all.
+      console.error("Failed to sync wing to linked user:", e);
+    }
+  }
   async function addPerson(form) {
     const id = uid();
     const record = { ...form, id, createdAt: Date.now() };
     try {
       await setDocIn("people", id, record);
       setPeople([...people, record]);
+      if (form.linkedUserId) await syncWingToLinkedUser(form.linkedUserId, form.wing);
       notify(`${form.name} added.`);
     } catch (e) {
       console.error("Failed to add person:", e);
@@ -3553,9 +3730,17 @@ export default function App() {
     }
   }
   async function updatePerson(id, form) {
+    const prev = people.find(p => p.id === id);
     try {
       await updateDocIn("people", id, form);
       setPeople(people.map(p => p.id === id ? { ...p, ...form } : p));
+      // If this person got relinked (or unlinked) to a different account,
+      // clear the stale mirror off the old one so it doesn't keep a wing
+      // restriction that no longer applies to it.
+      if (prev?.linkedUserId && prev.linkedUserId !== form.linkedUserId) {
+        await syncWingToLinkedUser(prev.linkedUserId, null);
+      }
+      if (form.linkedUserId) await syncWingToLinkedUser(form.linkedUserId, form.wing);
       notify("Changes saved.");
     } catch (e) {
       console.error("Failed to update person:", e);
@@ -3797,6 +3982,114 @@ export default function App() {
       throw e;
     }
   }
+  // Cancelling a leave that's already been APPROVED is different: approval
+  // already wrote real Sick/Voluntary Leave dates onto the person's Work
+  // calendar, so silently reversing that with no review could quietly
+  // undo a schedule change nobody signed off on. This goes through the
+  // same Admin → Owner chain approving it did in the first place (an
+  // Admin's own cancellation still skips straight to the Owner, same as
+  // submitting does) and requires a note explaining why.
+  async function requestLeaveCancellation(reqId, note) {
+    try {
+      const startsAsOwnerStage = user.role === "ADMIN";
+      const patch = {
+        status: startsAsOwnerStage ? "pending_cancel_owner" : "pending_cancel_admin",
+        cancelRequest: { note, requestedAt: Date.now() },
+      };
+      await updateDocIn("leave-requests", reqId, patch);
+      setLeaveRequests(leaveRequests.map(r => r.id === reqId ? { ...r, ...patch } : r));
+      notify("Cancellation request sent for approval.");
+    } catch (e) {
+      console.error("Failed to request leave cancellation:", e);
+      notify("Couldn't submit — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function adminDecideCancel(reqId, decision, note) {
+    try {
+      const patch = decision === "approve"
+        ? { status: "pending_cancel_owner", cancelAdminDecision: { by: user.id, byName: user.name, decision: "approve", note: note || "", at: Date.now() } }
+        : { status: "approved", cancelAdminDecision: { by: user.id, byName: user.name, decision: "deny", note: note || "", at: Date.now() } };
+      await updateDocIn("leave-requests", reqId, patch);
+      setLeaveRequests(leaveRequests.map(r => r.id === reqId ? { ...r, ...patch } : r));
+      notify(decision === "approve" ? "Sent to the Owner for final approval." : "Cancellation denied — leave stays approved.");
+    } catch (e) {
+      console.error("Failed to record admin cancel decision:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Owner's cancel decision is final. Approving it undoes exactly the
+  // dates this leave originally wrote (only removing overrides that still
+  // carry this leave's own day type, so anything since layered on top by
+  // some other correction isn't clobbered), and reverts to "approved" (not
+  // deleted) if denied so the leave simply stands as before.
+  async function ownerDecideCancel(reqId, decision, note) {
+    const req = leaveRequests.find(r => r.id === reqId);
+    if (!req) return;
+    try {
+      const patch = { status: decision === "approve" ? "cancelled" : "approved", cancelOwnerDecision: { by: user.id, byName: user.name, decision, note: note || "", at: Date.now() } };
+      await updateDocIn("leave-requests", reqId, patch);
+      setLeaveRequests(leaveRequests.map(r => r.id === reqId ? { ...r, ...patch } : r));
+      if (decision === "approve") {
+        const targetUser = users.find(u => u.id === req.userId);
+        if (targetUser) {
+          const rules = getAttendanceRules(targetUser);
+          const dayType = req.type === "Sick Leave" ? "sick" : "voluntary";
+          const nextOverrides = { ...rules.dateOverrides };
+          dateRangeArray(req.startDate, req.endDate).forEach(dateStr => {
+            const existing = normalizeDateOverride(nextOverrides[dateStr]);
+            if (existing && existing.dayType === dayType) delete nextOverrides[dateStr];
+          });
+          const nextRules = { ...rules, dateOverrides: nextOverrides };
+          await updateDocIn("users", targetUser.id, { attendanceRules: nextRules });
+          setUsers(prev => prev.map(u => u.id === targetUser.id ? { ...u, attendanceRules: nextRules } : u));
+        }
+      }
+      notify(decision === "approve" ? "Leave cancelled." : "Cancellation denied — leave stays approved.");
+    } catch (e) {
+      console.error("Failed to record owner cancel decision:", e);
+      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Owner-only shortcut, used from "All leave requests": cancel any
+  // request directly, right now, no note and no separate review — since
+  // the Owner is already the final approver, routing it through
+  // themselves for review would be circular. Works whether the request is
+  // still pending (nothing to undo yet) or already approved (removes the
+  // Work-calendar dates it wrote, same effect as approving a full
+  // cancellation request would, just in one step).
+  async function ownerCancelLeave(reqId) {
+    const req = leaveRequests.find(r => r.id === reqId);
+    if (!req) return;
+    try {
+      const patch = { status: "cancelled", cancelOwnerDecision: { by: user.id, byName: user.name, decision: "approve", note: "Cancelled directly by the owner.", at: Date.now() } };
+      await updateDocIn("leave-requests", reqId, patch);
+      setLeaveRequests(leaveRequests.map(r => r.id === reqId ? { ...r, ...patch } : r));
+      const targetUser = users.find(u => u.id === req.userId);
+      if (targetUser) {
+        const rules = getAttendanceRules(targetUser);
+        const dayType = req.type === "Sick Leave" ? "sick" : "voluntary";
+        const nextOverrides = { ...rules.dateOverrides };
+        let changed = false;
+        dateRangeArray(req.startDate, req.endDate).forEach(dateStr => {
+          const existing = normalizeDateOverride(nextOverrides[dateStr]);
+          if (existing && existing.dayType === dayType) { delete nextOverrides[dateStr]; changed = true; }
+        });
+        if (changed) {
+          const nextRules = { ...rules, dateOverrides: nextOverrides };
+          await updateDocIn("users", targetUser.id, { attendanceRules: nextRules });
+          setUsers(prev => prev.map(u => u.id === targetUser.id ? { ...u, attendanceRules: nextRules } : u));
+        }
+      }
+      notify("Leave request cancelled.");
+    } catch (e) {
+      console.error("Failed to cancel leave request:", e);
+      notify("Couldn't cancel — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
   // Owner-only: permanently remove a request from history (matches the
   // Firestore rule, which only allows the Owner to delete leave-requests
   // docs at all). Cancelling (above) just changes status and keeps the
@@ -3895,15 +4188,15 @@ export default function App() {
               page === "leave-requests" ? "Request Sick or Voluntary Leave and track approvals." : "Authentication, users, groups, and restrictions."
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
-              {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
-              {page === "files" && <FilesPage user={user} folders={folders} files={files} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
+              {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} people={people} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
+              {page === "files" && <FilesPage user={user} folders={folders} files={files} people={people} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
               {page === "people-info" && <PeopleInfoPage user={user} users={users} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
               {page === "org-chart" && <OrgChartPage user={user} people={people} updatePerson={updatePerson} />}
               {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
-              {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
+              {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}

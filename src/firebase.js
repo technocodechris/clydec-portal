@@ -15,7 +15,7 @@ import {
 } from "firebase/auth";
 import {
   getFirestore, doc, getDoc, setDoc, deleteDoc, collection,
-  getDocs, addDoc, updateDoc, deleteField, query, where,
+  getDocs, addDoc, updateDoc, deleteField, query, where, onSnapshot,
 } from "firebase/firestore";
 import {
   getStorage, ref, uploadBytes, getDownloadURL, deleteObject,
@@ -88,6 +88,28 @@ export async function listCollectionWhere(name, field, value) {
   const q = query(collection(db, name), where(field, "==", value));
   const snap = await getDocs(q);
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+// Realtime versions of the two functions above — call `cb` immediately
+// with the current data, then again every time anything in the collection
+// changes (an edit from this tab, another tab, or another person entirely).
+// Returns an unsubscribe function; always call it on cleanup/unmount, or
+// on logout, to stop listening.
+export function subscribeCollection(name, cb, onError) {
+  return onSnapshot(collection(db, name), snap => {
+    cb(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, onError);
+}
+export function subscribeCollectionWhere(name, field, value, cb, onError) {
+  const q = query(collection(db, name), where(field, "==", value));
+  return onSnapshot(q, snap => {
+    cb(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, onError);
+}
+// Realtime version of sget() for a single "settings" doc.
+export function subscribeSetting(key, fallback, cb, onError) {
+  return onSnapshot(doc(db, "settings", key), snap => {
+    cb(snap.exists() ? snap.data().value : fallback);
+  }, onError);
 }
 export async function setDocIn(collectionName, id, data) {
   await setDoc(doc(db, collectionName, id), data);
