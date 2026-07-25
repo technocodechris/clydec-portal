@@ -72,5 +72,20 @@ service cloud.firestore {
       allow update: if signedIn() && (resource.data.userId == request.auth.uid || isAdminOrOwner());
       allow delete: if isOwner();
     }
+
+    // Project Management: internal-facing for now (not visible to clients —
+    // a client-facing view is a planned follow-up, not built yet). Creating,
+    // editing, or deleting a project itself is Owner/Admin only; any
+    // non-client can create/update tasks, so an assigned Employee can move
+    // their own work across the board without needing elevated access.
+    match /projects/{projectId} {
+      allow read: if signedIn() && myRole() != 'CLIENT';
+      allow write: if isAdminOrOwner();
+    }
+    match /tasks/{taskId} {
+      allow read: if signedIn() && myRole() != 'CLIENT';
+      allow create, update: if signedIn() && myRole() != 'CLIENT';
+      allow delete: if isAdminOrOwner();
+    }
   }
 }
