@@ -1,4 +1,4 @@
-import { verifyUser, getDriveClient, resolveFolder, FOLDER_ACCESS, FOLDER_DRIVE_IDS } from "./_driveClient.js";
+import { verifyUser, getDriveClient, resolveFolder, canAccessFolder, FOLDER_DRIVE_IDS, friendlyDriveErrorMessage } from "./_driveClient.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -11,8 +11,7 @@ export default async function handler(req, res) {
       const { folder } = req.body;
       const resolved = await resolveFolder(folder, drive);
       if (!resolved) return res.status(400).json({ error: "Folder not found" });
-      const allowed = FOLDER_ACCESS[resolved.rootKey];
-      if (!allowed || !allowed.includes(user.role)) return res.status(403).json({ error: "Not allowed" });
+      if (!canAccessFolder(user, resolved.rootKey)) return res.status(403).json({ error: "Not allowed" });
       const listRes = await drive.files.list({
         q: `'${resolved.driveId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         fields: "files(id, name)",
@@ -27,8 +26,7 @@ export default async function handler(req, res) {
       if (!name || !name.trim()) return res.status(400).json({ error: "Folder name is required" });
       const resolved = await resolveFolder(folder, drive);
       if (!resolved) return res.status(400).json({ error: "Parent folder not found" });
-      const allowed = FOLDER_ACCESS[resolved.rootKey];
-      if (!allowed || !allowed.includes(user.role) || user.role === "CLIENT") {
+      if (!canAccessFolder(user, resolved.rootKey) || user.role === "CLIENT") {
         return res.status(403).json({ error: "Not allowed" });
       }
       const created = await drive.files.create({
@@ -46,8 +44,7 @@ export default async function handler(req, res) {
       }
       const resolved = await resolveFolder(folderId, drive);
       if (!resolved) return res.status(400).json({ error: "Folder not found" });
-      const allowed = FOLDER_ACCESS[resolved.rootKey];
-      if (!allowed || !allowed.includes(user.role) || user.role === "CLIENT") {
+      if (!canAccessFolder(user, resolved.rootKey) || user.role === "CLIENT") {
         return res.status(403).json({ error: "Not allowed" });
       }
       const updated = await drive.files.update({ fileId: folderId, requestBody: { name: newName.trim() }, fields: "id, name" });
@@ -61,8 +58,7 @@ export default async function handler(req, res) {
       }
       const resolved = await resolveFolder(folderId, drive);
       if (!resolved) return res.status(400).json({ error: "Folder not found" });
-      const allowed = FOLDER_ACCESS[resolved.rootKey];
-      if (!allowed || !allowed.includes(user.role) || user.role === "CLIENT") {
+      if (!canAccessFolder(user, resolved.rootKey) || user.role === "CLIENT") {
         return res.status(403).json({ error: "Not allowed" });
       }
       // Moves to Trash (recoverable for 30 days), not a permanent delete —
@@ -73,6 +69,6 @@ export default async function handler(req, res) {
 
     return res.status(400).json({ error: "Unknown action" });
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: friendlyDriveErrorMessage(e) });
   }
 }

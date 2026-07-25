@@ -1,4 +1,4 @@
-import { verifyUser, getAccessToken, getDriveClient, resolveFolder, FOLDER_ACCESS } from "./_driveClient.js";
+import { verifyUser, getAccessToken, getDriveClient, resolveFolder, canAccessFolder, friendlyDriveErrorMessage } from "./_driveClient.js";
 
 export default async function handler(req, res) {
   const action = req.query.action;
@@ -10,8 +10,7 @@ export default async function handler(req, res) {
       const { fileId, folder } = req.query;
       const resolved = await resolveFolder(folder, drive);
       if (!resolved) return res.status(400).json({ error: "Folder not found" });
-      const allowed = FOLDER_ACCESS[resolved.rootKey];
-      if (!allowed || !allowed.includes(user.role) || user.role === "CLIENT") {
+      if (!canAccessFolder(user, resolved.rootKey) || user.role === "CLIENT") {
         return res.status(403).json({ error: "Not allowed" });
       }
       try {
@@ -27,8 +26,7 @@ export default async function handler(req, res) {
       const { folder } = req.query;
       const resolved = await resolveFolder(folder, drive);
       if (!resolved) return res.status(400).json({ error: "Folder not found" });
-      const allowed = FOLDER_ACCESS[resolved.rootKey];
-      if (!allowed || !allowed.includes(user.role)) return res.status(403).json({ error: "Not allowed" });
+      if (!canAccessFolder(user, resolved.rootKey)) return res.status(403).json({ error: "Not allowed" });
       // Short-lived (~1hr) token, scoped to your connected Drive. The
       // browser uses it to fetch the file directly from Google, so
       // multi-GB files stream straight to disk instead of buffering
@@ -42,8 +40,7 @@ export default async function handler(req, res) {
       if (!Array.isArray(knownFileIds)) return res.status(400).json({ error: "knownFileIds must be an array" });
       const resolved = await resolveFolder(folder, drive);
       if (!resolved) return res.status(400).json({ error: "Folder not found" });
-      const allowed = FOLDER_ACCESS[resolved.rootKey];
-      if (!allowed || !allowed.includes(user.role)) return res.status(403).json({ error: "Not allowed in this folder" });
+      if (!canAccessFolder(user, resolved.rootKey)) return res.status(403).json({ error: "Not allowed in this folder" });
 
       const listRes = await drive.files.list({
         // Excludes subfolders — those are handled by drive-folder-manage,
@@ -91,6 +88,6 @@ export default async function handler(req, res) {
 
     return res.status(400).json({ error: "Unknown action" });
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: friendlyDriveErrorMessage(e) });
   }
 }

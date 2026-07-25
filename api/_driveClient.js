@@ -19,7 +19,10 @@ function initAdmin() {
 }
 
 // Confirms the request carries a valid Firebase ID token and returns the
-// caller's workspace role by looking up their Firestore profile.
+// caller's workspace role by looking up their Firestore profile. For an
+// EMPLOYEE, also resolves their Wing tag (Creative/Data/Hybrid) from their
+// linked People record, if any — needed by canAccessFolder() below to
+// enforce the per-person Wing restriction set in People Information.
 export async function verifyUser(req) {
   initAdmin();
   const header = req.headers.authorization || "";
@@ -28,7 +31,13 @@ export async function verifyUser(req) {
   const decoded = await admin.auth().verifyIdToken(token);
   const snap = await admin.firestore().collection("users").doc(decoded.uid).get();
   if (!snap.exists) throw Object.assign(new Error("No workspace profile"), { status: 403 });
-  return { uid: decoded.uid, role: snap.data().role };
+  const role = snap.data().role;
+  let wing = null;
+  if (role === "EMPLOYEE") {
+    const peopleSnap = await admin.firestore().collection("people").where("linkedUserId", "==", decoded.uid).limit(1).get();
+    if (!peopleSnap.empty) wing = peopleSnap.docs[0].data().wing || null;
+  }
+  return { uid: decoded.uid, role, wing };
 }
 
 // A lighter check for high-frequency endpoints (the per-chunk upload
@@ -72,6 +81,22 @@ export async function getAccessToken() {
   return token;
 }
 
+// Google's OAuth failures come back as terse codes (e.g. "invalid_grant")
+// that mean nothing to someone reading the Dashboard or an upload error
+// toast — they just see a cryptic string with no idea what to do next.
+// These specific codes all mean the same thing in this app's setup: the
+// one-time authorization behind GDRIVE_REFRESH_TOKEN has expired or been
+// revoked (common causes: 6+ months of no use, the connected Google
+// account's password changed, or access was revoked from myaccount.google.com)
+// and needs to be redone. Everything else is passed through as-is.
+export function friendlyDriveErrorMessage(err) {
+  const raw = (err && err.message) || String(err);
+  if (/invalid_grant|invalid_client|unauthorized_client/i.test(raw)) {
+    return "Google Drive's connection has expired or been revoked. The workspace owner needs to redo the one-time Google authorization and update GDRIVE_REFRESH_TOKEN in Vercel's environment variables.";
+  }
+  return raw;
+}
+
 // Mirrors SEED_FOLDERS access in src/App.jsx — keep both in sync.
 export const FOLDER_ACCESS = {
   creative: ["OWNER", "ADMIN", "EMPLOYEE"],
@@ -79,6 +104,21 @@ export const FOLDER_ACCESS = {
   finance: ["OWNER", "ADMIN"],
   "client-aurora": ["OWNER", "ADMIN", "CLIENT"],
 };
+
+// This is the check that actually matters for security — the client-side
+// canAccessFolder() in src/App.jsx is only a mirror of this, for the UI.
+// The role-based FOLDER_ACCESS list above is the baseline; an EMPLOYEE's
+// Wing tag (attached to `user` by verifyUser, from their linked People
+// record) can further narrow Creative/Data Wing access down to just one
+// of the two, or leave both if they're tagged Hybrid or not tagged at all.
+export function canAccessFolder(user, rootKey) {
+  const allowed = FOLDER_ACCESS[rootKey];
+  if (!allowed || !allowed.includes(user.role)) return false;
+  if (user.role === "EMPLOYEE" && (rootKey === "creative" || rootKey === "data")) {
+    if (user.wing === "creative" || user.wing === "data") return user.wing === rootKey;
+  }
+  return true;
+}
 
 // Each value is the Drive folder ID for a folder you created in your own
 // Drive (see README "Google Drive setup") — no sharing step needed since

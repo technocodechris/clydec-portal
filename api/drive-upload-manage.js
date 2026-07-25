@@ -1,4 +1,4 @@
-import { verifyUser, verifyUserFast, getAccessToken, getDriveClient, resolveFolder, FOLDER_ACCESS } from "./_driveClient.js";
+import { verifyUser, verifyUserFast, getAccessToken, getDriveClient, resolveFolder, canAccessFolder, friendlyDriveErrorMessage } from "./_driveClient.js";
 
 // Needs the raw body for the "chunk" action (binary file data) — the
 // other actions parse their own JSON from the same raw stream below.
@@ -28,8 +28,7 @@ export default async function handler(req, res) {
       const drive = getDriveClient();
       const resolved = await resolveFolder(body.folder, drive);
       if (!resolved) return res.status(400).json({ error: "Folder not found" });
-      const allowed = FOLDER_ACCESS[resolved.rootKey];
-      if (!allowed || !allowed.includes(user.role)) return res.status(403).json({ error: "Not allowed in this folder" });
+      if (!canAccessFolder(user, resolved.rootKey)) return res.status(403).json({ error: "Not allowed in this folder" });
       if (user.role === "CLIENT") return res.status(403).json({ error: "Clients can't upload" });
       const accessToken = await getAccessToken();
       return res.status(200).json({ accessToken, folderId: resolved.driveId });
@@ -42,8 +41,7 @@ export default async function handler(req, res) {
       const drive = getDriveClient();
       const resolved = await resolveFolder(body.folder, drive);
       if (!resolved) return res.status(400).json({ error: "Folder not found" });
-      const allowed = FOLDER_ACCESS[resolved.rootKey];
-      if (!allowed || !allowed.includes(user.role)) return res.status(403).json({ error: "Not allowed in this folder" });
+      if (!canAccessFolder(user, resolved.rootKey)) return res.status(403).json({ error: "Not allowed in this folder" });
       if (user.role === "CLIENT") return res.status(403).json({ error: "Clients can't upload" });
 
       const accessToken = await getAccessToken();
@@ -125,6 +123,6 @@ export default async function handler(req, res) {
 
     return res.status(400).json({ error: "Unknown action" });
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: friendlyDriveErrorMessage(e) });
   }
 }
