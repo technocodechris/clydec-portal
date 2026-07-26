@@ -7,7 +7,7 @@ import {
   Loader2, Building2, KeyRound, Image as ImageIcon, File as FileIcon,
   ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
   Database, Smile, CalendarCheck, Timer, Network, LayoutGrid, Pencil,
-  Layers, ListChecks, Flag,
+  MessageSquare, Send, Phone, PhoneOff, Video, VideoOff, Mic, MicOff, UsersRound, PhoneMissed, PhoneIncoming,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------- */
@@ -78,7 +78,8 @@ import {
   watchAuth, login as fbLogin, logout as fbLogout, createUserAccount,
   requestPasswordReset as requestPasswordResetFor,
   sset, setDocIn, addDocIn, updateDocIn, deleteDocIn, deleteDocFieldIn, setUserAttendanceOverridesBulk,
-  subscribeCollection, subscribeCollectionWhere, subscribeSetting,
+  subscribeCollection, subscribeCollectionWhere, subscribeCollectionArrayContains, subscribeSetting,
+  subscribePath, subscribeDocPath, addDocPath, setDocPath, updateDocPath,
   uploadFile, deleteFileFromStorage, db,
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
@@ -128,6 +129,16 @@ const SEED_GROUPS = [
   { id: "EMPLOYEE", name: "Employee", custom: false, description: "Works inside the Creative and Data wings on assigned projects." },
   { id: "CLIENT", name: "Client", custom: false, description: "Views and downloads files from their own project only." },
 ];
+
+// Public STUN only (no TURN server) — enough to connect most calls, but a
+// call between two people both behind restrictive/symmetric NATs or strict
+// corporate firewalls can fail to establish a peer-to-peer path. A TURN
+// server (self-hosted coturn, or a paid service like Twilio) would close
+// that gap; not included here to keep this free to run. See history notes.
+const ICE_SERVERS = { iceServers: [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+] };
 
 const SEED_FOLDERS = [
   { id: "creative", name: "Creative Wing", wing: "creative", access: ["OWNER", "ADMIN", "EMPLOYEE"] },
@@ -313,7 +324,7 @@ function LoginScreen({ onLogin, loading, error, onForgot }) {
 /* ---------------------------------------------------------------- */
 /* App shell: sidebar + topbar                                        */
 /* ---------------------------------------------------------------- */
-function Sidebar({ user, page, setPage, pendingCount, leavePendingCount }) {
+function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadMessageCount }) {
   const meta = ROLE_META[user.role];
   const storageItems = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, show: true },
@@ -327,24 +338,24 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount }) {
     { key: "people-info", label: "People Information", icon: Smile, show: user.role !== "CLIENT" },
     { key: "org-chart", label: "Organizational Chart", icon: Network, show: user.role !== "CLIENT" },
   ];
-  const projectItems = [
-    { key: "projects", label: "Projects", icon: Layers, show: user.role !== "CLIENT" },
-  ];
   const timeAttendanceItems = [
     { key: "time-tracking", label: "Time Tracking", icon: Timer, show: user.role !== "CLIENT" },
     { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: user.role !== "CLIENT" },
     { key: "attendance", label: "Attendance", icon: CalendarCheck, show: user.role !== "CLIENT" },
     { key: "leave-requests", label: "Leave Requests", icon: FileText, show: user.role !== "CLIENT", badge: leavePendingCount || 0 },
   ];
+  const communicationItems = [
+    { key: "communication", label: "Messages", icon: MessageSquare, show: user.role !== "CLIENT", badge: unreadMessageCount || 0 },
+  ];
   const [storageOpen, setStorageOpen] = useState(true);
   const [portalOpen, setPortalOpen] = useState(true);
   const [peopleOpen, setPeopleOpen] = useState(true);
-  const [projectsOpen, setProjectsOpen] = useState(true);
   const [timeAttendanceOpen, setTimeAttendanceOpen] = useState(true);
+  const [communicationOpen, setCommunicationOpen] = useState(true);
   const showPortalGroup = portalItems.some(i => i.show);
   const showPeopleGroup = peopleItems.some(i => i.show);
-  const showProjectsGroup = projectItems.some(i => i.show);
   const showTimeAttendanceGroup = timeAttendanceItems.some(i => i.show);
+  const showCommunicationGroup = communicationItems.some(i => i.show);
   return (
     <div className="cly-scan" style={{ width: 216, flexShrink: 0, background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 8px 22px" }}>
@@ -424,31 +435,6 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount }) {
             )}
           </>
         )}
-        {showProjectsGroup && (
-          <>
-            <button onClick={() => setProjectsOpen(o => !o)} className="cly-navitem cly-btn" style={{
-              display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
-              color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left", marginTop: 6,
-            }}>
-              <Layers size={16} style={{ opacity: 0.85 }} />
-              <span style={{ flex: 1 }}>Project Management</span>
-              <ChevronDown size={14} style={{ opacity: 0.7, transform: projectsOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
-            </button>
-            {projectsOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
-                {projectItems.filter(i => i.show).map(i => (
-                  <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
-                    display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
-                    color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
-                  }}>
-                    <i.icon size={16} style={{ opacity: 0.85 }} />
-                    <span style={{ flex: 1 }}>{i.label}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </>
-        )}
         {showTimeAttendanceGroup && (
           <>
             <button onClick={() => setTimeAttendanceOpen(o => !o)} className="cly-navitem cly-btn" style={{
@@ -462,6 +448,32 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount }) {
             {timeAttendanceOpen && (
               <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
                 {timeAttendanceItems.filter(i => i.show).map(i => (
+                  <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
+                    color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
+                  }}>
+                    <i.icon size={16} style={{ opacity: 0.85 }} />
+                    <span style={{ flex: 1 }}>{i.label}</span>
+                    {!!i.badge && <span style={{ background: COLORS.creative, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {showCommunicationGroup && (
+          <>
+            <button onClick={() => setCommunicationOpen(o => !o)} className="cly-navitem cly-btn" style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
+              color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left", marginTop: 6,
+            }}>
+              <MessageSquare size={16} style={{ opacity: 0.85 }} />
+              <span style={{ flex: 1 }}>Communication</span>
+              <ChevronDown size={14} style={{ opacity: 0.7, transform: communicationOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
+            </button>
+            {communicationOpen && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
+                {communicationItems.filter(i => i.show).map(i => (
                   <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
                     color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
@@ -1581,6 +1593,11 @@ function OrgChartPage({ user, people, updatePerson }) {
 function formatClockTime(ms) {
   if (!ms) return "—";
   return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+// Communication's "Active now" indicator — anyone whose heartbeat (see the
+// presence effect in App()) landed within the last 90s counts as online.
+function isOnline(u) {
+  return !!u?.lastActiveAt && (Date.now() - u.lastActiveAt) < 90000;
 }
 // datetime-local inputs work in the browser's local time, so we shift by the
 // timezone offset before/after going to/from an epoch-ms timestamp.
@@ -3018,361 +3035,6 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
 }
 
 /* ---------------------------------------------------------------- */
-/* Project Management                                                 */
-/* ---------------------------------------------------------------- */
-const PROJECT_STATUSES = ["Not started", "In progress", "In review", "On hold", "Done"];
-const TASK_COLUMNS = ["To do", "In progress", "Done"];
-const PROJECT_EMPTY_FORM = { name: "", description: "", clientUserId: "", wing: "", status: "Not started", assignedUserIds: [], startDate: "", dueDate: "" };
-function projectStatusMeta(status) {
-  if (status === "Done") return { soft: COLORS.successSoft, text: COLORS.success };
-  if (status === "In progress") return { soft: COLORS.dataSoft, text: COLORS.dataText };
-  if (status === "In review") return { soft: COLORS.goldSoft, text: "#6B4A1A" };
-  if (status === "On hold") return { soft: COLORS.dangerSoft, text: COLORS.danger };
-  return { soft: COLORS.line, text: COLORS.mute }; // "Not started"
-}
-
-function ProjectsPage({ user, users, people, projects, tasks, createProject, updateProject, deleteProject, createTask, updateTask, deleteTask }) {
-  const isManager = user.role === "OWNER" || user.role === "ADMIN";
-  const eligibleUsers = users.filter(u => u.role !== "CLIENT");
-  const clientUsers = users.filter(u => u.role === "CLIENT");
-  const [selectedId, setSelectedId] = useState(null);
-  const [statusFilter, setStatusFilter] = useState("All");
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingProject, setEditingProject] = useState(null);
-  const [form, setForm] = useState(PROJECT_EMPTY_FORM);
-  const [saving, setSaving] = useState(false);
-
-  const visibleProjects = (statusFilter === "All" ? projects : projects.filter(p => p.status === statusFilter))
-    .slice().sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
-  const selected = projects.find(p => p.id === selectedId);
-
-  function patch(k, v) { setForm(f => ({ ...f, [k]: v })); }
-  function toggleAssignee(id) {
-    setForm(f => ({ ...f, assignedUserIds: f.assignedUserIds.includes(id) ? f.assignedUserIds.filter(x => x !== id) : [...f.assignedUserIds, id] }));
-  }
-  function openCreate() {
-    setForm(PROJECT_EMPTY_FORM); setEditingProject(null); setModalOpen(true);
-  }
-  function openEdit(p) {
-    setForm({ name: p.name, description: p.description || "", clientUserId: p.clientUserId || "", wing: p.wing || "", status: p.status, assignedUserIds: p.assignedUserIds || [], startDate: p.startDate || "", dueDate: p.dueDate || "" });
-    setEditingProject(p); setModalOpen(true);
-  }
-  async function handleSave() {
-    if (!form.name.trim()) return;
-    setSaving(true);
-    try {
-      if (editingProject) await updateProject(editingProject.id, form);
-      else { const id = await createProject(form); setSelectedId(id); }
-      setModalOpen(false);
-    } finally {
-      setSaving(false);
-    }
-  }
-  async function handleDelete(p) {
-    if (!window.confirm(`Delete "${p.name}" and all its tasks? This can't be undone.`)) return;
-    await deleteProject(p.id);
-    if (selectedId === p.id) setSelectedId(null);
-  }
-
-  if (selected) {
-    return (
-      <ProjectDetail
-        project={selected} isManager={isManager} eligibleUsers={eligibleUsers} clientUsers={clientUsers}
-        tasks={tasks} onBack={() => setSelectedId(null)}
-        onEdit={() => openEdit(selected)} onDelete={() => handleDelete(selected)}
-        createTask={createTask} updateTask={updateTask} deleteTask={deleteTask}
-        modal={modalOpen && (
-          <ProjectFormModal form={form} patch={patch} toggleAssignee={toggleAssignee} eligibleUsers={eligibleUsers} clientUsers={clientUsers}
-            editingProject={editingProject} saving={saving} onSave={handleSave} onClose={() => setModalOpen(false)} />
-        )}
-      />
-    );
-  }
-
-  return (
-    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 18 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 160 }}>
-          <option value="All">All statuses</option>
-          {PROJECT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        {isManager && (
-          <button onClick={openCreate} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.ink, color: "#fff", borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 700 }}>
-            <Plus size={15} /> New project
-          </button>
-        )}
-      </div>
-
-      {visibleProjects.length === 0 ? (
-        <EmptyState icon={Layers} title={projects.length === 0 ? "No projects yet" : "No matches"} body={projects.length === 0 ? (isManager ? "Create your first project to start organizing work." : "Nothing's been set up yet — check back soon.") : "Try a different status filter."} />
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
-          {visibleProjects.map(p => {
-            const sm = projectStatusMeta(p.status);
-            const client = p.clientUserId ? clientUsers.find(u => u.id === p.clientUserId) : null;
-            const projectTasks = tasks.filter(t => t.projectId === p.id);
-            const doneCount = projectTasks.filter(t => t.status === "Done").length;
-            return (
-              <button key={p.id} onClick={() => setSelectedId(p.id)} className="cly-btn cly-row" style={{
-                textAlign: "left", background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 16,
-                display: "flex", flexDirection: "column", gap: 8,
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>{p.name}</div>
-                  <Badge soft={sm.soft} text={sm.text}>{p.status}</Badge>
-                </div>
-                {p.description && <div style={{ fontSize: 12, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{p.description}</div>}
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 11, color: COLORS.mute, marginTop: 2 }}>
-                  {client && <span>{client.name}</span>}
-                  {p.wing && <span>{WING_LABELS[p.wing] || p.wing}</span>}
-                  {p.dueDate && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Flag size={10} /> {formatPeopleDate(p.dueDate)}</span>}
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                  <span style={{ fontSize: 11, color: COLORS.mute, display: "flex", alignItems: "center", gap: 4 }}><ListChecks size={12} /> {doneCount}/{projectTasks.length}</span>
-                  <div style={{ display: "flex" }}>
-                    {(p.assignedUserIds || []).slice(0, 4).map((uid, i) => {
-                      const u = eligibleUsers.find(x => x.id === uid);
-                      if (!u) return null;
-                      return <span key={uid} title={u.name} style={{ width: 20, height: 20, borderRadius: "50%", background: peopleColorFor(u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, marginLeft: i > 0 ? -6 : 0, border: "1.5px solid #fff" }}>{peopleInitials(u.name)}</span>;
-                    })}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {modalOpen && (
-        <ProjectFormModal form={form} patch={patch} toggleAssignee={toggleAssignee} eligibleUsers={eligibleUsers} clientUsers={clientUsers}
-          editingProject={editingProject} saving={saving} onSave={handleSave} onClose={() => setModalOpen(false)} />
-      )}
-    </div>
-  );
-}
-
-function ProjectFormModal({ form, patch, toggleAssignee, eligibleUsers, clientUsers, editingProject, saving, onSave, onClose }) {
-  return (
-    <Modal title={editingProject ? "Edit project" : "New project"} onClose={onClose} width={520}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="Project name">
-          <input type="text" value={form.name} onChange={e => patch("name", e.target.value)} style={inputStyle} autoFocus />
-        </Field>
-        <Field label="Description (optional)">
-          <input type="text" value={form.description} onChange={e => patch("description", e.target.value)} style={inputStyle} />
-        </Field>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Client (optional)">
-            <select value={form.clientUserId} onChange={e => patch("clientUserId", e.target.value)} style={inputStyle}>
-              <option value="">No client</option>
-              {clientUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </Field>
-          <Field label="Wing (optional)">
-            <select value={form.wing} onChange={e => patch("wing", e.target.value)} style={inputStyle}>
-              <option value="">Not tied to a Wing</option>
-              <option value="creative">Creative Wing</option>
-              <option value="data">Data Wing</option>
-              <option value="hybrid">Both</option>
-            </select>
-          </Field>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-          <Field label="Status">
-            <select value={form.status} onChange={e => patch("status", e.target.value)} style={inputStyle}>
-              {PROJECT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </Field>
-          <Field label="Start date (optional)">
-            <input type="date" value={form.startDate} onChange={e => patch("startDate", e.target.value)} style={inputStyle} />
-          </Field>
-          <Field label="Due date (optional)">
-            <input type="date" value={form.dueDate} onChange={e => patch("dueDate", e.target.value)} style={inputStyle} />
-          </Field>
-        </div>
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Assigned people</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 130, overflowY: "auto" }}>
-            {eligibleUsers.map(u => {
-              const on = form.assignedUserIds.includes(u.id);
-              return (
-                <button key={u.id} type="button" onClick={() => toggleAssignee(u.id)} className="cly-btn" style={{
-                  background: on ? COLORS.ink : "#fff", color: on ? "#fff" : COLORS.text,
-                  border: `1px solid ${on ? COLORS.ink : COLORS.line}`, borderRadius: 20, padding: "5px 12px", fontSize: 12, fontWeight: 600,
-                }}>{u.name}</button>
-              );
-            })}
-          </div>
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-          <button onClick={onClose} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
-          <button disabled={!form.name.trim() || saving} onClick={onSave} className="cly-btn" style={{ background: form.name.trim() ? COLORS.ink : COLORS.line, color: form.name.trim() ? "#fff" : COLORS.mute, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
-            {saving ? "Saving…" : editingProject ? "Save changes" : "Create project"}
-          </button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-const TASK_EMPTY_FORM = { title: "", description: "", assigneeId: "", status: "To do", dueDate: "" };
-
-function ProjectDetail({ project, isManager, eligibleUsers, clientUsers, tasks, onBack, onEdit, onDelete, createTask, updateTask, deleteTask, modal }) {
-  const projectTasks = tasks.filter(t => t.projectId === project.id);
-  const [taskModalOpen, setTaskModalOpen] = useState(false);
-  const [editingTask, setEditingTask] = useState(null);
-  const [taskForm, setTaskForm] = useState(TASK_EMPTY_FORM);
-  const [savingTask, setSavingTask] = useState(false);
-
-  const client = project.clientUserId ? clientUsers.find(u => u.id === project.clientUserId) : null;
-  const sm = projectStatusMeta(project.status);
-  const doneCount = projectTasks.filter(t => t.status === "Done").length;
-
-  function openAddTask(column) {
-    setTaskForm({ ...TASK_EMPTY_FORM, status: column }); setEditingTask(null); setTaskModalOpen(true);
-  }
-  function openEditTask(t) {
-    setTaskForm({ title: t.title, description: t.description || "", assigneeId: t.assigneeId || "", status: t.status, dueDate: t.dueDate || "" });
-    setEditingTask(t); setTaskModalOpen(true);
-  }
-  async function handleSaveTask() {
-    if (!taskForm.title.trim()) return;
-    setSavingTask(true);
-    try {
-      if (editingTask) await updateTask(editingTask.id, taskForm);
-      else await createTask(project.id, taskForm);
-      setTaskModalOpen(false);
-    } finally {
-      setSavingTask(false);
-    }
-  }
-  async function handleDeleteTask(t) {
-    if (!window.confirm(`Delete task "${t.title}"?`)) return;
-    await deleteTask(t.id);
-  }
-
-  return (
-    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
-      <button onClick={onBack} className="cly-btn" style={{ alignSelf: "flex-start", background: "none", border: "none", color: COLORS.data, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}>
-        <ChevronRight size={14} style={{ transform: "rotate(180deg)" }} /> All projects
-      </button>
-
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 22 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <h2 style={{ margin: 0, fontSize: 19 }}>{project.name}</h2>
-              <Badge soft={sm.soft} text={sm.text}>{project.status}</Badge>
-            </div>
-            {project.description && <div style={{ color: COLORS.mute, fontSize: 13.5, marginTop: 6, maxWidth: 640 }}>{project.description}</div>}
-          </div>
-          {isManager && (
-            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-              <button onClick={onEdit} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>Edit</button>
-              <button onClick={onDelete} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.dangerSoft}`, color: COLORS.danger, borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600 }}>Delete</button>
-            </div>
-          )}
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 18, marginTop: 16, fontSize: 12.5, color: COLORS.mute }}>
-          {client && <span>Client: <strong style={{ color: COLORS.text }}>{client.name}</strong></span>}
-          {project.wing && <span>Wing: <strong style={{ color: COLORS.text }}>{WING_LABELS[project.wing] || project.wing}</strong></span>}
-          {project.startDate && <span>Started {formatPeopleDate(project.startDate)}</span>}
-          {project.dueDate && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Flag size={12} /> Due {formatPeopleDate(project.dueDate)}</span>}
-          <span>{doneCount}/{projectTasks.length} tasks done</span>
-        </div>
-        {(project.assignedUserIds || []).length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
-            {(project.assignedUserIds || []).map(uid => {
-              const u = eligibleUsers.find(x => x.id === uid);
-              if (!u) return null;
-              return (
-                <span key={uid} style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.cream, borderRadius: 20, padding: "3px 10px 3px 3px", fontSize: 11.5 }}>
-                  <span style={{ width: 20, height: 20, borderRadius: "50%", background: peopleColorFor(u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9.5, fontWeight: 700 }}>{peopleInitials(u.name)}</span>
-                  {u.name}
-                </span>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-        {TASK_COLUMNS.map(col => {
-          const colTasks = projectTasks.filter(t => t.status === col);
-          return (
-            <div key={col} style={{ background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 12, display: "flex", flexDirection: "column", gap: 8, minHeight: 160 }}>
-              <div style={{ fontWeight: 700, fontSize: 12.5 }}>{col} <span style={{ color: COLORS.mute, fontWeight: 500 }}>({colTasks.length})</span></div>
-              {colTasks.map(t => {
-                const assignee = eligibleUsers.find(u => u.id === t.assigneeId);
-                return (
-                  <div key={t.id} style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>{t.title}</div>
-                    {t.dueDate && <div style={{ fontSize: 10.5, color: COLORS.mute, display: "flex", alignItems: "center", gap: 4 }}><Flag size={10} /> {formatPeopleDate(t.dueDate)}</div>}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
-                      {assignee ? (
-                        <span title={assignee.name} style={{ width: 20, height: 20, borderRadius: "50%", background: peopleColorFor(assignee.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700 }}>{peopleInitials(assignee.name)}</span>
-                      ) : <span style={{ fontSize: 10.5, color: COLORS.mute }}>Unassigned</span>}
-                      <div style={{ display: "flex", gap: 2 }}>
-                        <button onClick={() => openEditTask(t)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, padding: 3, cursor: "pointer" }}><Pencil size={12} /></button>
-                        <button onClick={() => handleDeleteTask(t)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, padding: 3, cursor: "pointer" }}><Trash2 size={12} /></button>
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", gap: 4 }}>
-                      {TASK_COLUMNS.filter(c => c !== col).map(c => (
-                        <button key={c} onClick={() => updateTask(t.id, { status: c })} className="cly-btn" style={{ flex: 1, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: "4px 4px", fontSize: 9.5, fontWeight: 600, color: COLORS.mute }}>
-                            → {c}
-                          </button>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-              <button onClick={() => openAddTask(col)} className="cly-btn" style={{ background: "none", border: `1px dashed ${COLORS.line}`, borderRadius: 8, padding: "8px 0", fontSize: 12, fontWeight: 600, color: COLORS.mute }}>+ Add task</button>
-            </div>
-          );
-        })}
-      </div>
-
-      {taskModalOpen && (
-        <Modal title={editingTask ? "Edit task" : "New task"} onClose={() => setTaskModalOpen(false)} width={420}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <Field label="Title">
-              <input type="text" value={taskForm.title} onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))} style={inputStyle} autoFocus />
-            </Field>
-            <Field label="Description (optional)">
-              <input type="text" value={taskForm.description} onChange={e => setTaskForm(f => ({ ...f, description: e.target.value }))} style={inputStyle} />
-            </Field>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <Field label="Assignee">
-                <select value={taskForm.assigneeId} onChange={e => setTaskForm(f => ({ ...f, assigneeId: e.target.value }))} style={inputStyle}>
-                  <option value="">Unassigned</option>
-                  {eligibleUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                </select>
-              </Field>
-              <Field label="Due date (optional)">
-                <input type="date" value={taskForm.dueDate} onChange={e => setTaskForm(f => ({ ...f, dueDate: e.target.value }))} style={inputStyle} />
-              </Field>
-            </div>
-            <Field label="Status">
-              <select value={taskForm.status} onChange={e => setTaskForm(f => ({ ...f, status: e.target.value }))} style={inputStyle}>
-                {TASK_COLUMNS.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </Field>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
-              <button onClick={() => setTaskModalOpen(false)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
-              <button disabled={!taskForm.title.trim() || savingTask} onClick={handleSaveTask} className="cly-btn" style={{ background: taskForm.title.trim() ? COLORS.ink : COLORS.line, color: taskForm.title.trim() ? "#fff" : COLORS.mute, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
-                {savingTask ? "Saving…" : editingTask ? "Save" : "Add task"}
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-      {modal}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------- */
 function AuthTab({ auth, setAuth, canEdit }) {
   const patch = (k, v) => canEdit && setAuth({ ...auth, [k]: v });
   return (
@@ -3767,6 +3429,306 @@ function Modal({ title, onClose, children, width = 360 }) {
 /* ---------------------------------------------------------------- */
 /* Root App                                                            */
 /* ---------------------------------------------------------------- */
+function CommunicationPage({ user, users, people, conversations, activeConversationId, setActiveConversationId, messages, sendMessage, getOrCreateDirectConversation, createGroupConversation, markConversationRead, startCall, activeCall, callConnecting }) {
+  const [search, setSearch] = useState("");
+  const [messageText, setMessageText] = useState("");
+  const [groupOpen, setGroupOpen] = useState(false);
+  const [groupName, setGroupName] = useState("");
+  const [groupSelection, setGroupSelection] = useState([]);
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  const contacts = users
+    .filter(u => u.id !== user.id && u.role !== "CLIENT")
+    .map(u => ({ u, person: personForUser(people, u.id) }))
+    .filter(c => !search.trim() || c.u.name.toLowerCase().includes(search.trim().toLowerCase()) || (c.person?.department || "").toLowerCase().includes(search.trim().toLowerCase()));
+
+  const sortedConversations = [...conversations]
+    .filter(c => !search.trim() || conversationLabel(c, user).toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
+
+  function conversationLabel(c, viewer) {
+    if (c.type === "group") return c.name || "Group";
+    const otherId = c.participantIds.find(id => id !== viewer.id);
+    return c.participantNames?.[otherId] || "Direct message";
+  }
+  function conversationUnread(c) {
+    const lastRead = c.lastReadAt?.[user.id] || 0;
+    return (c.lastMessageAt || 0) > lastRead && c.lastMessageBy && c.lastMessageBy !== user.name;
+  }
+
+  const activeConversation = conversations.find(c => c.id === activeConversationId);
+  const otherParticipant = (() => {
+    if (!activeConversation || activeConversation.type !== "direct") return null;
+    const otherId = activeConversation.participantIds.find(id => id !== user.id);
+    return { u: users.find(u => u.id === otherId), p: personForUser(people, otherId), id: otherId };
+  })();
+
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+  useEffect(() => { if (activeConversationId) markConversationRead(activeConversationId); }, [activeConversationId, messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSend() {
+    if (!messageText.trim() || !activeConversationId || sending) return;
+    setSending(true);
+    const text = messageText.trim();
+    setMessageText("");
+    try { await sendMessage(activeConversationId, text); } finally { setSending(false); }
+  }
+  async function handleSelectContact(c) {
+    await getOrCreateDirectConversation(c.u.id, c.u.name);
+  }
+  function toggleGroupMember(userId) {
+    setGroupSelection(sel => sel.includes(userId) ? sel.filter(id => id !== userId) : [...sel, userId]);
+  }
+  async function handleCreateGroup() {
+    if (!groupName.trim() || groupSelection.length === 0) return;
+    const names = {};
+    contacts.forEach(c => { if (groupSelection.includes(c.u.id)) names[c.u.id] = c.u.name; });
+    await createGroupConversation(groupName.trim(), groupSelection, names);
+    setGroupOpen(false); setGroupName(""); setGroupSelection([]);
+  }
+
+  const inCallWithThisConvo = activeCall && activeCall.conversationId === activeConversationId;
+
+  return (
+    <div className="cly-fade-in" style={{ display: "flex", height: "calc(100vh - 130px)", background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden", margin: 4 }}>
+      <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: 14, borderBottom: `1px solid ${COLORS.line}` }}>
+          <div style={{ position: "relative" }}>
+            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: COLORS.mute }} />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search people or chats" style={{ ...inputStyle, paddingLeft: 30 }} />
+          </div>
+        </div>
+        <div style={{ overflowY: "auto", flex: 1 }}>
+          {sortedConversations.length > 0 && (
+            <div style={{ padding: "10px 14px 4px", fontSize: 10.5, fontWeight: 700, color: COLORS.mute, letterSpacing: 0.5 }}>CHATS</div>
+          )}
+          {sortedConversations.map(c => {
+            const label = conversationLabel(c, user);
+            const other = c.type === "direct" ? users.find(u => u.id === c.participantIds.find(id => id !== user.id)) : null;
+            const unread = conversationUnread(c);
+            return (
+              <button key={c.id} onClick={() => setActiveConversationId(c.id)} className="cly-btn" style={{
+                display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 14px", background: activeConversationId === c.id ? COLORS.cream : "transparent", border: "none", textAlign: "left",
+              }}>
+                <div style={{ position: "relative", flexShrink: 0 }}>
+                  <div style={{ width: 34, height: 34, borderRadius: "50%", background: peopleColorFor(label), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
+                    {c.type === "group" ? <UsersRound size={15} /> : peopleInitials(label)}
+                  </div>
+                  {other && isOnline(other) && <span style={{ position: "absolute", bottom: -1, right: -1, width: 10, height: 10, borderRadius: "50%", background: COLORS.success, border: "2px solid #fff" }} />}
+                </div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: unread ? 700 : 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+                  <div style={{ fontSize: 11.5, color: unread ? COLORS.text : COLORS.mute, fontWeight: unread ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {c.lastMessageText || "No messages yet"}
+                  </div>
+                </div>
+                {unread && <span style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.data, flexShrink: 0 }} />}
+              </button>
+            );
+          })}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px 4px" }}>
+            <span style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.mute, letterSpacing: 0.5 }}>PEOPLE</span>
+            <button onClick={() => setGroupOpen(true)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.data, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>+ New group</button>
+          </div>
+          {contacts.length === 0 && <div style={{ padding: "8px 14px", fontSize: 12, color: COLORS.mute }}>No one else is linked to a portal account yet.</div>}
+          {contacts.map(c => (
+            <button key={c.u.id} onClick={() => handleSelectContact(c)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 14px", background: "transparent", border: "none", textAlign: "left" }}>
+              <div style={{ position: "relative", flexShrink: 0 }}>
+                <div style={{ width: 30, height: 30, borderRadius: "50%", background: peopleColorFor(c.u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
+                  {peopleInitials(c.u.name)}
+                </div>
+                {isOnline(c.u) && <span style={{ position: "absolute", bottom: -1, right: -1, width: 9, height: 9, borderRadius: "50%", background: COLORS.success, border: "2px solid #fff" }} />}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.u.name}</div>
+                <div style={{ fontSize: 11, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.person ? `${c.person.department}${c.person.role ? ` · ${c.person.role}` : ""}` : ROLE_META[c.u.role]?.label}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        {!activeConversation ? (
+          <EmptyState icon={MessageSquare} title="Pick a chat" body="Select someone from People, or an existing chat, to start messaging." />
+        ) : (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: `1px solid ${COLORS.line}` }}>
+              <div style={{ width: 34, height: 34, borderRadius: "50%", background: peopleColorFor(conversationLabel(activeConversation, user)), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
+                {activeConversation.type === "group" ? <UsersRound size={15} /> : peopleInitials(conversationLabel(activeConversation, user))}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{conversationLabel(activeConversation, user)}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.mute }}>
+                  {activeConversation.type === "group" ? `${activeConversation.participantIds.length} members` : (otherParticipant?.u && isOnline(otherParticipant.u) ? "Active now" : "Offline")}
+                </div>
+              </div>
+              {activeConversation.type === "direct" && otherParticipant?.u && (
+                <button
+                  disabled={!!activeCall || callConnecting}
+                  onClick={() => startCall(otherParticipant.id, otherParticipant.u.name, activeConversation.id)}
+                  title="Start a video call"
+                  className="cly-btn"
+                  style={{ display: "flex", alignItems: "center", gap: 6, background: inCallWithThisConvo ? COLORS.success : COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
+                >
+                  <Video size={14} /> {inCallWithThisConvo ? "In call" : "Video call"}
+                </button>
+              )}
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+              {messages.length === 0 && <div style={{ fontSize: 12.5, color: COLORS.mute, textAlign: "center", marginTop: 20 }}>No messages yet — say hello.</div>}
+              {messages.map(m => {
+                if (m.type === "call_log") {
+                  return (
+                    <div key={m.id} style={{ textAlign: "center", fontSize: 11.5, color: COLORS.mute, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                      <Video size={12} /> {m.text} · {formatClockTime(m.createdAt)}
+                    </div>
+                  );
+                }
+                const mine = m.senderId === user.id;
+                return (
+                  <div key={m.id} style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
+                    {!mine && activeConversation.type === "group" && <div style={{ fontSize: 10.5, color: COLORS.mute, marginBottom: 2, marginLeft: 4 }}>{m.senderName}</div>}
+                    <div style={{ maxWidth: "70%", background: mine ? COLORS.ink : COLORS.cream, color: mine ? "#fff" : COLORS.text, borderRadius: 14, padding: "9px 13px", fontSize: 13.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                      {m.text}
+                    </div>
+                    <div style={{ fontSize: 10, color: COLORS.mute, marginTop: 2, marginLeft: mine ? 0 : 4, marginRight: mine ? 4 : 0 }}>{formatClockTime(m.createdAt)}</div>
+                  </div>
+                );
+              })}
+              <div ref={messagesEndRef} />
+            </div>
+            <div style={{ display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${COLORS.line}` }}>
+              <textarea
+                value={messageText}
+                onChange={e => setMessageText(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                placeholder="Write a message…"
+                rows={1}
+                style={{ ...inputStyle, resize: "none", flex: 1, fontFamily: "inherit" }}
+              />
+              <button onClick={handleSend} disabled={!messageText.trim() || sending} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "0 16px", opacity: (!messageText.trim() || sending) ? 0.5 : 1 }}>
+                <Send size={16} />
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {groupOpen && (
+        <Modal title="New group chat" onClose={() => setGroupOpen(false)} width={400}>
+          <div style={{ display: "grid", gap: 12 }}>
+            <Field label="Group name">
+              <input value={groupName} onChange={e => setGroupName(e.target.value)} placeholder="e.g. Creative Team" style={inputStyle} />
+            </Field>
+            <Field label="Members">
+              <div style={{ display: "grid", gap: 6, maxHeight: 220, overflowY: "auto", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 8 }}>
+                {contacts.map(c => (
+                  <label key={c.u.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "4px 4px" }}>
+                    <input type="checkbox" checked={groupSelection.includes(c.u.id)} onChange={() => toggleGroupMember(c.u.id)} />
+                    {c.u.name} <span style={{ color: COLORS.mute, fontSize: 11.5 }}>· {c.person ? c.person.department : ROLE_META[c.u.role]?.label}</span>
+                  </label>
+                ))}
+              </div>
+            </Field>
+            <button
+              disabled={!groupName.trim() || groupSelection.length === 0}
+              onClick={handleCreateGroup}
+              className="cly-btn"
+              style={{ background: COLORS.ink, color: "#fff", borderRadius: 8, padding: "10px 0", fontSize: 13.5, fontWeight: 700, opacity: (!groupName.trim() || groupSelection.length === 0) ? 0.5 : 1 }}
+            >
+              Create group
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// Global overlay for incoming/active calls — mounted once at the app root
+// so a call rings (and stays connected) no matter which page you're on.
+function CallOverlay({ incomingCall, activeCall, callConnecting, localStream, remoteStream, onAnswer, onDecline, onEnd }) {
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const [muted, setMuted] = useState(false);
+  const [cameraOff, setCameraOff] = useState(false);
+
+  useEffect(() => { if (localVideoRef.current) localVideoRef.current.srcObject = localStream || null; }, [localStream]);
+  useEffect(() => { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream || null; }, [remoteStream]);
+
+  function toggleMute() {
+    if (!localStream) return;
+    localStream.getAudioTracks().forEach(t => { t.enabled = muted; });
+    setMuted(m => !m);
+  }
+  function toggleCamera() {
+    if (!localStream) return;
+    localStream.getVideoTracks().forEach(t => { t.enabled = cameraOff; });
+    setCameraOff(c => !c);
+  }
+
+  if (incomingCall && !activeCall) {
+    return (
+      <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,0.18)", padding: 18, width: 300 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <div style={{ width: 40, height: 40, borderRadius: "50%", background: peopleColorFor(incomingCall.callerName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700 }}>
+            {peopleInitials(incomingCall.callerName)}
+          </div>
+          <div>
+            <div style={{ fontSize: 13.5, fontWeight: 700 }}>{incomingCall.callerName}</div>
+            <div style={{ fontSize: 11.5, color: COLORS.mute, display: "flex", alignItems: "center", gap: 4 }}><PhoneIncoming size={12} /> Incoming video call…</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onDecline} className="cly-btn" style={{ flex: 1, background: "#fff", border: `1px solid ${COLORS.dangerSoft}`, color: COLORS.danger, borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>
+            <PhoneOff size={14} style={{ verticalAlign: -2, marginRight: 5 }} />Decline
+          </button>
+          <button disabled={callConnecting} onClick={onAnswer} className="cly-btn" style={{ flex: 1, background: COLORS.success, color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>
+            <Phone size={14} style={{ verticalAlign: -2, marginRight: 5 }} />{callConnecting ? "Joining…" : "Answer"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (activeCall) {
+    const otherName = activeCall.role === "caller" ? activeCall.calleeName : activeCall.callerName;
+    return (
+      <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(20,18,16,0.94)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ position: "relative", width: "min(900px, 90vw)", height: "min(600px, 70vh)", background: "#111", borderRadius: 16, overflow: "hidden" }}>
+          {remoteStream ? (
+            <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          ) : (
+            <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#fff" }}>
+              <div style={{ width: 64, height: 64, borderRadius: "50%", background: peopleColorFor(otherName), display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 700, marginBottom: 12 }}>
+                {peopleInitials(otherName)}
+              </div>
+              <div style={{ fontSize: 14 }}>{activeCall.role === "caller" ? `Calling ${otherName}…` : "Connecting…"}</div>
+            </div>
+          )}
+          <video ref={localVideoRef} autoPlay playsInline muted style={{ position: "absolute", bottom: 16, right: 16, width: 160, height: 110, objectFit: "cover", borderRadius: 10, border: "2px solid rgba(255,255,255,0.3)", transform: "scaleX(-1)" }} />
+          <div style={{ position: "absolute", top: 14, left: 18, color: "#fff", fontSize: 13.5, fontWeight: 700, textShadow: "0 1px 3px rgba(0,0,0,0.5)" }}>{otherName}</div>
+        </div>
+        <div style={{ display: "flex", gap: 14, marginTop: 20 }}>
+          <button onClick={toggleMute} className="cly-btn" style={{ width: 46, height: 46, borderRadius: "50%", background: muted ? "#fff" : "rgba(255,255,255,0.15)", color: muted ? "#111" : "#fff", border: "none" }}>
+            {muted ? <MicOff size={18} /> : <Mic size={18} />}
+          </button>
+          <button onClick={toggleCamera} className="cly-btn" style={{ width: 46, height: 46, borderRadius: "50%", background: cameraOff ? "#fff" : "rgba(255,255,255,0.15)", color: cameraOff ? "#111" : "#fff", border: "none" }}>
+            {cameraOff ? <VideoOff size={18} /> : <Video size={18} />}
+          </button>
+          <button onClick={onEnd} className="cly-btn" style={{ width: 46, height: 46, borderRadius: "50%", background: COLORS.danger, color: "#fff", border: "none" }}>
+            <PhoneOff size={18} />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 export default function App() {
   const [ready, setReady] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
@@ -3785,11 +3747,22 @@ export default function App() {
   const [timeEntries, setTimeEntries] = useState([]);
   const [requests, setRequests] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
-  const [projects, setProjects] = useState([]);
-  const [tasks, setTasks] = useState([]);
   const [auth, setAuth] = useState(SEED_AUTH);
   const [notif, setNotif] = useState(SEED_NOTIF);
   const [restrictions, setRestrictions] = useState(SEED_RESTRICTIONS);
+
+  // --- Communication (chat + 1:1 video calls) ---
+  const [conversations, setConversations] = useState([]);
+  const [activeConversationId, setActiveConversationId] = useState(null);
+  const [messages, setMessages] = useState([]); // messages for whichever conversation is active
+  const [incomingCall, setIncomingCall] = useState(null); // a call ringing for me right now
+  const [activeCall, setActiveCall] = useState(null); // the call I'm currently in (any status past ringing)
+  const [callConnecting, setCallConnecting] = useState(false);
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const pcRef = useRef(null);
+  const callUnsubsRef = useRef([]);
+  const ringTimeoutRef = useRef(null);
 
   const notify = useCallback((msg, type = "ok") => {
     setToast({ msg, type });
@@ -3922,20 +3895,49 @@ export default function App() {
       unsubs.push(subscribeCollectionWhere("leave-requests", "userId", user.id, vals => { setLeaveRequests(vals); onOk("leaveRequests"); }, onErr("leaveRequests", [], setLeaveRequests)));
     }
 
-    // projects/tasks are hidden from CLIENT for now (Project Management is
-    // an internal-facing feature so far — a client-facing view is a
-    // planned follow-up, not built yet), same reasoning as people/requests.
-    if (canReadPeople) { // reuse the same "not a CLIENT" check people already uses
-      pending.add("projects");
-      unsubs.push(subscribeCollection("projects", vals => { setProjects(vals); onOk("projects"); }, onErr("projects", [], setProjects)));
-      pending.add("tasks");
-      unsubs.push(subscribeCollection("tasks", vals => { setTasks(vals); onOk("tasks"); }, onErr("tasks", [], setTasks)));
+    // Communication: Clients don't get this feature at all (enforced here,
+    // in the sidebar, and in firestore.rules).
+    const canUseCommunication = user.role !== "CLIENT";
+    if (canUseCommunication) {
+      pending.add("conversations");
+      unsubs.push(subscribeCollectionArrayContains("conversations", "participantIds", user.id, vals => { setConversations(vals); onOk("conversations"); }, onErr("conversations", [], setConversations)));
+      pending.add("incomingCall");
+      unsubs.push(subscribeCollectionWhere("calls", "calleeId", user.id, vals => {
+        const ringing = vals.find(c => c.status === "ringing");
+        setIncomingCall(ringing || null);
+        onOk("incomingCall");
+      }, onErr("incomingCall", null, setIncomingCall)));
     } else {
-      setProjects([]); setTasks([]);
+      setConversations([]);
+      setIncomingCall(null);
     }
 
     return () => { unsubs.forEach(u => { try { u && u(); } catch (e) { /* already gone */ } }); };
   }, [authChecked, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Messages for whichever conversation is currently open on the
+  // Communication page — subscribed separately (not as part of the bulk
+  // loader above) since which one is "active" changes as you click around,
+  // and there's no reason to hold every conversation's full message history
+  // in memory at once.
+  useEffect(() => {
+    if (!activeConversationId) { setMessages([]); return; }
+    const unsub = subscribePath(["conversations", activeConversationId, "messages"], vals => {
+      setMessages([...vals].sort((a, b) => a.createdAt - b.createdAt));
+    }, e => { console.error("Failed to load messages:", e); setMessages([]); });
+    return () => { try { unsub(); } catch (e) { /* already gone */ } };
+  }, [activeConversationId]);
+
+  // Lightweight presence: while the app is open, ping `users/{uid}.lastActiveAt`
+  // every 60s so Communication can show a simple "Active now" indicator.
+  // Best-effort — a failed ping just means presence looks stale, nothing breaks.
+  useEffect(() => {
+    if (!user) return;
+    const ping = () => { updateDocIn("users", user.id, { lastActiveAt: Date.now() }).catch(() => {}); };
+    ping();
+    const t = setInterval(ping, 60000);
+    return () => clearInterval(t);
+  }, [user?.id]);
 
   function persistAuth(next) { setAuth(next); sset("auth-settings", next); }
   function persistNotif(next) { setNotif(next); sset("notif-settings", next); }
@@ -4492,82 +4494,193 @@ export default function App() {
       throw e;
     }
   }
-  // Project Management. Projects and tasks are visible to everyone except
-  // Clients (matches the same "internal tool" visibility People and Time
-  // Tracking already use) — a client-facing project view is a planned
-  // follow-up, not built yet. Creating/editing/deleting a project is
-  // Owner/Admin only; any non-Client can create/update a task (so an
-  // assigned Employee can move their own work across the board), matching
-  // how the rest of this app trusts internal staff with day-to-day writes.
-  async function createProject(form) {
+
+  // ---------------- Communication: conversations + messages ----------------
+  async function getOrCreateDirectConversation(otherUserId, otherUserName) {
+    const existing = conversations.find(c => c.type === "direct" && c.participantIds.includes(otherUserId) && c.participantIds.includes(user.id));
+    if (existing) { setActiveConversationId(existing.id); return existing.id; }
     try {
-      const payload = { ...form, createdBy: user.id, createdByName: user.name, createdAt: Date.now() };
-      const id = await addDocIn("projects", payload);
-      setProjects([...projects, { id, ...payload }]);
-      notify("Project created.");
+      const id = uid();
+      const record = {
+        id, type: "direct", participantIds: [user.id, otherUserId],
+        participantNames: { [user.id]: user.name, [otherUserId]: otherUserName },
+        createdAt: Date.now(), lastMessageAt: Date.now(), lastMessageText: "", lastMessageBy: "",
+        lastReadAt: { [user.id]: Date.now() },
+      };
+      await setDocPath(["conversations", id], record);
+      setConversations(prev => [record, ...prev]);
+      setActiveConversationId(id);
       return id;
     } catch (e) {
-      console.error("Failed to create project:", e);
-      notify("Couldn't create the project — check your connection or permissions and try again.", "error");
+      console.error("Failed to start conversation:", e);
+      notify("Couldn't start that chat — check your connection or permissions and try again.", "error");
       throw e;
     }
   }
-  async function updateProject(id, patch) {
+  async function createGroupConversation(name, participantIds, participantNames) {
     try {
-      await updateDocIn("projects", id, patch);
-      setProjects(projects.map(p => p.id === id ? { ...p, ...patch } : p));
-      notify("Project updated.");
+      const id = uid();
+      const allIds = [...new Set([user.id, ...participantIds])];
+      const record = {
+        id, type: "group", name, participantIds: allIds,
+        participantNames: { ...participantNames, [user.id]: user.name },
+        createdAt: Date.now(), lastMessageAt: Date.now(), lastMessageText: "", lastMessageBy: "",
+        lastReadAt: { [user.id]: Date.now() },
+      };
+      await setDocPath(["conversations", id], record);
+      setConversations(prev => [record, ...prev]);
+      setActiveConversationId(id);
+      notify(`"${name}" group created.`);
+      return id;
     } catch (e) {
-      console.error("Failed to update project:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      console.error("Failed to create group:", e);
+      notify("Couldn't create the group — check your connection or permissions and try again.", "error");
       throw e;
     }
   }
-  // Deleting a project also removes its tasks, so the board doesn't end up
-  // with orphaned cards pointing at a project that no longer exists.
-  async function deleteProject(id) {
+  async function sendMessage(conversationId, text) {
     try {
-      const orphaned = tasks.filter(t => t.projectId === id);
-      await Promise.all([deleteDocIn("projects", id), ...orphaned.map(t => deleteDocIn("tasks", t.id))]);
-      setProjects(projects.filter(p => p.id !== id));
-      setTasks(tasks.filter(t => t.projectId !== id));
-      notify("Project deleted.");
+      await addDocPath(["conversations", conversationId, "messages"], {
+        senderId: user.id, senderName: user.name, text, type: "text", createdAt: Date.now(),
+      });
+      await updateDocPath(["conversations", conversationId], {
+        lastMessageAt: Date.now(), lastMessageText: text, lastMessageBy: user.name,
+        [`lastReadAt.${user.id}`]: Date.now(),
+      });
     } catch (e) {
-      console.error("Failed to delete project:", e);
-      notify("Couldn't delete — check your connection or permissions and try again.", "error");
+      console.error("Failed to send message:", e);
+      notify("Message didn't send — check your connection or permissions and try again.", "error");
       throw e;
     }
   }
-  async function createTask(projectId, form) {
+  async function markConversationRead(conversationId) {
     try {
-      const payload = { ...form, projectId, createdBy: user.id, createdAt: Date.now() };
-      const id = await addDocIn("tasks", payload);
-      setTasks([...tasks, { id, ...payload }]);
+      await updateDocPath(["conversations", conversationId], { [`lastReadAt.${user.id}`]: Date.now() });
+    } catch (e) { /* non-fatal — worst case an unread badge lingers briefly */ }
+  }
+
+  // ---------------- Communication: 1:1 video calls (WebRTC over Firestore signaling) ----------------
+  function cleanupCallState() {
+    if (ringTimeoutRef.current) { clearTimeout(ringTimeoutRef.current); ringTimeoutRef.current = null; }
+    callUnsubsRef.current.forEach(u => { try { u && u(); } catch (e) { /* already gone */ } });
+    callUnsubsRef.current = [];
+    if (pcRef.current) { try { pcRef.current.close(); } catch (e) { /* already closed */ } pcRef.current = null; }
+    if (localStream) { try { localStream.getTracks().forEach(t => t.stop()); } catch (e) { /* already stopped */ } }
+    setLocalStream(null);
+    setRemoteStream(null);
+    setActiveCall(null);
+    setCallConnecting(false);
+  }
+  async function startCall(calleeId, calleeName, conversationId) {
+    if (activeCall || incomingCall) { notify("Finish your current call first.", "error"); return; }
+    setCallConnecting(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      const pc = new RTCPeerConnection(ICE_SERVERS);
+      pcRef.current = pc;
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      const remote = new MediaStream();
+      pc.ontrack = e => { e.streams[0].getTracks().forEach(t => remote.addTrack(t)); setRemoteStream(remote); };
+
+      const callId = uid();
+      pc.onicecandidate = e => { if (e.candidate) addDocPath(["calls", callId, "callerCandidates"], e.candidate.toJSON()).catch(() => {}); };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await setDocPath(["calls", callId], {
+        id: callId, callerId: user.id, callerName: user.name, calleeId, calleeName,
+        conversationId: conversationId || null, status: "ringing",
+        offer: { type: offer.type, sdp: offer.sdp }, answer: null, createdAt: Date.now(),
+      });
+      setActiveCall({ id: callId, callerId: user.id, callerName: user.name, calleeId, calleeName, role: "caller", conversationId: conversationId || null });
+      setCallConnecting(false);
+
+      const unsubDoc = subscribeDocPath(["calls", callId], async (callDoc) => {
+        if (!callDoc) return;
+        if (callDoc.answer && !pc.currentRemoteDescription) {
+          try { await pc.setRemoteDescription(new RTCSessionDescription(callDoc.answer)); } catch (e) { /* ignore late/duplicate */ }
+        }
+        if (["declined", "ended"].includes(callDoc.status)) {
+          if (callDoc.status === "declined") notify(`${calleeName} declined the call.`);
+          cleanupCallState();
+        }
+      });
+      const unsubCand = subscribePath(["calls", callId, "calleeCandidates"], (cands) => {
+        cands.forEach(c => { if (pc.signalingState !== "closed") pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {}); });
+      });
+      callUnsubsRef.current = [unsubDoc, unsubCand];
+
+      // No answer after 45s — treat as unanswered rather than ringing forever.
+      ringTimeoutRef.current = setTimeout(() => { endCall("missed"); }, 45000);
     } catch (e) {
-      console.error("Failed to create task:", e);
-      notify("Couldn't add the task — check your connection or permissions and try again.", "error");
-      throw e;
+      console.error("Failed to start call:", e);
+      notify("Couldn't start the call — check camera/microphone permissions and try again.", "error");
+      cleanupCallState();
     }
   }
-  async function updateTask(id, patch) {
+  async function answerIncomingCall() {
+    const callDoc = incomingCall;
+    if (!callDoc) return;
+    setCallConnecting(true);
     try {
-      await updateDocIn("tasks", id, patch);
-      setTasks(tasks.map(t => t.id === id ? { ...t, ...patch } : t));
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      const pc = new RTCPeerConnection(ICE_SERVERS);
+      pcRef.current = pc;
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      const remote = new MediaStream();
+      pc.ontrack = e => { e.streams[0].getTracks().forEach(t => remote.addTrack(t)); setRemoteStream(remote); };
+      pc.onicecandidate = e => { if (e.candidate) addDocPath(["calls", callDoc.id, "calleeCandidates"], e.candidate.toJSON()).catch(() => {}); };
+
+      await pc.setRemoteDescription(new RTCSessionDescription(callDoc.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await updateDocPath(["calls", callDoc.id], { status: "accepted", answer: { type: answer.type, sdp: answer.sdp } });
+
+      setIncomingCall(null);
+      setActiveCall({ id: callDoc.id, callerId: callDoc.callerId, callerName: callDoc.callerName, calleeId: user.id, calleeName: user.name, role: "callee", conversationId: callDoc.conversationId || null });
+      setCallConnecting(false);
+
+      const unsubDoc = subscribeDocPath(["calls", callDoc.id], (cd) => {
+        if (!cd) return;
+        if (cd.status === "ended") cleanupCallState();
+      });
+      const unsubCand = subscribePath(["calls", callDoc.id, "callerCandidates"], (cands) => {
+        cands.forEach(c => { if (pc.signalingState !== "closed") pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {}); });
+      });
+      callUnsubsRef.current = [unsubDoc, unsubCand];
     } catch (e) {
-      console.error("Failed to update task:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
-      throw e;
+      console.error("Failed to answer call:", e);
+      notify("Couldn't join the call — check camera/microphone permissions and try again.", "error");
+      try { await updateDocPath(["calls", callDoc.id], { status: "declined" }); } catch (e2) { /* best effort */ }
+      setIncomingCall(null);
+      cleanupCallState();
     }
   }
-  async function deleteTask(id) {
-    try {
-      await deleteDocIn("tasks", id);
-      setTasks(tasks.filter(t => t.id !== id));
-    } catch (e) {
-      console.error("Failed to delete task:", e);
-      notify("Couldn't delete — check your connection or permissions and try again.", "error");
-      throw e;
+  async function declineIncomingCall() {
+    const callDoc = incomingCall;
+    setIncomingCall(null);
+    if (!callDoc) return;
+    try { await updateDocPath(["calls", callDoc.id], { status: "declined" }); } catch (e) { /* best effort */ }
+  }
+  async function endCall(reason = "ended") {
+    const call = activeCall;
+    if (call) {
+      const wasConnected = !!remoteStream && remoteStream.getTracks().length > 0;
+      const finalStatus = reason === "missed" && !wasConnected ? "ended" : "ended";
+      try { await updateDocPath(["calls", call.id], { status: finalStatus, endedAt: Date.now() }); } catch (e) { /* best effort */ }
+      if (call.conversationId) {
+        const logText = !wasConnected ? (call.role === "caller" ? "Missed call (no answer)" : "Missed call") : "Video call ended";
+        try {
+          await addDocPath(["conversations", call.conversationId, "messages"], {
+            senderId: user.id, senderName: "System", type: "call_log", text: logText, createdAt: Date.now(),
+          });
+          await updateDocPath(["conversations", call.conversationId], { lastMessageAt: Date.now(), lastMessageText: logText, lastMessageBy: "System" });
+        } catch (e) { /* best effort — don't block hangup on a logging failure */ }
+      }
     }
+    cleanupCallState();
   }
   async function resolveRequest(id, status) {
     const req = requests.find(r => r.id === id);
@@ -4618,15 +4731,15 @@ export default function App() {
       ) : (
         <div style={{ display: "flex", minHeight: "100vh" }}>
           <Sidebar user={user} page={page} setPage={setPage} pendingCount={requests.filter(r => r.status === "pending").length} leavePendingCount={
-            user.role === "OWNER" ? leaveRequests.filter(r => ["pending_admin", "pending_owner", "pending_cancel_admin", "pending_cancel_owner"].includes(r.status)).length :
-            user.role === "ADMIN" ? leaveRequests.filter(r => ["pending_admin", "pending_cancel_admin"].includes(r.status) && r.userId !== user.id).length : 0
-          } />
+            user.role === "OWNER" ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner").length :
+            user.role === "ADMIN" ? leaveRequests.filter(r => r.status === "pending_admin" && r.userId !== user.id).length : 0
+          } unreadMessageCount={conversations.filter(c => (c.lastMessageAt || 0) > (c.lastReadAt?.[user.id] || 0) && c.lastMessageBy && c.lastMessageBy !== user.name).length} />
           <div style={{ flex: 1, background: COLORS.cream, minWidth: 0, display: "flex", flexDirection: "column" }}>
             <Topbar user={user} onLogout={() => fbLogout()} title={
               page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" :
               page === "people-info" ? "People Information" : page === "org-chart" ? "Organizational Chart" : page === "time-tracking" ? "Time Tracking" :
               page === "time-inout" ? "Time in/Time out information" :
-              page === "attendance" ? "Attendance" : page === "leave-requests" ? "Leave Requests" : page === "projects" ? "Projects" : "Admin settings"
+              page === "attendance" ? "Attendance" : page === "leave-requests" ? "Leave Requests" : page === "communication" ? "Communication" : "Admin settings"
             } subtitle={
               page === "dashboard" ? "Your workspace at a glance." :
               page === "files" ? "Shared storage for your team and clients." :
@@ -4637,7 +4750,7 @@ export default function App() {
               page === "time-inout" ? "Clock-in and clock-out records." :
               page === "attendance" ? "Daily attendance summaries." :
               page === "leave-requests" ? "Request Sick or Voluntary Leave and track approvals." :
-              page === "projects" ? "Track projects, tasks, and who's working on what." : "Authentication, users, groups, and restrictions."
+              page === "communication" ? "Chat and video call your team, built from People Information." : "Authentication, users, groups, and restrictions."
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
               {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} people={people} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
@@ -4649,7 +4762,7 @@ export default function App() {
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
               {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
-              {page === "projects" && <ProjectsPage user={user} users={users} people={people} projects={projects} tasks={tasks} createProject={createProject} updateProject={updateProject} deleteProject={deleteProject} createTask={createTask} updateTask={updateTask} deleteTask={deleteTask} />}
+              {page === "communication" && <CommunicationPage user={user} users={users} people={people} conversations={conversations} activeConversationId={activeConversationId} setActiveConversationId={setActiveConversationId} messages={messages} sendMessage={sendMessage} getOrCreateDirectConversation={getOrCreateDirectConversation} createGroupConversation={createGroupConversation} markConversationRead={markConversationRead} startCall={startCall} activeCall={activeCall} callConnecting={callConnecting} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
@@ -4661,6 +4774,13 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {user && user.role !== "CLIENT" && (
+        <CallOverlay
+          incomingCall={incomingCall} activeCall={activeCall} callConnecting={callConnecting}
+          localStream={localStream} remoteStream={remoteStream}
+          onAnswer={answerIncomingCall} onDecline={declineIncomingCall} onEnd={() => endCall("ended")}
+        />
       )}
     </div>
   );

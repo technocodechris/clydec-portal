@@ -105,6 +105,12 @@ export function subscribeCollectionWhere(name, field, value, cb, onError) {
     cb(snap.docs.map(d => ({ id: d.id, ...d.data() })));
   }, onError);
 }
+export function subscribeCollectionArrayContains(name, field, value, cb, onError) {
+  const q = query(collection(db, name), where(field, "array-contains", value));
+  return onSnapshot(q, snap => {
+    cb(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, onError);
+}
 // Realtime version of sget() for a single "settings" doc.
 export function subscribeSetting(key, fallback, cb, onError) {
   return onSnapshot(doc(db, "settings", key), snap => {
@@ -136,6 +142,31 @@ export async function setUserAttendanceOverridesBulk(userId, dateStatusPairs) {
 }
 export async function deleteDocIn(collectionName, id) {
   await deleteDoc(doc(db, collectionName, id));
+}
+
+// Generic helpers for nested-path collections (e.g. a conversation's
+// messages, a call's ICE-candidate subcollections) — used by Communication.
+// `pathSegments` is an array like ["conversations", conversationId, "messages"].
+export function subscribePath(pathSegments, cb, onError) {
+  return onSnapshot(collection(db, ...pathSegments), snap => {
+    cb(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  }, onError);
+}
+export function subscribeDocPath(pathSegments, cb, onError) {
+  return onSnapshot(doc(db, ...pathSegments), snap => {
+    cb(snap.exists() ? { id: snap.id, ...snap.data() } : null);
+  }, onError);
+}
+export async function addDocPath(pathSegments, data) {
+  const ref2 = await addDoc(collection(db, ...pathSegments), data);
+  return ref2.id;
+}
+export async function setDocPath(pathSegments, data) {
+  // last element of pathSegments is the doc id
+  await setDoc(doc(db, ...pathSegments), data);
+}
+export async function updateDocPath(pathSegments, data) {
+  await updateDoc(doc(db, ...pathSegments), data);
 }
 
 /* ---------------------------------------------------------------- */
