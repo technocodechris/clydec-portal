@@ -16,9 +16,14 @@ service cloud.firestore {
 
     // User profiles: everyone signed in can see the directory (needed to
     // render names/roles in the UI); only the owner can create/edit/remove.
+    // Exception: anyone can update just their own `lastActiveAt` heartbeat
+    // (Communication's online/offline presence indicator) — otherwise this
+    // collection is entirely owner-only.
     match /users/{userId} {
       allow read: if signedIn();
-      allow write: if isOwner();
+      allow create: if isOwner();
+      allow update: if isOwner() || (signedIn() && request.auth.uid == userId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt']));
+      allow delete: if isOwner();
     }
 
     // Groups: readable by anyone signed in, only the owner can manage them.
@@ -73,19 +78,41 @@ service cloud.firestore {
       allow delete: if isOwner();
     }
 
-    // Project Management: internal-facing for now (not visible to clients —
-    // a client-facing view is a planned follow-up, not built yet). Creating,
-    // editing, or deleting a project itself is Owner/Admin only; any
-    // non-client can create/update tasks, so an assigned Employee can move
-    // their own work across the board without needing elevated access.
-    match /projects/{projectId} {
-      allow read: if signedIn() && myRole() != 'CLIENT';
-      allow write: if isAdminOrOwner();
+    // Communication: internal team chat + 1:1 video calls. Clients never
+    // see this feature (enforced in the UI); the rules below additionally
+    // block them from creating a conversation/call even if they tried.
+
+    // Conversations: only participants can read or write. Messages are a
+    // subcollection — since a message doc doesn't carry participantIds
+    // itself, its rules fetch the parent conversation doc once to check
+    // membership.
+    match /conversations/{conversationId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if signedIn() && myRole() != 'CLIENT' && request.auth.uid in request.resource.data.participantIds;
+      allow update: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow delete: if isOwner();
+
+      match /messages/{messageId} {
+        allow read: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        allow create: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds && request.resource.data.senderId == request.auth.uid;
+        // Messages are append-only for now — no editing or deleting a sent message.
+        allow update, delete: if false;
+      }
     }
-    match /tasks/{taskId} {
-      allow read: if signedIn() && myRole() != 'CLIENT';
-      allow create, update: if signedIn() && myRole() != 'CLIENT';
-      allow delete: if isAdminOrOwner();
+
+    // Calls: only the caller and callee can read/write the call doc and
+    // its ICE-candidate subcollections (standard Firestore-as-signaling
+    // pattern for WebRTC — the actual audio/video never touches Firestore,
+    // only the connection-setup handshake does).
+    match /calls/{callId} {
+      allow read: if signedIn() && (request.auth.uid == resource.data.callerId || request.auth.uid == resource.data.calleeId);
+      allow create: if signedIn() && myRole() != 'CLIENT' && request.auth.uid == request.resource.data.callerId;
+      allow update: if signedIn() && (request.auth.uid == resource.data.callerId || request.auth.uid == resource.data.calleeId);
+      allow delete: if isOwner();
+
+      match /{subcollection}/{candidateId} {
+        allow read, create: if signedIn() && (request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.callerId || request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.calleeId);
+      }
     }
   }
 }
