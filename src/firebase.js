@@ -168,6 +168,9 @@ export async function setDocPath(pathSegments, data) {
 export async function updateDocPath(pathSegments, data) {
   await updateDoc(doc(db, ...pathSegments), data);
 }
+export async function deleteDocPath(pathSegments) {
+  await deleteDoc(doc(db, ...pathSegments));
+}
 
 /* ---------------------------------------------------------------- */
 /* Storage: file uploads/downloads                                   */
