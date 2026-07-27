@@ -79,7 +79,7 @@ import {
   requestPasswordReset as requestPasswordResetFor,
   sset, setDocIn, addDocIn, updateDocIn, deleteDocIn, deleteDocFieldIn, setUserAttendanceOverridesBulk,
   subscribeCollection, subscribeCollectionWhere, subscribeCollectionArrayContains, subscribeSetting,
-  subscribePath, subscribeDocPath, addDocPath, setDocPath, updateDocPath,
+  subscribePath, subscribeDocPath, addDocPath, setDocPath, updateDocPath, deleteDocPath,
   uploadFile, deleteFileFromStorage, db,
 } from "./firebase";
 import { doc as fsDoc, getDoc } from "firebase/firestore";
@@ -139,6 +139,60 @@ const ICE_SERVERS = { iceServers: [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
 ] };
+
+// Browsers throw a specific error `name` for getUserMedia failures — the
+// generic "check permissions" message wasn't telling people what was
+// actually wrong (blocked permission vs. no camera vs. camera in use by
+// another app vs. an insecure/non-HTTPS context).
+function friendlyMediaError(e) {
+  const name = e?.name || "";
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return "Camera/microphone access was blocked. Click the camera icon in your browser's address bar, allow both, then try again.";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return "No camera or microphone was found on this device.";
+  }
+  if (name === "NotReadableError" || name === "TrackStartError") {
+    return "Your camera or microphone is already in use by another app or browser tab.";
+  }
+  if (name === "SecurityError" || name === "InsecureContextError") {
+    return "This page needs to be loaded over a secure (https://) connection to use the camera or microphone.";
+  }
+  // Firestore write for the call doc failed — almost always means the
+  // `calls`/`conversations` rules haven't been published to the Console
+  // yet, not an actual camera/mic problem. Surfacing this distinctly
+  // instead of the generic message below is what tells us which one it is.
+  if (e?.code === "permission-denied" || /permission[- ]denied/i.test(e?.message || "")) {
+    return "Couldn't start the call — the server rejected it (permission-denied). This means the Communication Firestore rules haven't been published to the Console yet.";
+  }
+  // Fall back to showing the raw detail rather than a one-size-fits-all
+  // message, so whatever this actually is can be diagnosed from the toast
+  // alone instead of needing devtools.
+  const detail = e?.message || name || "unknown error";
+  return `Couldn't start the call (${detail}). Check camera/microphone permissions and try again.`;
+}
+// Tries camera+mic first; if the camera specifically is unavailable (no
+// device, or already in use), falls back to an audio-only call rather than
+// failing the whole thing outright.
+async function acquireCallMedia(notify, wantVideo = true) {
+  if (typeof window === "undefined" || !window.RTCPeerConnection) {
+    throw Object.assign(new Error("This browser doesn't support video calls (no WebRTC)."), { name: "SecurityError" });
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw Object.assign(new Error("getUserMedia unsupported"), { name: "SecurityError" });
+  }
+  if (!wantVideo) return await navigator.mediaDevices.getUserMedia({ audio: true });
+  try {
+    return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  } catch (e) {
+    if (["NotFoundError", "NotReadableError", "OverconstrainedError", "TrackStartError"].includes(e.name)) {
+      const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
+      notify?.("Camera unavailable — joined with audio only.", "error");
+      return audioOnly;
+    }
+    throw e;
+  }
+}
 
 const SEED_FOLDERS = [
   { id: "creative", name: "Creative Wing", wing: "creative", access: ["OWNER", "ADMIN", "EMPLOYEE"] },
@@ -3429,14 +3483,22 @@ function Modal({ title, onClose, children, width = 360 }) {
 /* ---------------------------------------------------------------- */
 /* Root App                                                            */
 /* ---------------------------------------------------------------- */
-function CommunicationPage({ user, users, people, conversations, activeConversationId, setActiveConversationId, messages, sendMessage, getOrCreateDirectConversation, createGroupConversation, markConversationRead, startCall, activeCall, callConnecting }) {
+function CommunicationPage({ user, users, people, conversations, activeConversationId, setActiveConversationId, messages, sendMessage, getOrCreateDirectConversation, createGroupConversation, markConversationRead, startCall, activeCall, callConnecting, editMessage, deleteMessage, sendFileMessage, deleteConversationEntirely, addGroupMembers, removeGroupMember, leaveGroupConversation }) {
   const [search, setSearch] = useState("");
   const [messageText, setMessageText] = useState("");
   const [groupOpen, setGroupOpen] = useState(false);
   const [groupName, setGroupName] = useState("");
   const [groupSelection, setGroupSelection] = useState([]);
   const [sending, setSending] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [addMemberSelection, setAddMemberSelection] = useState([]);
+  const [callPickerOpen, setCallPickerOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editText, setEditText] = useState("");
+  const [hoveredId, setHoveredId] = useState(null);
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const contacts = users
     .filter(u => u.id !== user.id && u.role !== "CLIENT")
@@ -3463,9 +3525,16 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
     const otherId = activeConversation.participantIds.find(id => id !== user.id);
     return { u: users.find(u => u.id === otherId), p: personForUser(people, otherId), id: otherId };
   })();
+  // Legacy groups (created before `createdBy` existed) fall back to
+  // allowing any current member to manage it, rather than locking everyone
+  // out of a feature that predates the field.
+  const canManageGroup = activeConversation?.type === "group" && (!activeConversation.createdBy || activeConversation.createdBy === user.id || user.role === "OWNER" || user.role === "ADMIN");
+  const groupMembers = activeConversation?.type === "group" ? activeConversation.participantIds.map(id => ({ id, u: users.find(u => u.id === id), name: activeConversation.participantNames?.[id] || "?" })) : [];
+  const addableContacts = contacts.filter(c => !activeConversation?.participantIds?.includes(c.u.id));
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
   useEffect(() => { if (activeConversationId) markConversationRead(activeConversationId); }, [activeConversationId, messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setMenuOpen(false); setCallPickerOpen(false); setEditingId(null); }, [activeConversationId]);
 
   async function handleSend() {
     if (!messageText.trim() || !activeConversationId || sending) return;
@@ -3486,6 +3555,39 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
     contacts.forEach(c => { if (groupSelection.includes(c.u.id)) names[c.u.id] = c.u.name; });
     await createGroupConversation(groupName.trim(), groupSelection, names);
     setGroupOpen(false); setGroupName(""); setGroupSelection([]);
+  }
+  function handleFileClick() { fileInputRef.current?.click(); }
+  function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file && activeConversationId) sendFileMessage(activeConversationId, file);
+  }
+  function startEdit(m) { setEditingId(m.id); setEditText(m.text); }
+  async function saveEdit(m) {
+    if (!editText.trim()) { setEditingId(null); return; }
+    await editMessage(activeConversationId, m.id, editText.trim());
+    setEditingId(null);
+  }
+  async function handleDeleteMessage(m) {
+    if (!window.confirm("Delete this message?")) return;
+    await deleteMessage(activeConversationId, m.id);
+  }
+  async function handleDeleteChat() {
+    if (!window.confirm(`Delete this entire chat${activeConversation.type === "group" ? " for everyone in it" : ""}? This can't be undone.`)) return;
+    setMenuOpen(false);
+    await deleteConversationEntirely(activeConversationId, messages);
+  }
+  async function handleLeaveGroup() {
+    if (!window.confirm("Leave this group? You'll need to be added back to rejoin.")) return;
+    setMenuOpen(false);
+    await leaveGroupConversation(activeConversation);
+  }
+  async function handleAddMembers() {
+    if (addMemberSelection.length === 0) return;
+    const names = {};
+    contacts.forEach(c => { if (addMemberSelection.includes(c.u.id)) names[c.u.id] = c.u.name; });
+    await addGroupMembers(activeConversation, addMemberSelection, names);
+    setAddMemberSelection([]);
   }
 
   const inCallWithThisConvo = activeCall && activeCall.conversationId === activeConversationId;
@@ -3533,18 +3635,29 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
           </div>
           {contacts.length === 0 && <div style={{ padding: "8px 14px", fontSize: 12, color: COLORS.mute }}>No one else is linked to a portal account yet.</div>}
           {contacts.map(c => (
-            <button key={c.u.id} onClick={() => handleSelectContact(c)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 14px", background: "transparent", border: "none", textAlign: "left" }}>
-              <div style={{ position: "relative", flexShrink: 0 }}>
-                <div style={{ width: 30, height: 30, borderRadius: "50%", background: peopleColorFor(c.u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
-                  {peopleInitials(c.u.name)}
+            <div key={c.u.id} className="cly-row" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px" }}>
+              <button onClick={() => handleSelectContact(c)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, background: "transparent", border: "none", textAlign: "left" }}>
+                <div style={{ position: "relative", flexShrink: 0 }}>
+                  <div style={{ width: 30, height: 30, borderRadius: "50%", background: peopleColorFor(c.u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
+                    {peopleInitials(c.u.name)}
+                  </div>
+                  {isOnline(c.u) && <span style={{ position: "absolute", bottom: -1, right: -1, width: 9, height: 9, borderRadius: "50%", background: COLORS.success, border: "2px solid #fff" }} />}
                 </div>
-                {isOnline(c.u) && <span style={{ position: "absolute", bottom: -1, right: -1, width: 9, height: 9, borderRadius: "50%", background: COLORS.success, border: "2px solid #fff" }} />}
-              </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.u.name}</div>
-                <div style={{ fontSize: 11, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.person ? `${c.person.department}${c.person.role ? ` · ${c.person.role}` : ""}` : ROLE_META[c.u.role]?.label}</div>
-              </div>
-            </button>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.u.name}</div>
+                  <div style={{ fontSize: 11, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.person ? `${c.person.department}${c.person.role ? ` · ${c.person.role}` : ""}` : ROLE_META[c.u.role]?.label}</div>
+                </div>
+              </button>
+              <button
+                disabled={!!activeCall || callConnecting}
+                title={`Video call ${c.u.name}`}
+                onClick={async () => { const cid = await getOrCreateDirectConversation(c.u.id, c.u.name); startCall(c.u.id, c.u.name, cid, "video"); }}
+                className="cly-btn"
+                style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", flexShrink: 0, opacity: (!!activeCall || callConnecting) ? 0.4 : 1 }}
+              >
+                <Video size={15} />
+              </button>
+            </div>
           ))}
         </div>
       </div>
@@ -3554,7 +3667,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
           <EmptyState icon={MessageSquare} title="Pick a chat" body="Select someone from People, or an existing chat, to start messaging." />
         ) : (
           <>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: `1px solid ${COLORS.line}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: `1px solid ${COLORS.line}`, position: "relative" }}>
               <div style={{ width: 34, height: 34, borderRadius: "50%", background: peopleColorFor(conversationLabel(activeConversation, user)), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
                 {activeConversation.type === "group" ? <UsersRound size={15} /> : peopleInitials(conversationLabel(activeConversation, user))}
               </div>
@@ -3564,18 +3677,78 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                   {activeConversation.type === "group" ? `${activeConversation.participantIds.length} members` : (otherParticipant?.u && isOnline(otherParticipant.u) ? "Active now" : "Offline")}
                 </div>
               </div>
+
               {activeConversation.type === "direct" && otherParticipant?.u && (
-                <button
-                  disabled={!!activeCall || callConnecting}
-                  onClick={() => startCall(otherParticipant.id, otherParticipant.u.name, activeConversation.id)}
-                  title="Start a video call"
-                  className="cly-btn"
-                  style={{ display: "flex", alignItems: "center", gap: 6, background: inCallWithThisConvo ? COLORS.success : COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
-                >
-                  <Video size={14} /> {inCallWithThisConvo ? "In call" : "Video call"}
-                </button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    disabled={!!activeCall || callConnecting}
+                    onClick={() => startCall(otherParticipant.id, otherParticipant.u.name, activeConversation.id, "audio")}
+                    title="Start an audio call"
+                    className="cly-btn"
+                    style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
+                  >
+                    <Phone size={14} />
+                  </button>
+                  <button
+                    disabled={!!activeCall || callConnecting}
+                    onClick={() => startCall(otherParticipant.id, otherParticipant.u.name, activeConversation.id, "video")}
+                    title="Start a video call"
+                    className="cly-btn"
+                    style={{ display: "flex", alignItems: "center", gap: 6, background: inCallWithThisConvo ? COLORS.success : COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
+                  >
+                    <Video size={14} /> {inCallWithThisConvo ? "In call" : "Video call"}
+                  </button>
+                </div>
               )}
+
+              {activeConversation.type === "group" && (
+                <div style={{ position: "relative" }}>
+                  <button
+                    disabled={!!activeCall || callConnecting}
+                    onClick={() => setCallPickerOpen(o => !o)}
+                    title="Start a video call with one member"
+                    className="cly-btn"
+                    style={{ display: "flex", alignItems: "center", gap: 6, background: inCallWithThisConvo ? COLORS.success : COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
+                  >
+                    <Video size={14} /> {inCallWithThisConvo ? "In call" : "Video call"}
+                  </button>
+                  {callPickerOpen && (
+                    <div style={{ position: "absolute", top: "110%", right: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 240, zIndex: 20, overflow: "hidden" }}>
+                      <div style={{ padding: "8px 12px", fontSize: 11, fontWeight: 700, color: COLORS.mute, borderBottom: `1px solid ${COLORS.line}` }}>Call a member — video is 1:1 only</div>
+                      {groupMembers.filter(m => m.id !== user.id && m.u).map(m => (
+                        <div key={m.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 12px" }}>
+                          <span style={{ fontSize: 13 }}>{m.name}</span>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button onClick={() => { setCallPickerOpen(false); startCall(m.id, m.name, activeConversation.id, "audio"); }} title="Audio call" className="cly-btn" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: "4px 6px" }}><Phone size={12} /></button>
+                            <button onClick={() => { setCallPickerOpen(false); startCall(m.id, m.name, activeConversation.id, "video"); }} title="Video call" className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 6, padding: "4px 6px" }}><Video size={12} /></button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ position: "relative" }}>
+                <button onClick={() => setMenuOpen(o => !o)} className="cly-btn" title="Chat options" style={{ background: "none", border: "none", color: COLORS.mute, padding: 6, cursor: "pointer" }}>
+                  <ChevronDown size={18} />
+                </button>
+                {menuOpen && (
+                  <div style={{ position: "absolute", top: "110%", right: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 190, zIndex: 20, overflow: "hidden" }}>
+                    {activeConversation.type === "group" && (
+                      <button onClick={() => { setMenuOpen(false); setMembersOpen(true); }} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", background: "none", border: "none", fontSize: 13 }}>Manage members</button>
+                    )}
+                    {activeConversation.type === "group" && (
+                      <button onClick={handleLeaveGroup} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", background: "none", border: "none", fontSize: 13, borderTop: `1px solid ${COLORS.line}` }}>Leave group</button>
+                    )}
+                    {(activeConversation.type === "direct" || canManageGroup) && (
+                      <button onClick={handleDeleteChat} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", background: "none", border: "none", fontSize: 13, color: COLORS.danger, borderTop: `1px solid ${COLORS.line}` }}>Delete chat</button>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
+
             <div style={{ flex: 1, overflowY: "auto", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
               {messages.length === 0 && <div style={{ fontSize: 12.5, color: COLORS.mute, textAlign: "center", marginTop: 20 }}>No messages yet — say hello.</div>}
               {messages.map(m => {
@@ -3587,19 +3760,57 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                   );
                 }
                 const mine = m.senderId === user.id;
+                const isEditing = editingId === m.id;
                 return (
-                  <div key={m.id} style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
+                  <div key={m.id} onMouseEnter={() => setHoveredId(m.id)} onMouseLeave={() => setHoveredId(h => h === m.id ? null : h)}
+                    style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start", position: "relative" }}>
                     {!mine && activeConversation.type === "group" && <div style={{ fontSize: 10.5, color: COLORS.mute, marginBottom: 2, marginLeft: 4 }}>{m.senderName}</div>}
-                    <div style={{ maxWidth: "70%", background: mine ? COLORS.ink : COLORS.cream, color: mine ? "#fff" : COLORS.text, borderRadius: 14, padding: "9px 13px", fontSize: 13.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                      {m.text}
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexDirection: mine ? "row-reverse" : "row" }}>
+                      {isEditing ? (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <input value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") saveEdit(m); if (e.key === "Escape") setEditingId(null); }} autoFocus style={{ ...inputStyle, width: 220 }} />
+                          <button onClick={() => saveEdit(m)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 6, padding: "6px 10px", fontSize: 11.5 }}>Save</button>
+                          <button onClick={() => setEditingId(null)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 11.5 }}>Cancel</button>
+                        </div>
+                      ) : m.type === "file" ? (
+                        (m.fileType || "").startsWith("image/") ? (
+                          <a href={m.fileData} target="_blank" rel="noreferrer">
+                            <img src={m.fileData} alt={m.fileName} style={{ maxWidth: 220, maxHeight: 220, borderRadius: 12, display: "block" }} />
+                          </a>
+                        ) : (
+                          <a href={m.fileData} download={m.fileName} style={{ display: "flex", alignItems: "center", gap: 8, maxWidth: "70%", background: COLORS.cream, borderRadius: 14, padding: "9px 13px", fontSize: 13, color: COLORS.text, textDecoration: "none" }}>
+                            <FileIcon size={16} /> <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.fileName}</span>
+                            <span style={{ color: COLORS.mute, fontSize: 11 }}>{Math.round((m.fileSize || 0) / 1000)}KB</span>
+                          </a>
+                        )
+                      ) : (
+                        <div style={{ maxWidth: "70%", background: mine ? COLORS.ink : COLORS.cream, color: mine ? "#fff" : COLORS.text, borderRadius: 14, padding: "9px 13px", fontSize: 13.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                          {m.text}
+                        </div>
+                      )}
+                      {mine && !isEditing && hoveredId === m.id && m.type !== "file" && (
+                        <div style={{ display: "flex", gap: 3 }}>
+                          <button onClick={() => startEdit(m)} title="Edit" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Pencil size={12} /></button>
+                          <button onClick={() => handleDeleteMessage(m)} title="Delete" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Trash2 size={12} /></button>
+                        </div>
+                      )}
+                      {mine && !isEditing && hoveredId === m.id && m.type === "file" && (
+                        <button onClick={() => handleDeleteMessage(m)} title="Delete" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Trash2 size={12} /></button>
+                      )}
                     </div>
-                    <div style={{ fontSize: 10, color: COLORS.mute, marginTop: 2, marginLeft: mine ? 0 : 4, marginRight: mine ? 4 : 0 }}>{formatClockTime(m.createdAt)}</div>
+                    <div style={{ fontSize: 10, color: COLORS.mute, marginTop: 2, marginLeft: mine ? 0 : 4, marginRight: mine ? 4 : 0 }}>
+                      {formatClockTime(m.createdAt)}{m.editedAt ? " · edited" : ""}
+                    </div>
                   </div>
                 );
               })}
               <div ref={messagesEndRef} />
             </div>
-            <div style={{ display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${COLORS.line}` }}>
+            <div style={{ display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${COLORS.line}`, alignItems: "flex-end" }}>
+              <input ref={fileInputRef} type="file" onChange={handleFileChange} style={{ display: "none" }} />
+              <button onClick={handleFileClick} title="Attach a file (up to 500KB)" className="cly-btn" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 8, width: 40, height: 40, color: COLORS.mute, flexShrink: 0 }}>
+                <FileIcon size={16} />
+              </button>
               <textarea
                 value={messageText}
                 onChange={e => setMessageText(e.target.value)}
@@ -3608,7 +3819,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                 rows={1}
                 style={{ ...inputStyle, resize: "none", flex: 1, fontFamily: "inherit" }}
               />
-              <button onClick={handleSend} disabled={!messageText.trim() || sending} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "0 16px", opacity: (!messageText.trim() || sending) ? 0.5 : 1 }}>
+              <button onClick={handleSend} disabled={!messageText.trim() || sending} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "0 16px", height: 40, opacity: (!messageText.trim() || sending) ? 0.5 : 1 }}>
                 <Send size={16} />
               </button>
             </div>
@@ -3643,6 +3854,47 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
           </div>
         </Modal>
       )}
+
+      {membersOpen && activeConversation && (
+        <Modal title={`Manage "${activeConversation.name}" members`} onClose={() => { setMembersOpen(false); setAddMemberSelection([]); }} width={420}>
+          <div style={{ display: "grid", gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Current members ({groupMembers.length})</div>
+              <div style={{ display: "grid", gap: 6, maxHeight: 180, overflowY: "auto", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 8 }}>
+                {groupMembers.map(m => (
+                  <div key={m.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13, padding: "3px 2px" }}>
+                    <span>{m.name}{m.id === user.id ? " (you)" : ""}</span>
+                    {canManageGroup && m.id !== user.id && (
+                      <button onClick={() => removeGroupMember(activeConversation, m.id)} title="Remove" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.danger, cursor: "pointer" }}><X size={14} /></button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Add members</div>
+              {addableContacts.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: COLORS.mute }}>Everyone's already in this group.</div>
+              ) : (
+                <>
+                  <div style={{ display: "grid", gap: 6, maxHeight: 160, overflowY: "auto", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 8 }}>
+                    {addableContacts.map(c => (
+                      <label key={c.u.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                        <input type="checkbox" checked={addMemberSelection.includes(c.u.id)} onChange={() => setAddMemberSelection(sel => sel.includes(c.u.id) ? sel.filter(id => id !== c.u.id) : [...sel, c.u.id])} />
+                        {c.u.name}
+                      </label>
+                    ))}
+                  </div>
+                  <button disabled={addMemberSelection.length === 0} onClick={handleAddMembers} className="cly-btn"
+                    style={{ marginTop: 10, background: COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", width: "100%", fontSize: 13, fontWeight: 700, opacity: addMemberSelection.length === 0 ? 0.5 : 1 }}>
+                    Add selected
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -3654,9 +3906,59 @@ function CallOverlay({ incomingCall, activeCall, callConnecting, localStream, re
   const remoteVideoRef = useRef(null);
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const ringAudioCtxRef = useRef(null);
+  const ringIntervalRef = useRef(null);
 
   useEffect(() => { if (localVideoRef.current) localVideoRef.current.srcObject = localStream || null; }, [localStream]);
   useEffect(() => { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream || null; }, [remoteStream]);
+
+  // Simple two-tone ringtone, synthesized on the fly — no audio file to
+  // host. Plays on a loop while there's an incoming call not yet answered.
+  useEffect(() => {
+    function stopRing() {
+      if (ringIntervalRef.current) { clearInterval(ringIntervalRef.current); ringIntervalRef.current = null; }
+      if (ringAudioCtxRef.current) { try { ringAudioCtxRef.current.close(); } catch (e) { /* already closed */ } ringAudioCtxRef.current = null; }
+    }
+    if (incomingCall && !activeCall) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      ringAudioCtxRef.current = ctx;
+      function playChime() {
+        if (ctx.state === "closed") return;
+        [880, 660].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.frequency.value = freq;
+          osc.type = "sine";
+          const start = ctx.currentTime + i * 0.18;
+          gain.gain.setValueAtTime(0.001, start);
+          gain.gain.exponentialRampToValueAtTime(0.2, start + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
+          osc.connect(gain).connect(ctx.destination);
+          osc.start(start); osc.stop(start + 0.18);
+        });
+      }
+      playChime();
+      ringIntervalRef.current = setInterval(playChime, 1800);
+      return stopRing;
+    }
+    return stopRing;
+  }, [incomingCall, activeCall]);
+
+  // Live "how long has this call been going" timer.
+  useEffect(() => {
+    if (!activeCall) { setElapsed(0); return; }
+    setElapsed(0);
+    const t = setInterval(() => setElapsed(Math.floor((Date.now() - (activeCall.startedAt || Date.now())) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [activeCall?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function formatElapsed(s) {
+    const m = Math.floor(s / 60), sec = s % 60;
+    return `${m}:${String(sec).padStart(2, "0")}`;
+  }
 
   function toggleMute() {
     if (!localStream) return;
@@ -3709,7 +4011,9 @@ function CallOverlay({ incomingCall, activeCall, callConnecting, localStream, re
             </div>
           )}
           <video ref={localVideoRef} autoPlay playsInline muted style={{ position: "absolute", bottom: 16, right: 16, width: 160, height: 110, objectFit: "cover", borderRadius: 10, border: "2px solid rgba(255,255,255,0.3)", transform: "scaleX(-1)" }} />
-          <div style={{ position: "absolute", top: 14, left: 18, color: "#fff", fontSize: 13.5, fontWeight: 700, textShadow: "0 1px 3px rgba(0,0,0,0.5)" }}>{otherName}</div>
+          <div style={{ position: "absolute", top: 14, left: 18, color: "#fff", fontSize: 13.5, fontWeight: 700, textShadow: "0 1px 3px rgba(0,0,0,0.5)" }}>
+            {otherName}{remoteStream && <span style={{ fontWeight: 400, marginLeft: 8, opacity: 0.85 }}>{formatElapsed(elapsed)}</span>}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 14, marginTop: 20 }}>
           <button onClick={toggleMute} className="cly-btn" style={{ width: 46, height: 46, borderRadius: "50%", background: muted ? "#fff" : "rgba(255,255,255,0.15)", color: muted ? "#111" : "#fff", border: "none" }}>
@@ -4522,7 +4826,7 @@ export default function App() {
       const id = uid();
       const allIds = [...new Set([user.id, ...participantIds])];
       const record = {
-        id, type: "group", name, participantIds: allIds,
+        id, type: "group", name, participantIds: allIds, createdBy: user.id,
         participantNames: { ...participantNames, [user.id]: user.name },
         createdAt: Date.now(), lastMessageAt: Date.now(), lastMessageText: "", lastMessageBy: "",
         lastReadAt: { [user.id]: Date.now() },
@@ -4558,6 +4862,113 @@ export default function App() {
       await updateDocPath(["conversations", conversationId], { [`lastReadAt.${user.id}`]: Date.now() });
     } catch (e) { /* non-fatal — worst case an unread badge lingers briefly */ }
   }
+  // Only the original sender can edit/delete their own message — matches
+  // firestore.rules, which checks resource.data.senderId == request.auth.uid.
+  async function editMessage(conversationId, messageId, newText) {
+    try {
+      await updateDocPath(["conversations", conversationId, "messages", messageId], { text: newText, editedAt: Date.now() });
+    } catch (e) {
+      console.error("Failed to edit message:", e);
+      notify("Couldn't save that edit — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function deleteMessage(conversationId, messageId) {
+    try {
+      await deleteDocPath(["conversations", conversationId, "messages", messageId]);
+    } catch (e) {
+      console.error("Failed to delete message:", e);
+      notify("Couldn't delete that message — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Small file/image attachments, stored inline as a data URL on the
+  // message doc itself (no separate file-storage backend for chat — the
+  // Wings/Drive system is folder-based and doesn't map onto "whoever's in
+  // this conversation," so extending it would be a much bigger change).
+  // Firestore caps a document at 1MiB; base64 inflates size by ~4/3, so
+  // this cap leaves real headroom (500KB file -> ~667KB encoded) rather
+  // than cutting it close.
+  const CHAT_ATTACHMENT_MAX_BYTES = 500000;
+  async function sendFileMessage(conversationId, file) {
+    if (file.size > CHAT_ATTACHMENT_MAX_BYTES) {
+      notify(`"${file.name}" is too large — chat attachments are limited to ${Math.round(CHAT_ATTACHMENT_MAX_BYTES / 1000)}KB. For bigger files, share them via the Files page instead.`, "error");
+      return;
+    }
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const preview = `📎 ${file.name}`;
+      await addDocPath(["conversations", conversationId, "messages"], {
+        senderId: user.id, senderName: user.name, type: "file",
+        fileName: file.name, fileType: file.type, fileSize: file.size, fileData: dataUrl,
+        text: "", createdAt: Date.now(),
+      });
+      await updateDocPath(["conversations", conversationId], {
+        lastMessageAt: Date.now(), lastMessageText: preview, lastMessageBy: user.name,
+        [`lastReadAt.${user.id}`]: Date.now(),
+      });
+    } catch (e) {
+      console.error("Failed to send attachment:", e);
+      notify("Couldn't send that file — check your connection and try again.", "error");
+    }
+  }
+  // Deletes an entire chat (all its messages, then the conversation doc
+  // itself) for every participant — not just a "hide from my list." Any
+  // current participant can do this. Only supports the currently-open
+  // conversation, since that's the one whose messages are already loaded
+  // locally; there's no reason to fetch another conversation's full
+  // history just to delete it.
+  async function deleteConversationEntirely(conversationId, messagesToDelete) {
+    try {
+      await Promise.all(messagesToDelete.map(m => deleteDocPath(["conversations", conversationId, "messages", m.id])));
+      await deleteDocIn("conversations", conversationId);
+      setConversations(prev => prev.filter(c => c.id !== conversationId));
+      if (activeConversationId === conversationId) setActiveConversationId(null);
+      notify("Chat deleted.");
+    } catch (e) {
+      console.error("Failed to delete conversation:", e);
+      notify("Couldn't delete this chat — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function addGroupMembers(conversation, newIds, newNamesMap) {
+    try {
+      const participantIds = [...new Set([...conversation.participantIds, ...newIds])];
+      const participantNames = { ...conversation.participantNames, ...newNamesMap };
+      await updateDocPath(["conversations", conversation.id], { participantIds, participantNames });
+      setConversations(prev => prev.map(c => c.id === conversation.id ? { ...c, participantIds, participantNames } : c));
+      notify("Added to the group.");
+    } catch (e) {
+      console.error("Failed to add group members:", e);
+      notify("Couldn't add them — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function removeGroupMember(conversation, memberId) {
+    try {
+      const participantIds = conversation.participantIds.filter(id => id !== memberId);
+      const participantNames = { ...conversation.participantNames };
+      delete participantNames[memberId];
+      await updateDocPath(["conversations", conversation.id], { participantIds, participantNames });
+      setConversations(prev => prev.map(c => c.id === conversation.id ? { ...c, participantIds, participantNames } : c));
+      notify("Removed from the group.");
+    } catch (e) {
+      console.error("Failed to remove group member:", e);
+      notify("Couldn't remove them — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  async function leaveGroupConversation(conversation) {
+    try {
+      await removeGroupMember(conversation, user.id);
+      if (activeConversationId === conversation.id) setActiveConversationId(null);
+    } catch (e) { /* removeGroupMember already notified */ }
+  }
 
   // ---------------- Communication: 1:1 video calls (WebRTC over Firestore signaling) ----------------
   function cleanupCallState() {
@@ -4571,11 +4982,11 @@ export default function App() {
     setActiveCall(null);
     setCallConnecting(false);
   }
-  async function startCall(calleeId, calleeName, conversationId) {
+  async function startCall(calleeId, calleeName, conversationId, callType = "video") {
     if (activeCall || incomingCall) { notify("Finish your current call first.", "error"); return; }
     setCallConnecting(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await acquireCallMedia(notify, callType === "video");
       setLocalStream(stream);
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
@@ -4590,10 +5001,10 @@ export default function App() {
       await pc.setLocalDescription(offer);
       await setDocPath(["calls", callId], {
         id: callId, callerId: user.id, callerName: user.name, calleeId, calleeName,
-        conversationId: conversationId || null, status: "ringing",
+        conversationId: conversationId || null, status: "ringing", callType,
         offer: { type: offer.type, sdp: offer.sdp }, answer: null, createdAt: Date.now(),
       });
-      setActiveCall({ id: callId, callerId: user.id, callerName: user.name, calleeId, calleeName, role: "caller", conversationId: conversationId || null });
+      setActiveCall({ id: callId, callerId: user.id, callerName: user.name, calleeId, calleeName, role: "caller", conversationId: conversationId || null, callType, startedAt: Date.now() });
       setCallConnecting(false);
 
       const unsubDoc = subscribeDocPath(["calls", callId], async (callDoc) => {
@@ -4615,7 +5026,7 @@ export default function App() {
       ringTimeoutRef.current = setTimeout(() => { endCall("missed"); }, 45000);
     } catch (e) {
       console.error("Failed to start call:", e);
-      notify("Couldn't start the call — check camera/microphone permissions and try again.", "error");
+      notify(friendlyMediaError(e), "error");
       cleanupCallState();
     }
   }
@@ -4624,7 +5035,8 @@ export default function App() {
     if (!callDoc) return;
     setCallConnecting(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const callType = callDoc.callType || "video";
+      const stream = await acquireCallMedia(notify, callType === "video");
       setLocalStream(stream);
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
@@ -4639,7 +5051,7 @@ export default function App() {
       await updateDocPath(["calls", callDoc.id], { status: "accepted", answer: { type: answer.type, sdp: answer.sdp } });
 
       setIncomingCall(null);
-      setActiveCall({ id: callDoc.id, callerId: callDoc.callerId, callerName: callDoc.callerName, calleeId: user.id, calleeName: user.name, role: "callee", conversationId: callDoc.conversationId || null });
+      setActiveCall({ id: callDoc.id, callerId: callDoc.callerId, callerName: callDoc.callerName, calleeId: user.id, calleeName: user.name, role: "callee", conversationId: callDoc.conversationId || null, callType, startedAt: Date.now() });
       setCallConnecting(false);
 
       const unsubDoc = subscribeDocPath(["calls", callDoc.id], (cd) => {
@@ -4652,7 +5064,7 @@ export default function App() {
       callUnsubsRef.current = [unsubDoc, unsubCand];
     } catch (e) {
       console.error("Failed to answer call:", e);
-      notify("Couldn't join the call — check camera/microphone permissions and try again.", "error");
+      notify(friendlyMediaError(e), "error");
       try { await updateDocPath(["calls", callDoc.id], { status: "declined" }); } catch (e2) { /* best effort */ }
       setIncomingCall(null);
       cleanupCallState();
@@ -4668,10 +5080,10 @@ export default function App() {
     const call = activeCall;
     if (call) {
       const wasConnected = !!remoteStream && remoteStream.getTracks().length > 0;
-      const finalStatus = reason === "missed" && !wasConnected ? "ended" : "ended";
-      try { await updateDocPath(["calls", call.id], { status: finalStatus, endedAt: Date.now() }); } catch (e) { /* best effort */ }
+      try { await updateDocPath(["calls", call.id], { status: "ended", endedAt: Date.now() }); } catch (e) { /* best effort */ }
       if (call.conversationId) {
-        const logText = !wasConnected ? (call.role === "caller" ? "Missed call (no answer)" : "Missed call") : "Video call ended";
+        const kind = call.callType === "audio" ? "Audio" : "Video";
+        const logText = !wasConnected ? (call.role === "caller" ? "Missed call (no answer)" : "Missed call") : `${kind} call ended`;
         try {
           await addDocPath(["conversations", call.conversationId, "messages"], {
             senderId: user.id, senderName: "System", type: "call_log", text: logText, createdAt: Date.now(),
@@ -4762,7 +5174,7 @@ export default function App() {
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
               {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
-              {page === "communication" && <CommunicationPage user={user} users={users} people={people} conversations={conversations} activeConversationId={activeConversationId} setActiveConversationId={setActiveConversationId} messages={messages} sendMessage={sendMessage} getOrCreateDirectConversation={getOrCreateDirectConversation} createGroupConversation={createGroupConversation} markConversationRead={markConversationRead} startCall={startCall} activeCall={activeCall} callConnecting={callConnecting} />}
+              {page === "communication" && <CommunicationPage user={user} users={users} people={people} conversations={conversations} activeConversationId={activeConversationId} setActiveConversationId={setActiveConversationId} messages={messages} sendMessage={sendMessage} getOrCreateDirectConversation={getOrCreateDirectConversation} createGroupConversation={createGroupConversation} markConversationRead={markConversationRead} startCall={startCall} activeCall={activeCall} callConnecting={callConnecting} editMessage={editMessage} deleteMessage={deleteMessage} sendFileMessage={sendFileMessage} deleteConversationEntirely={deleteConversationEntirely} addGroupMembers={addGroupMembers} removeGroupMember={removeGroupMember} leaveGroupConversation={leaveGroupConversation} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
