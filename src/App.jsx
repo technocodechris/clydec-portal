@@ -3819,49 +3819,66 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                 const isEditing = editingId === m.id;
                 return (
                   <div key={m.id} onMouseEnter={() => setHoveredId(m.id)} onMouseLeave={() => setHoveredId(h => h === m.id ? null : h)}
-                    style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start", position: "relative" }}>
+                    style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
                     {!mine && activeConversation.type === "group" && <div style={{ fontSize: 10.5, color: COLORS.mute, marginBottom: 2, marginLeft: 4 }}>{m.senderName}</div>}
-                    <div style={{ display: "flex", alignItems: "flex-end", gap: 6, flexDirection: mine ? "row-reverse" : "row" }}>
-                      {isEditing ? (
-                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <input value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") saveEdit(m); if (e.key === "Escape") setEditingId(null); }} autoFocus style={{ ...inputStyle, width: 220 }} />
-                          <button onClick={() => saveEdit(m)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 6, padding: "6px 10px", fontSize: 11.5 }}>Save</button>
-                          <button onClick={() => setEditingId(null)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 11.5 }}>Cancel</button>
-                        </div>
-                      ) : m.type === "file" ? (
-                        (m.fileType || "").startsWith("image/") ? (
-                          <a href={m.fileData} target="_blank" rel="noreferrer" style={{ flexShrink: 0 }}>
-                            <img src={m.fileData} alt={m.fileName} style={{ maxWidth: 220, maxHeight: 220, borderRadius: 12, display: "block" }} />
-                          </a>
+                    {isEditing ? (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") saveEdit(m); if (e.key === "Escape") setEditingId(null); }} autoFocus style={{ ...inputStyle, width: 220 }} />
+                        <button onClick={() => saveEdit(m)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 6, padding: "6px 10px", fontSize: 11.5 }}>Save</button>
+                        <button onClick={() => setEditingId(null)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 11.5 }}>Cancel</button>
+                      </div>
+                    ) : (
+                      // A plain block/inline-block sized by the normal CSS box
+                      // model (content size, capped at maxWidth) — not a flex
+                      // item, so there's no flex-shrink math that can collapse
+                      // it. The hover action icons are absolutely positioned
+                      // beside it, entirely outside normal flow, so they can
+                      // never influence its width either (this is what broke
+                      // before: they were flex siblings in a row, and the
+                      // flex-shrink algorithm + word-break:break-word's "can
+                      // split anywhere" let the browser shrink the bubble
+                      // down to a couple characters wide).
+                      <div style={{ position: "relative", display: "inline-block", maxWidth: "min(420px, 70%)" }}>
+                        {m.type === "file" ? (
+                          (m.fileType || "").startsWith("image/") ? (
+                            <a href={m.fileData} target="_blank" rel="noreferrer" style={{ display: "block" }}>
+                              <img src={m.fileData} alt={m.fileName} style={{ maxWidth: 220, maxHeight: 220, borderRadius: 12, display: "block" }} />
+                            </a>
+                          ) : (
+                            <a href={m.fileData} download={m.fileName} style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.cream, borderRadius: 14, padding: "9px 13px", fontSize: 13, color: COLORS.text, textDecoration: "none" }}>
+                              <FileIcon size={16} /> <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.fileName}</span>
+                              <span style={{ color: COLORS.mute, fontSize: 11 }}>{Math.round((m.fileSize || 0) / 1000)}KB</span>
+                            </a>
+                          )
                         ) : (
-                          <a href={m.fileData} download={m.fileName} style={{ display: "flex", alignItems: "center", gap: 8, maxWidth: "70%", flexShrink: 0, background: COLORS.cream, borderRadius: 14, padding: "9px 13px", fontSize: 13, color: COLORS.text, textDecoration: "none" }}>
-                            <FileIcon size={16} /> <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.fileName}</span>
-                            <span style={{ color: COLORS.mute, fontSize: 11 }}>{Math.round((m.fileSize || 0) / 1000)}KB</span>
-                          </a>
-                        )
-                      ) : (
-                        <div style={{ maxWidth: "70%", flexShrink: 0, background: mine ? COLORS.ink : COLORS.cream, color: mine ? "#fff" : COLORS.text, borderRadius: 14, padding: "9px 13px", fontSize: 13.5 }}>
-                          {m.replyTo && (
-                            <div style={{ borderLeft: `2px solid ${mine ? "rgba(255,255,255,0.4)" : COLORS.line}`, paddingLeft: 8, marginBottom: 5, opacity: 0.8 }}>
-                              <div style={{ fontSize: 10.5, fontWeight: 700 }}>{m.replyTo.senderName}</div>
-                              <div style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.replyTo.text}</div>
-                            </div>
-                          )}
-                          <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.text}</div>
-                        </div>
-                      )}
-                      {!isEditing && hoveredId === m.id && (
-                        <div style={{ display: "flex", gap: 3 }}>
-                          <button onClick={() => setReplyingTo(m)} title="Reply" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><MessageSquare size={12} /></button>
-                          {mine && (
-                            <>
-                              {m.type !== "file" && <button onClick={() => startEdit(m)} title="Edit" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Pencil size={12} /></button>}
-                              <button onClick={() => handleDeleteMessage(m)} title="Delete" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Trash2 size={12} /></button>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                          <div style={{ background: mine ? COLORS.ink : COLORS.cream, color: mine ? "#fff" : COLORS.text, borderRadius: 14, padding: "9px 13px", fontSize: 13.5 }}>
+                            {m.replyTo && (
+                              <div style={{ borderLeft: `2px solid ${mine ? "rgba(255,255,255,0.4)" : COLORS.line}`, paddingLeft: 8, marginBottom: 5, opacity: 0.8 }}>
+                                <div style={{ fontSize: 10.5, fontWeight: 700 }}>{m.replyTo.senderName}</div>
+                                <div style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.replyTo.text}</div>
+                              </div>
+                            )}
+                            <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.text}</div>
+                          </div>
+                        )}
+                        {hoveredId === m.id && (
+                          <div style={{
+                            position: "absolute", top: "50%", transform: "translateY(-50%)",
+                            ...(mine ? { right: "100%", marginRight: 6 } : { left: "100%", marginLeft: 6 }),
+                            display: "flex", gap: 2, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 3,
+                            boxShadow: "0 2px 8px rgba(0,0,0,0.12)", whiteSpace: "nowrap", zIndex: 5,
+                          }}>
+                            <button onClick={() => setReplyingTo(m)} title="Reply" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><MessageSquare size={12} /></button>
+                            {mine && (
+                              <>
+                                {m.type !== "file" && <button onClick={() => startEdit(m)} title="Edit" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Pencil size={12} /></button>}
+                                <button onClick={() => handleDeleteMessage(m)} title="Delete" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Trash2 size={12} /></button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div style={{ fontSize: 10, color: COLORS.mute, marginTop: 2, marginLeft: mine ? 0 : 4, marginRight: mine ? 4 : 0 }}>
                       {formatClockTime(m.createdAt)}{m.editedAt ? " · edited" : ""}
                     </div>
