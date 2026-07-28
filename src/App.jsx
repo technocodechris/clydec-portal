@@ -1653,6 +1653,18 @@ function formatClockTime(ms) {
 function isOnline(u) {
   return !!u?.lastActiveAt && (Date.now() - u.lastActiveAt) < 90000;
 }
+// A person's manually-picked status (Online/Offline/Do Not Disturb/Custom
+// text, set from Communication — see setMyPresenceStatus) overrides the
+// automatic heartbeat-based indicator above. No manual status (or "auto")
+// falls back to the heartbeat.
+function getPresenceDisplay(u) {
+  const manual = u?.presenceStatus;
+  if (manual === "online") return { label: "Online", color: COLORS.success, dot: true };
+  if (manual === "dnd") return { label: "Do Not Disturb", color: COLORS.danger, dot: true };
+  if (manual === "offline") return { label: "Offline", color: COLORS.mute, dot: false };
+  if (manual === "custom" && u?.statusText) return { label: u.statusText, color: COLORS.data, dot: isOnline(u) };
+  return isOnline(u) ? { label: "Active now", color: COLORS.success, dot: true } : { label: "Offline", color: COLORS.mute, dot: false };
+}
 // datetime-local inputs work in the browser's local time, so we shift by the
 // timezone offset before/after going to/from an epoch-ms timestamp.
 function tsToLocalInputValue(ts) {
@@ -3483,9 +3495,13 @@ function Modal({ title, onClose, children, width = 360 }) {
 /* ---------------------------------------------------------------- */
 /* Root App                                                            */
 /* ---------------------------------------------------------------- */
-function CommunicationPage({ user, users, people, conversations, activeConversationId, setActiveConversationId, messages, sendMessage, getOrCreateDirectConversation, createGroupConversation, markConversationRead, startCall, activeCall, callConnecting, editMessage, deleteMessage, sendFileMessage, deleteConversationEntirely, addGroupMembers, removeGroupMember, leaveGroupConversation }) {
+function CommunicationPage({ user, users, people, conversations, activeConversationId, setActiveConversationId, messages, sendMessage, getOrCreateDirectConversation, createGroupConversation, markConversationRead, startCall, activeCall, callConnecting, editMessage, deleteMessage, sendFileMessage, hideConversationForMe, addGroupMembers, removeGroupMember, leaveGroupConversation, setMyPresenceStatus }) {
   const [search, setSearch] = useState("");
   const [messageText, setMessageText] = useState("");
+  const [leftTab, setLeftTab] = useState("chats"); // "chats" | "people"
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [customStatusText, setCustomStatusText] = useState(user.statusText || "");
+  const [replyingTo, setReplyingTo] = useState(null); // the message object being replied to
   const [groupOpen, setGroupOpen] = useState(false);
   const [groupName, setGroupName] = useState("");
   const [groupSelection, setGroupSelection] = useState([]);
@@ -3500,12 +3516,15 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  const myLiveUser = users.find(u => u.id === user.id) || user;
+  const myPresence = getPresenceDisplay(myLiveUser);
   const contacts = users
     .filter(u => u.id !== user.id && u.role !== "CLIENT")
     .map(u => ({ u, person: personForUser(people, u.id) }))
     .filter(c => !search.trim() || c.u.name.toLowerCase().includes(search.trim().toLowerCase()) || (c.person?.department || "").toLowerCase().includes(search.trim().toLowerCase()));
 
   const sortedConversations = [...conversations]
+    .filter(c => !c.hiddenFor?.[user.id])
     .filter(c => !search.trim() || conversationLabel(c, user).toLowerCase().includes(search.trim().toLowerCase()))
     .sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
 
@@ -3540,8 +3559,10 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
     if (!messageText.trim() || !activeConversationId || sending) return;
     setSending(true);
     const text = messageText.trim();
+    const reply = replyingTo;
     setMessageText("");
-    try { await sendMessage(activeConversationId, text); } finally { setSending(false); }
+    setReplyingTo(null);
+    try { await sendMessage(activeConversationId, text, reply); } finally { setSending(false); }
   }
   async function handleSelectContact(c) {
     await getOrCreateDirectConversation(c.u.id, c.u.name);
@@ -3573,9 +3594,9 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
     await deleteMessage(activeConversationId, m.id);
   }
   async function handleDeleteChat() {
-    if (!window.confirm(`Delete this entire chat${activeConversation.type === "group" ? " for everyone in it" : ""}? This can't be undone.`)) return;
+    if (!window.confirm("Delete this chat from your list? The other participant(s) will keep their copy — it'll come back for you if anyone sends a new message.")) return;
     setMenuOpen(false);
-    await deleteConversationEntirely(activeConversationId, messages);
+    await hideConversationForMe(activeConversationId);
   }
   async function handleLeaveGroup() {
     if (!window.confirm("Leave this group? You'll need to be added back to rejoin.")) return;
@@ -3595,70 +3616,105 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
   return (
     <div className="cly-fade-in" style={{ display: "flex", height: "calc(100vh - 130px)", background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden", margin: 4 }}>
       <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column" }}>
-        <div style={{ padding: 14, borderBottom: `1px solid ${COLORS.line}` }}>
+        <div style={{ padding: 14, borderBottom: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ position: "relative" }}>
+            <button onClick={() => setStatusOpen(o => !o)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "7px 10px", textAlign: "left" }}>
+              <span style={{ position: "relative", flexShrink: 0 }}>
+                <span style={{ width: 22, height: 22, borderRadius: "50%", background: peopleColorFor(user.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9.5, fontWeight: 700 }}>{peopleInitials(user.name)}</span>
+                <span style={{ position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%", background: myPresence.color, border: "1.5px solid #fff" }} />
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{myPresence.label}</span>
+              <ChevronDown size={13} style={{ color: COLORS.mute }} />
+            </button>
+            {statusOpen && (
+              <div style={{ position: "absolute", top: "110%", left: 0, right: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 30, padding: 8 }}>
+                {[["auto", "Automatic (based on activity)"], ["online", "Online"], ["dnd", "Do Not Disturb"], ["offline", "Appear offline"]].map(([val, label]) => (
+                  <button key={val} onClick={() => { setMyPresenceStatus(val); setStatusOpen(false); }} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 8px", background: (myLiveUser.presenceStatus || "auto") === val ? COLORS.cream : "none", border: "none", borderRadius: 6, fontSize: 12.5 }}>
+                    {label}
+                  </button>
+                ))}
+                <div style={{ display: "flex", gap: 6, padding: "6px 8px 2px" }}>
+                  <input value={customStatusText} onChange={e => setCustomStatusText(e.target.value)} placeholder="Custom status…" style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }} />
+                  <button onClick={() => { setMyPresenceStatus("custom", customStatusText); setStatusOpen(false); }} disabled={!customStatusText.trim()} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 6, padding: "0 10px", fontSize: 12, opacity: customStatusText.trim() ? 1 : 0.5 }}>Set</button>
+                </div>
+              </div>
+            )}
+          </div>
           <div style={{ position: "relative" }}>
             <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: COLORS.mute }} />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search people or chats" style={{ ...inputStyle, paddingLeft: 30 }} />
           </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => setLeftTab("chats")} className="cly-btn" style={{ flex: 1, padding: "7px 0", borderRadius: 7, fontSize: 12.5, fontWeight: 700, background: leftTab === "chats" ? COLORS.ink : "#fff", color: leftTab === "chats" ? "#fff" : COLORS.text, border: `1px solid ${leftTab === "chats" ? COLORS.ink : COLORS.line}` }}>Chats</button>
+            <button onClick={() => setLeftTab("people")} className="cly-btn" style={{ flex: 1, padding: "7px 0", borderRadius: 7, fontSize: 12.5, fontWeight: 700, background: leftTab === "people" ? COLORS.ink : "#fff", color: leftTab === "people" ? "#fff" : COLORS.text, border: `1px solid ${leftTab === "people" ? COLORS.ink : COLORS.line}` }}>People</button>
+          </div>
         </div>
         <div style={{ overflowY: "auto", flex: 1 }}>
-          {sortedConversations.length > 0 && (
-            <div style={{ padding: "10px 14px 4px", fontSize: 10.5, fontWeight: 700, color: COLORS.mute, letterSpacing: 0.5 }}>CHATS</div>
+          {leftTab === "chats" ? (
+            sortedConversations.length === 0 ? (
+              <div style={{ padding: "16px 14px", fontSize: 12, color: COLORS.mute }}>No chats yet — start one from the People tab.</div>
+            ) : sortedConversations.map(c => {
+              const label = conversationLabel(c, user);
+              const other = c.type === "direct" ? users.find(u => u.id === c.participantIds.find(id => id !== user.id)) : null;
+              const otherPresence = other ? getPresenceDisplay(other) : null;
+              const unread = conversationUnread(c);
+              return (
+                <button key={c.id} onClick={() => setActiveConversationId(c.id)} className="cly-btn" style={{
+                  display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 14px", background: activeConversationId === c.id ? COLORS.cream : "transparent", border: "none", textAlign: "left",
+                }}>
+                  <div style={{ position: "relative", flexShrink: 0 }}>
+                    <div style={{ width: 34, height: 34, borderRadius: "50%", background: peopleColorFor(label), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
+                      {c.type === "group" ? <UsersRound size={15} /> : peopleInitials(label)}
+                    </div>
+                    {otherPresence?.dot && <span style={{ position: "absolute", bottom: -1, right: -1, width: 10, height: 10, borderRadius: "50%", background: otherPresence.color, border: "2px solid #fff" }} />}
+                  </div>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: unread ? 700 : 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+                    <div style={{ fontSize: 11.5, color: unread ? COLORS.text : COLORS.mute, fontWeight: unread ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {c.lastMessageText || "No messages yet"}
+                    </div>
+                  </div>
+                  {unread && <span style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.data, flexShrink: 0 }} />}
+                </button>
+              );
+            })
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px 4px" }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.mute, letterSpacing: 0.5 }}>PEOPLE</span>
+                <button onClick={() => setGroupOpen(true)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.data, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>+ New group</button>
+              </div>
+              {contacts.length === 0 && <div style={{ padding: "8px 14px", fontSize: 12, color: COLORS.mute }}>No one else is linked to a portal account yet.</div>}
+              {contacts.map(c => {
+                const p = getPresenceDisplay(c.u);
+                return (
+                  <div key={c.u.id} className="cly-row" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px" }}>
+                    <button onClick={() => handleSelectContact(c)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, background: "transparent", border: "none", textAlign: "left" }}>
+                      <div style={{ position: "relative", flexShrink: 0 }}>
+                        <div style={{ width: 30, height: 30, borderRadius: "50%", background: peopleColorFor(c.u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
+                          {peopleInitials(c.u.name)}
+                        </div>
+                        {p.dot && <span style={{ position: "absolute", bottom: -1, right: -1, width: 9, height: 9, borderRadius: "50%", background: p.color, border: "2px solid #fff" }} />}
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.u.name}</div>
+                        <div style={{ fontSize: 11, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.label}</div>
+                      </div>
+                    </button>
+                    <button
+                      disabled={!!activeCall || callConnecting}
+                      title={`Video call ${c.u.name}`}
+                      onClick={async () => { const cid = await getOrCreateDirectConversation(c.u.id, c.u.name); startCall(c.u.id, c.u.name, cid, "video"); }}
+                      className="cly-btn"
+                      style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", flexShrink: 0, opacity: (!!activeCall || callConnecting) ? 0.4 : 1 }}
+                    >
+                      <Video size={15} />
+                    </button>
+                  </div>
+                );
+              })}
+            </>
           )}
-          {sortedConversations.map(c => {
-            const label = conversationLabel(c, user);
-            const other = c.type === "direct" ? users.find(u => u.id === c.participantIds.find(id => id !== user.id)) : null;
-            const unread = conversationUnread(c);
-            return (
-              <button key={c.id} onClick={() => setActiveConversationId(c.id)} className="cly-btn" style={{
-                display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 14px", background: activeConversationId === c.id ? COLORS.cream : "transparent", border: "none", textAlign: "left",
-              }}>
-                <div style={{ position: "relative", flexShrink: 0 }}>
-                  <div style={{ width: 34, height: 34, borderRadius: "50%", background: peopleColorFor(label), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
-                    {c.type === "group" ? <UsersRound size={15} /> : peopleInitials(label)}
-                  </div>
-                  {other && isOnline(other) && <span style={{ position: "absolute", bottom: -1, right: -1, width: 10, height: 10, borderRadius: "50%", background: COLORS.success, border: "2px solid #fff" }} />}
-                </div>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: unread ? 700 : 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
-                  <div style={{ fontSize: 11.5, color: unread ? COLORS.text : COLORS.mute, fontWeight: unread ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {c.lastMessageText || "No messages yet"}
-                  </div>
-                </div>
-                {unread && <span style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.data, flexShrink: 0 }} />}
-              </button>
-            );
-          })}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px 4px" }}>
-            <span style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.mute, letterSpacing: 0.5 }}>PEOPLE</span>
-            <button onClick={() => setGroupOpen(true)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.data, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>+ New group</button>
-          </div>
-          {contacts.length === 0 && <div style={{ padding: "8px 14px", fontSize: 12, color: COLORS.mute }}>No one else is linked to a portal account yet.</div>}
-          {contacts.map(c => (
-            <div key={c.u.id} className="cly-row" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px" }}>
-              <button onClick={() => handleSelectContact(c)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, background: "transparent", border: "none", textAlign: "left" }}>
-                <div style={{ position: "relative", flexShrink: 0 }}>
-                  <div style={{ width: 30, height: 30, borderRadius: "50%", background: peopleColorFor(c.u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
-                    {peopleInitials(c.u.name)}
-                  </div>
-                  {isOnline(c.u) && <span style={{ position: "absolute", bottom: -1, right: -1, width: 9, height: 9, borderRadius: "50%", background: COLORS.success, border: "2px solid #fff" }} />}
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.u.name}</div>
-                  <div style={{ fontSize: 11, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.person ? `${c.person.department}${c.person.role ? ` · ${c.person.role}` : ""}` : ROLE_META[c.u.role]?.label}</div>
-                </div>
-              </button>
-              <button
-                disabled={!!activeCall || callConnecting}
-                title={`Video call ${c.u.name}`}
-                onClick={async () => { const cid = await getOrCreateDirectConversation(c.u.id, c.u.name); startCall(c.u.id, c.u.name, cid, "video"); }}
-                className="cly-btn"
-                style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", flexShrink: 0, opacity: (!!activeCall || callConnecting) ? 0.4 : 1 }}
-              >
-                <Video size={15} />
-              </button>
-            </div>
-          ))}
         </div>
       </div>
 
@@ -3674,7 +3730,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>{conversationLabel(activeConversation, user)}</div>
                 <div style={{ fontSize: 11.5, color: COLORS.mute }}>
-                  {activeConversation.type === "group" ? `${activeConversation.participantIds.length} members` : (otherParticipant?.u && isOnline(otherParticipant.u) ? "Active now" : "Offline")}
+                  {activeConversation.type === "group" ? `${activeConversation.participantIds.length} members` : (otherParticipant?.u ? getPresenceDisplay(otherParticipant.u).label : "Offline")}
                 </div>
               </div>
 
@@ -3765,7 +3821,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                   <div key={m.id} onMouseEnter={() => setHoveredId(m.id)} onMouseLeave={() => setHoveredId(h => h === m.id ? null : h)}
                     style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start", position: "relative" }}>
                     {!mine && activeConversation.type === "group" && <div style={{ fontSize: 10.5, color: COLORS.mute, marginBottom: 2, marginLeft: 4 }}>{m.senderName}</div>}
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexDirection: mine ? "row-reverse" : "row" }}>
+                    <div style={{ display: "flex", alignItems: "flex-end", gap: 6, flexDirection: mine ? "row-reverse" : "row" }}>
                       {isEditing ? (
                         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                           <input value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") saveEdit(m); if (e.key === "Escape") setEditingId(null); }} autoFocus style={{ ...inputStyle, width: 220 }} />
@@ -3774,28 +3830,36 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                         </div>
                       ) : m.type === "file" ? (
                         (m.fileType || "").startsWith("image/") ? (
-                          <a href={m.fileData} target="_blank" rel="noreferrer">
+                          <a href={m.fileData} target="_blank" rel="noreferrer" style={{ flexShrink: 0 }}>
                             <img src={m.fileData} alt={m.fileName} style={{ maxWidth: 220, maxHeight: 220, borderRadius: 12, display: "block" }} />
                           </a>
                         ) : (
-                          <a href={m.fileData} download={m.fileName} style={{ display: "flex", alignItems: "center", gap: 8, maxWidth: "70%", background: COLORS.cream, borderRadius: 14, padding: "9px 13px", fontSize: 13, color: COLORS.text, textDecoration: "none" }}>
+                          <a href={m.fileData} download={m.fileName} style={{ display: "flex", alignItems: "center", gap: 8, maxWidth: "70%", flexShrink: 0, background: COLORS.cream, borderRadius: 14, padding: "9px 13px", fontSize: 13, color: COLORS.text, textDecoration: "none" }}>
                             <FileIcon size={16} /> <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.fileName}</span>
                             <span style={{ color: COLORS.mute, fontSize: 11 }}>{Math.round((m.fileSize || 0) / 1000)}KB</span>
                           </a>
                         )
                       ) : (
-                        <div style={{ maxWidth: "70%", background: mine ? COLORS.ink : COLORS.cream, color: mine ? "#fff" : COLORS.text, borderRadius: 14, padding: "9px 13px", fontSize: 13.5, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                          {m.text}
+                        <div style={{ maxWidth: "70%", flexShrink: 0, background: mine ? COLORS.ink : COLORS.cream, color: mine ? "#fff" : COLORS.text, borderRadius: 14, padding: "9px 13px", fontSize: 13.5 }}>
+                          {m.replyTo && (
+                            <div style={{ borderLeft: `2px solid ${mine ? "rgba(255,255,255,0.4)" : COLORS.line}`, paddingLeft: 8, marginBottom: 5, opacity: 0.8 }}>
+                              <div style={{ fontSize: 10.5, fontWeight: 700 }}>{m.replyTo.senderName}</div>
+                              <div style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.replyTo.text}</div>
+                            </div>
+                          )}
+                          <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.text}</div>
                         </div>
                       )}
-                      {mine && !isEditing && hoveredId === m.id && m.type !== "file" && (
+                      {!isEditing && hoveredId === m.id && (
                         <div style={{ display: "flex", gap: 3 }}>
-                          <button onClick={() => startEdit(m)} title="Edit" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Pencil size={12} /></button>
-                          <button onClick={() => handleDeleteMessage(m)} title="Delete" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Trash2 size={12} /></button>
+                          <button onClick={() => setReplyingTo(m)} title="Reply" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><MessageSquare size={12} /></button>
+                          {mine && (
+                            <>
+                              {m.type !== "file" && <button onClick={() => startEdit(m)} title="Edit" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Pencil size={12} /></button>}
+                              <button onClick={() => handleDeleteMessage(m)} title="Delete" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Trash2 size={12} /></button>
+                            </>
+                          )}
                         </div>
-                      )}
-                      {mine && !isEditing && hoveredId === m.id && m.type === "file" && (
-                        <button onClick={() => handleDeleteMessage(m)} title="Delete" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Trash2 size={12} /></button>
                       )}
                     </div>
                     <div style={{ fontSize: 10, color: COLORS.mute, marginTop: 2, marginLeft: mine ? 0 : 4, marginRight: mine ? 4 : 0 }}>
@@ -3806,7 +3870,18 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
               })}
               <div ref={messagesEndRef} />
             </div>
-            <div style={{ display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${COLORS.line}`, alignItems: "flex-end" }}>
+            {replyingTo && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 14px", borderTop: `1px solid ${COLORS.line}`, background: COLORS.cream }}>
+                <div style={{ minWidth: 0, borderLeft: `2px solid ${COLORS.data}`, paddingLeft: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700 }}>Replying to {replyingTo.senderName}</div>
+                  <div style={{ fontSize: 11.5, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {replyingTo.type === "file" ? `📎 ${replyingTo.fileName}` : replyingTo.text}
+                  </div>
+                </div>
+                <button onClick={() => setReplyingTo(null)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", flexShrink: 0 }}><X size={14} /></button>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, padding: 14, borderTop: replyingTo ? "none" : `1px solid ${COLORS.line}`, alignItems: "flex-end" }}>
               <input ref={fileInputRef} type="file" onChange={handleFileChange} style={{ display: "none" }} />
               <button onClick={handleFileClick} title="Attach a file (up to 500KB)" className="cly-btn" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 8, width: 40, height: 40, color: COLORS.mute, flexShrink: 0 }}>
                 <FileIcon size={16} />
@@ -4242,6 +4317,19 @@ export default function App() {
     const t = setInterval(ping, 60000);
     return () => clearInterval(t);
   }, [user?.id]);
+  // Manual status picker (Communication) — "auto" clears the override so
+  // the heartbeat-based indicator takes back over; anything else sticks
+  // until changed again, regardless of activity.
+  async function setMyPresenceStatus(status, statusText) {
+    try {
+      const patch = status === "auto" ? { presenceStatus: null, statusText: null } : { presenceStatus: status, statusText: status === "custom" ? (statusText || "") : null };
+      await updateDocIn("users", user.id, patch);
+      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, ...patch } : u));
+    } catch (e) {
+      console.error("Failed to set status:", e);
+      notify("Couldn't update your status — check your connection and try again.", "error");
+    }
+  }
 
   function persistAuth(next) { setAuth(next); sset("auth-settings", next); }
   function persistNotif(next) { setNotif(next); sset("notif-settings", next); }
@@ -4842,14 +4930,15 @@ export default function App() {
       throw e;
     }
   }
-  async function sendMessage(conversationId, text) {
+  async function sendMessage(conversationId, text, replyTo) {
     try {
       await addDocPath(["conversations", conversationId, "messages"], {
         senderId: user.id, senderName: user.name, text, type: "text", createdAt: Date.now(),
+        ...(replyTo ? { replyTo: { messageId: replyTo.id, senderName: replyTo.senderName, text: (replyTo.type === "file" ? `📎 ${replyTo.fileName}` : replyTo.text || "").slice(0, 140) } } : {}),
       });
       await updateDocPath(["conversations", conversationId], {
         lastMessageAt: Date.now(), lastMessageText: text, lastMessageBy: user.name,
-        [`lastReadAt.${user.id}`]: Date.now(),
+        [`lastReadAt.${user.id}`]: Date.now(), hiddenFor: {},
       });
     } catch (e) {
       console.error("Failed to send message:", e);
@@ -4910,7 +4999,7 @@ export default function App() {
       });
       await updateDocPath(["conversations", conversationId], {
         lastMessageAt: Date.now(), lastMessageText: preview, lastMessageBy: user.name,
-        [`lastReadAt.${user.id}`]: Date.now(),
+        [`lastReadAt.${user.id}`]: Date.now(), hiddenFor: {},
       });
     } catch (e) {
       console.error("Failed to send attachment:", e);
@@ -4923,16 +5012,20 @@ export default function App() {
   // conversation, since that's the one whose messages are already loaded
   // locally; there's no reason to fetch another conversation's full
   // history just to delete it.
-  async function deleteConversationEntirely(conversationId, messagesToDelete) {
+  // "Delete chat" only ever removes it from *your own* list — it never
+  // touches the other participant(s)' messages or their copy of the
+  // conversation. A new message to a hidden conversation un-hides it again
+  // for everyone (see sendMessage), the same way most chat apps bring a
+  // "deleted" thread back once someone writes in it again.
+  async function hideConversationForMe(conversationId) {
     try {
-      await Promise.all(messagesToDelete.map(m => deleteDocPath(["conversations", conversationId, "messages", m.id])));
-      await deleteDocIn("conversations", conversationId);
-      setConversations(prev => prev.filter(c => c.id !== conversationId));
+      await updateDocPath(["conversations", conversationId], { [`hiddenFor.${user.id}`]: true });
+      setConversations(prev => prev.map(c => c.id === conversationId ? { ...c, hiddenFor: { ...(c.hiddenFor || {}), [user.id]: true } } : c));
       if (activeConversationId === conversationId) setActiveConversationId(null);
-      notify("Chat deleted.");
+      notify("Chat removed from your list.");
     } catch (e) {
-      console.error("Failed to delete conversation:", e);
-      notify("Couldn't delete this chat — check your connection or permissions and try again.", "error");
+      console.error("Failed to delete chat:", e);
+      notify("Couldn't delete — check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5174,7 +5267,7 @@ export default function App() {
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
               {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
-              {page === "communication" && <CommunicationPage user={user} users={users} people={people} conversations={conversations} activeConversationId={activeConversationId} setActiveConversationId={setActiveConversationId} messages={messages} sendMessage={sendMessage} getOrCreateDirectConversation={getOrCreateDirectConversation} createGroupConversation={createGroupConversation} markConversationRead={markConversationRead} startCall={startCall} activeCall={activeCall} callConnecting={callConnecting} editMessage={editMessage} deleteMessage={deleteMessage} sendFileMessage={sendFileMessage} deleteConversationEntirely={deleteConversationEntirely} addGroupMembers={addGroupMembers} removeGroupMember={removeGroupMember} leaveGroupConversation={leaveGroupConversation} />}
+              {page === "communication" && <CommunicationPage user={user} users={users} people={people} conversations={conversations} activeConversationId={activeConversationId} setActiveConversationId={setActiveConversationId} messages={messages} sendMessage={sendMessage} getOrCreateDirectConversation={getOrCreateDirectConversation} createGroupConversation={createGroupConversation} markConversationRead={markConversationRead} startCall={startCall} activeCall={activeCall} callConnecting={callConnecting} editMessage={editMessage} deleteMessage={deleteMessage} sendFileMessage={sendFileMessage} hideConversationForMe={hideConversationForMe} addGroupMembers={addGroupMembers} removeGroupMember={removeGroupMember} leaveGroupConversation={leaveGroupConversation} setMyPresenceStatus={setMyPresenceStatus} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
