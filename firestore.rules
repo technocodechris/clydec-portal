@@ -16,13 +16,13 @@ service cloud.firestore {
 
     // User profiles: everyone signed in can see the directory (needed to
     // render names/roles in the UI); only the owner can create/edit/remove.
-    // Exception: anyone can update just their own `lastActiveAt` heartbeat
-    // (Communication's online/offline presence indicator) — otherwise this
-    // collection is entirely owner-only.
+    // Exception: anyone can update their own `lastActiveAt` heartbeat and
+    // `presenceStatus`/`statusText` (Communication's presence indicator and
+    // manual status picker) — otherwise this collection is owner-only.
     match /users/{userId} {
       allow read: if signedIn();
       allow create: if isOwner();
-      allow update: if isOwner() || (signedIn() && request.auth.uid == userId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt']));
+      allow update: if isOwner() || (signedIn() && request.auth.uid == userId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt', 'presenceStatus', 'statusText']));
       allow delete: if isOwner();
     }
 
