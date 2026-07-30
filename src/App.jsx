@@ -8,7 +8,9 @@ import {
   ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
   Database, Smile, CalendarCheck, Timer, Network, LayoutGrid, Pencil,
   MessageSquare, Send, Phone, PhoneOff, Video, VideoOff, Mic, MicOff, UsersRound, PhoneMissed, PhoneIncoming, Menu,
+  Briefcase,
 } from "lucide-react";
+import OrbitApp from "./orbit/OrbitApp";
 
 /* ---------------------------------------------------------------- */
 /* Design tokens                                                     */
@@ -260,6 +262,18 @@ const SEED_FOLDERS = [
   { id: "client-aurora", name: "Clients", wing: "creative", access: ["OWNER", "ADMIN", "CLIENT"] },
 ];
 
+// The Workspace folder (Orbit project-management workspaces) groups by the
+// same four Wings Storage uses, for consistency — though these are a
+// separate list of ids/labels from SEED_FOLDERS above, since Workspace
+// doesn't map onto actual Drive folders. Every orbit-workspaces/{id} doc
+// carries one of these ids in its `wing` field.
+const WORKSPACE_WINGS = [
+  { id: "creative", name: "Creative Wing" },
+  { id: "data", name: "Data Wing" },
+  { id: "finance", name: "Admin & Finance" },
+  { id: "clients", name: "Clients" },
+];
+
 const SEED_AUTH = {
   loginEnabled: true,
   emailPassword: true,
@@ -463,15 +477,20 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
   const communicationItems = [
     { key: "communication", label: "Messages", icon: MessageSquare, show: user.role !== "CLIENT", badge: unreadMessageCount || 0 },
   ];
+  const workspaceItems = [
+    { key: "workspace", label: "Orbit Workspaces", icon: Briefcase, show: user.role !== "CLIENT" },
+  ];
   const [storageOpen, setStorageOpen] = useState(true);
   const [portalOpen, setPortalOpen] = useState(true);
   const [peopleOpen, setPeopleOpen] = useState(true);
   const [timeAttendanceOpen, setTimeAttendanceOpen] = useState(true);
   const [communicationOpen, setCommunicationOpen] = useState(true);
+  const [workspaceOpen, setWorkspaceOpen] = useState(true);
   const showPortalGroup = portalItems.some(i => i.show);
   const showPeopleGroup = peopleItems.some(i => i.show);
   const showTimeAttendanceGroup = timeAttendanceItems.some(i => i.show);
   const showCommunicationGroup = communicationItems.some(i => i.show);
+  const showWorkspaceGroup = workspaceItems.some(i => i.show);
   return (
     <div className={`cly-scan cly-sidebar${open ? " cly-open" : ""}`} style={{ background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px", overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "0 8px 22px" }}>
@@ -602,6 +621,31 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
                     <i.icon size={16} style={{ opacity: 0.85 }} />
                     <span style={{ flex: 1 }}>{i.label}</span>
                     {!!i.badge && <span style={{ background: COLORS.creative, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {showWorkspaceGroup && (
+          <>
+            <button onClick={() => setWorkspaceOpen(o => !o)} className="cly-navitem cly-btn" style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
+              color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left", marginTop: 6,
+            }}>
+              <Briefcase size={16} style={{ opacity: 0.85 }} />
+              <span style={{ flex: 1 }}>Workspace</span>
+              <ChevronDown size={14} style={{ opacity: 0.7, transform: workspaceOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
+            </button>
+            {workspaceOpen && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
+                {workspaceItems.filter(i => i.show).map(i => (
+                  <button key={i.key} onClick={() => go(i.key)} className="cly-navitem cly-btn" style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
+                    color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
+                  }}>
+                    <i.icon size={16} style={{ opacity: 0.85 }} />
+                    <span style={{ flex: 1 }}>{i.label}</span>
                   </button>
                 ))}
               </div>
@@ -3567,6 +3611,137 @@ function Modal({ title, onClose, children, width = 360 }) {
 /* ---------------------------------------------------------------- */
 /* Root App                                                            */
 /* ---------------------------------------------------------------- */
+/* ---------------------------------------------------------------- */
+/* Workspace: Orbit project-management workspaces                    */
+/* ---------------------------------------------------------------- */
+// Deterministic color assignment so the same person always gets the same
+// avatar color inside Orbit across sessions/renders, without needing to
+// store a color choice anywhere.
+const ORBIT_MEMBER_COLORS = ["bg-violet-500", "bg-teal-500", "bg-amber-500", "bg-blue-500", "bg-rose-500", "bg-emerald-500", "bg-pink-500", "bg-indigo-500"];
+function colorForId(id) {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return ORBIT_MEMBER_COLORS[h % ORBIT_MEMBER_COLORS.length];
+}
+// Builds the member list Orbit sees for a given workspace: every non-Client
+// portal user, with the logged-in viewer always mapped to Orbit's existing
+// "m1 = current user" convention (see src/orbit/OrbitApp.jsx) so nothing
+// inside Orbit needed to change to know who's looking at it. This is the
+// concrete "connected to People/Users" link the Workspace feature was
+// asked for — team membership itself isn't managed inside Orbit anymore
+// (see OrbitApp's TeamView guards), it's read live from here.
+function membersForOrbit(users, currentUser) {
+  const others = users
+    .filter(u => u.id !== currentUser.id && u.role !== "CLIENT")
+    .map(u => ({ id: u.id, name: u.name, color: colorForId(u.id) }));
+  return [{ id: "m1", name: currentUser.name, color: "bg-violet-500" }, ...others];
+}
+
+// One Orbit Workspace, opened full-bleed (replaces the page body, like
+// Communication does for a call overlay) — loads/saves its `data` field on
+// the matching orbit-workspaces/{id} Firestore doc.
+function OrbitWorkspaceView({ user, users, workspace, onExit, saveOrbitWorkspaceData }) {
+  const members = React.useMemo(() => membersForOrbit(users, user), [users, user]);
+  const handleDataChange = React.useCallback((data) => {
+    saveOrbitWorkspaceData(workspace.id, data);
+  }, [workspace.id, saveOrbitWorkspaceData]);
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 40, background: "#fff" }}>
+      <OrbitApp
+        members={members}
+        initialData={workspace.data || null}
+        onDataChange={handleDataChange}
+        onExit={onExit}
+        workspaceName={workspace.name}
+      />
+    </div>
+  );
+}
+
+function WorkspacePage({ user, orbitWorkspaces, addOrbitWorkspace, deleteOrbitWorkspace, onOpenWorkspace }) {
+  const canManage = user.role === "OWNER" || user.role === "ADMIN";
+  const [addingForWing, setAddingForWing] = useState(null);
+  const [newName, setNewName] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null); // { id, name } | null
+
+  function submitAdd(wing) {
+    if (!newName.trim()) return;
+    addOrbitWorkspace(newName.trim(), wing);
+    setNewName("");
+    setAddingForWing(null);
+  }
+
+  return (
+    <div style={{ padding: 28 }}>
+      <div style={{ maxWidth: 980, margin: "0 auto", display: "flex", flexDirection: "column", gap: 22 }}>
+        {!canManage && (
+          <div style={{ background: COLORS.dataSoft, color: COLORS.dataText, borderRadius: 10, padding: "10px 14px", fontSize: 12.5 }}>
+            Only Admins and Owners can create or delete Orbit Workspaces — you can still open and work inside any workspace below.
+          </div>
+        )}
+        {WORKSPACE_WINGS.map(wing => {
+          const wingWorkspaces = orbitWorkspaces.filter(w => w.wing === wing.id);
+          return (
+            <div key={wing.id} style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                <div className="cly-serif" style={{ fontSize: 15.5 }}>{wing.name}</div>
+                {canManage && (
+                  addingForWing === wing.id ? (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        autoFocus value={newName} onChange={e => setNewName(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") submitAdd(wing.id); if (e.key === "Escape") { setAddingForWing(null); setNewName(""); } }}
+                        placeholder="Workspace name" className="cly-input"
+                        style={{ fontSize: 12.5, padding: "6px 10px", borderRadius: 7, border: `1px solid ${COLORS.line}`, width: 180 }}
+                      />
+                      <button onClick={() => submitAdd(wing.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 700 }}>Add</button>
+                      <button onClick={() => { setAddingForWing(null); setNewName(""); }} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12 }}>Cancel</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => { setAddingForWing(wing.id); setNewName(""); }} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 700, color: COLORS.text }}>
+                      <Plus size={13} /> New Orbit Workspace
+                    </button>
+                  )
+                )}
+              </div>
+              {wingWorkspaces.length === 0 ? (
+                <div style={{ color: COLORS.mute, fontSize: 12.5, padding: "6px 2px" }}>No Orbit Workspaces in this Wing yet.</div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
+                  {wingWorkspaces.map(w => (
+                    <div key={w.id} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div style={{ width: 26, height: 26, borderRadius: 6, background: "#4F46E5", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>O</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={w.name}>{w.name}</div>
+                      </div>
+                      <div style={{ fontSize: 10.5, color: COLORS.mute }}>Created by {w.createdByName || "—"}{w.createdAt ? ` · ${timeAgo(w.createdAt)}` : ""}</div>
+                      <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
+                        <button onClick={() => onOpenWorkspace(w.id)} className="cly-btn" style={{ flex: 1, background: COLORS.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 8px", fontSize: 11.5, fontWeight: 700 }}>Open</button>
+                        {canManage && (
+                          confirmDelete?.id === w.id ? (
+                            <>
+                              <button onClick={() => { deleteOrbitWorkspace(w.id, w.name); setConfirmDelete(null); }} className="cly-btn" style={{ background: COLORS.danger, color: "#fff", border: "none", borderRadius: 7, padding: "6px 8px", fontSize: 11.5, fontWeight: 700 }}>Confirm</button>
+                              <button onClick={() => setConfirmDelete(null)} className="cly-btn" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 8px", fontSize: 11.5 }}>×</button>
+                            </>
+                          ) : (
+                            <button onClick={() => setConfirmDelete({ id: w.id, name: w.name })} className="cly-btn" title="Delete workspace" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 8px", color: COLORS.danger }}>
+                              <Trash2 size={13} />
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function CommunicationPage({ user, users, people, conversations, activeConversationId, setActiveConversationId, messages, sendMessage, getOrCreateDirectConversation, createGroupConversation, markConversationRead, startCall, activeCall, callConnecting, editMessage, deleteMessage, sendFileMessage, hideConversationForMe, addGroupMembers, removeGroupMember, leaveGroupConversation, setMyPresenceStatus }) {
   const [search, setSearch] = useState("");
   const [messageText, setMessageText] = useState("");
@@ -4223,6 +4398,10 @@ export default function App() {
   const [notif, setNotif] = useState(SEED_NOTIF);
   const [restrictions, setRestrictions] = useState(SEED_RESTRICTIONS);
 
+  // --- Workspace (Orbit project-management workspaces) ---
+  const [orbitWorkspaces, setOrbitWorkspaces] = useState([]);
+  const [activeOrbitWorkspaceId, setActiveOrbitWorkspaceId] = useState(null);
+
   // --- Communication (chat + 1:1 video calls) ---
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
@@ -4365,6 +4544,21 @@ export default function App() {
       unsubs.push(subscribeCollection("leave-requests", vals => { setLeaveRequests(vals); onOk("leaveRequests"); }, onErr("leaveRequests", [], setLeaveRequests)));
     } else {
       unsubs.push(subscribeCollectionWhere("leave-requests", "userId", user.id, vals => { setLeaveRequests(vals); onOk("leaveRequests"); }, onErr("leaveRequests", [], setLeaveRequests)));
+    }
+
+    // Workspace (Orbit): Clients don't get this feature at all (enforced
+    // here, in the sidebar, and in firestore.rules) — same pattern as
+    // Communication/People. Creating/deleting a workspace is additionally
+    // gated to Admin/Owner in the handler functions below and in
+    // firestore.rules; everyone else who can see this collection can
+    // still read/use (open, edit tasks in) any workspace, matching how
+    // the rest of the internal-facing portal treats Employees.
+    const canUseWorkspace = user.role !== "CLIENT";
+    if (canUseWorkspace) {
+      pending.add("orbitWorkspaces");
+      unsubs.push(subscribeCollection("orbit-workspaces", vals => { setOrbitWorkspaces(vals); onOk("orbitWorkspaces"); }, onErr("orbitWorkspaces", [], setOrbitWorkspaces)));
+    } else {
+      setOrbitWorkspaces([]);
     }
 
     // Communication: Clients don't get this feature at all (enforced here,
@@ -4980,6 +5174,58 @@ export default function App() {
     }
   }
 
+  // ---------------- Workspace: Orbit project-management workspaces ----------------
+  // Create/delete are gated to Admin/Owner here (client-side convenience —
+  // the real enforcement is firestore.rules' isAdminOrOwner() checks on
+  // orbit-workspaces create/delete). Anyone who can see the collection
+  // (everyone except CLIENT) can open/edit an existing workspace, matching
+  // how the rest of the internal portal treats Employees.
+  async function addOrbitWorkspace(name, wing) {
+    if (user.role !== "OWNER" && user.role !== "ADMIN") {
+      notify("Only Admins and Owners can create an Orbit Workspace.", "error");
+      return;
+    }
+    if (!name.trim() || !wing) { notify("Give the workspace a name and pick a Wing.", "error"); return; }
+    try {
+      await addDocIn("orbit-workspaces", {
+        name: name.trim(), wing,
+        createdBy: user.id, createdByName: user.name,
+        createdAt: Date.now(), updatedAt: Date.now(),
+        data: null, // OrbitApp treats a null/missing data field as a brand-new blank workspace
+      });
+      notify(`"${name.trim()}" created.`);
+    } catch (e) {
+      console.error("Failed to create Orbit Workspace:", e);
+      notify("Couldn't create the workspace — check your connection or permissions and try again.", "error");
+    }
+  }
+  async function deleteOrbitWorkspace(workspaceId, workspaceName) {
+    if (user.role !== "OWNER" && user.role !== "ADMIN") {
+      notify("Only Admins and Owners can delete an Orbit Workspace.", "error");
+      return;
+    }
+    try {
+      await deleteDocIn("orbit-workspaces", workspaceId);
+      if (activeOrbitWorkspaceId === workspaceId) setActiveOrbitWorkspaceId(null);
+      notify(`"${workspaceName || "Workspace"}" deleted.`);
+    } catch (e) {
+      console.error("Failed to delete Orbit Workspace:", e);
+      notify("Couldn't delete the workspace — check your connection or permissions and try again.", "error");
+    }
+  }
+  // Called (debounced, from inside OrbitApp) on every persist-worthy change
+  // to a workspace's content — not role-gated beyond "can see Workspace at
+  // all" (see firestore.rules: update is open to any non-Client), same as
+  // editing any other shared portal content.
+  async function saveOrbitWorkspaceData(workspaceId, data) {
+    try {
+      await updateDocIn("orbit-workspaces", workspaceId, { data, updatedAt: Date.now() });
+    } catch (e) {
+      console.error("Failed to save Orbit Workspace data:", e);
+      notify("Couldn't save your latest Workspace changes — check your connection.", "error");
+    }
+  }
+
   // ---------------- Communication: conversations + messages ----------------
   async function getOrCreateDirectConversation(otherUserId, otherUserName) {
     const existing = conversations.find(c => c.type === "direct" && c.participantIds.includes(otherUserId) && c.participantIds.includes(user.id));
@@ -5332,7 +5578,8 @@ export default function App() {
               page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" :
               page === "people-info" ? "People Information" : page === "org-chart" ? "Organizational Chart" : page === "time-tracking" ? "Time Tracking" :
               page === "time-inout" ? "Time in/Time out information" :
-              page === "attendance" ? "Attendance" : page === "leave-requests" ? "Leave Requests" : page === "communication" ? "Communication" : "Admin settings"
+              page === "attendance" ? "Attendance" : page === "leave-requests" ? "Leave Requests" : page === "communication" ? "Communication" :
+              page === "workspace" ? "Workspace" : "Admin settings"
             } subtitle={
               page === "dashboard" ? "Your workspace at a glance." :
               page === "files" ? "Shared storage for your team and clients." :
@@ -5343,7 +5590,8 @@ export default function App() {
               page === "time-inout" ? "Clock-in and clock-out records." :
               page === "attendance" ? "Daily attendance summaries." :
               page === "leave-requests" ? "Request Sick or Voluntary Leave and track approvals." :
-              page === "communication" ? "Chat and video call your team, built from People Information." : "Authentication, users, groups, and restrictions."
+              page === "communication" ? "Chat and video call your team, built from People Information." :
+              page === "workspace" ? "Orbit project-management workspaces, organized by Wing." : "Authentication, users, groups, and restrictions."
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
               {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} people={people} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
@@ -5356,6 +5604,7 @@ export default function App() {
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
               {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
               {page === "communication" && <CommunicationPage user={user} users={users} people={people} conversations={conversations} activeConversationId={activeConversationId} setActiveConversationId={setActiveConversationId} messages={messages} sendMessage={sendMessage} getOrCreateDirectConversation={getOrCreateDirectConversation} createGroupConversation={createGroupConversation} markConversationRead={markConversationRead} startCall={startCall} activeCall={activeCall} callConnecting={callConnecting} editMessage={editMessage} deleteMessage={deleteMessage} sendFileMessage={sendFileMessage} hideConversationForMe={hideConversationForMe} addGroupMembers={addGroupMembers} removeGroupMember={removeGroupMember} leaveGroupConversation={leaveGroupConversation} setMyPresenceStatus={setMyPresenceStatus} />}
+              {page === "workspace" && <WorkspacePage user={user} orbitWorkspaces={orbitWorkspaces} addOrbitWorkspace={addOrbitWorkspace} deleteOrbitWorkspace={deleteOrbitWorkspace} onOpenWorkspace={setActiveOrbitWorkspaceId} />}
               {page === "admin" && (
                 <AdminSettings
                   user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
@@ -5368,6 +5617,20 @@ export default function App() {
           </div>
         </div>
       )}
+      {user && user.role !== "CLIENT" && activeOrbitWorkspaceId && (() => {
+        const activeWorkspace = orbitWorkspaces.find(w => w.id === activeOrbitWorkspaceId);
+        // The workspace may have been deleted by someone else, or its
+        // subscription hasn't caught up yet — bail out cleanly rather than
+        // render OrbitApp with nothing to show.
+        if (!activeWorkspace) return null;
+        return (
+          <OrbitWorkspaceView
+            user={user} users={users} workspace={activeWorkspace}
+            onExit={() => setActiveOrbitWorkspaceId(null)}
+            saveOrbitWorkspaceData={saveOrbitWorkspaceData}
+          />
+        );
+      })()}
       {user && user.role !== "CLIENT" && (
         <CallOverlay
           incomingCall={incomingCall} activeCall={activeCall} callConnecting={callConnecting}
