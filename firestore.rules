@@ -120,5 +120,18 @@ service cloud.firestore {
         allow read, create: if signedIn() && (request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.callerId || request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.calleeId);
       }
     }
+    // Workspace: Orbit project-management workspaces (see the "Workspace"
+    // sidebar folder). Clients never see this feature at all (enforced in
+    // the sidebar and here). Anyone else can read/edit an existing
+    // workspace's content — same treatment as most other internal
+    // collections (Employees included) — but only Admin/Owner can create a
+    // brand-new workspace or delete one entirely, per the explicit ask that
+    // added a Wing to add/delete workspaces.
+    match /orbit-workspaces/{workspaceId} {
+      allow read: if signedIn() && myRole() != 'CLIENT';
+      allow create: if signedIn() && isAdminOrOwner();
+      allow update: if signedIn() && myRole() != 'CLIENT';
+      allow delete: if isAdminOrOwner();
+    }
   }
 }

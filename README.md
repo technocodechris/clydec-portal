@@ -32,6 +32,7 @@ firebase login
 firebase init firestore storage   # select the project you just made
 firebase deploy --only firestore:rules,storage:rules
 ```
+*(This repo doesn't include a `storage.rules` file — this project actually runs on Option B/Google Drive below, not Firebase Storage. If you're setting up Option A for real, `firebase init storage` generates a default `storage.rules` for you as part of that command.)*
 
 ### 3. Create your first owner account
 Firestore starts empty — bootstrap yourself manually, once:
@@ -175,4 +176,52 @@ signed-in user; folder-level filtering happens in the UI. Actual file
 path, the `/api/drive-*` role checks for the Drive path). If clients
 seeing other projects' filenames is a concern, say so and I'll tighten
 `firestore.rules` to check folder membership per document.
+
+## Workspace (Orbit project-management workspaces)
+The "Workspace" sidebar folder holds one or more **Orbit Workspaces** —
+a full ClickUp/Asana-style project-management tool, merged in from a
+separate project (`src/orbit/OrbitApp.jsx`). Each workspace is grouped
+under one of the four Wings (same set Storage uses) and lives as its
+own document in the `orbit-workspaces` Firestore collection, with its
+entire content (Spaces/Lists/Tasks/Goals/Dashboards/Whiteboards/Docs/
+Forms/Chat/Automations) stored as one JSON blob in that doc's `data`
+field. Creating or deleting a workspace is Admin/Owner-only; anyone who
+can see the Workspace tab (everyone except Client) can open and work
+inside any existing one.
+
+- **Requires Tailwind CSS** (`tailwind.config.js`/`postcss.config.js`,
+  new this sync) — Orbit's UI is written in Tailwind utility classes,
+  unlike the rest of this portal (100% inline styles). Tailwind's
+  `content` glob is scoped to `src/orbit/**` and `preflight` is
+  disabled, so it can't affect the rest of the app's styling. Run
+  `npm install` again after pulling this sync to pick up the new
+  `devDependencies` (`tailwindcss`, `postcss`, `autoprefixer`).
+- **Team members are not managed per-workspace.** Orbit's own
+  add/rename/remove-member UI is disabled — the member list Orbit sees
+  is read live from this portal's real `users` (everyone except
+  Client), via `membersForOrbit()` in `App.jsx`. Manage who's on the
+  team in People Management, same as everywhere else in the portal.
+- **AI assist is disabled.** Orbit's "AI draft description" / "AI
+  suggest subtasks" buttons originally called `api.anthropic.com`
+  directly from the browser — that only works inside the Claude.ai
+  artifact sandbox (which auto-injects the connection with no exposed
+  key). A real deployment needs its own serverless route holding a
+  server-side `ANTHROPIC_API_KEY` (same pattern as `/api/drive-*.js`
+  for Google Drive) — not built yet. Clicking either button shows a
+  clear in-app error rather than silently failing or leaking a key.
+- **One JSON blob per workspace, not normalized collections.** Simple
+  to build and matches how the original Orbit artifact already shaped
+  its state, but means a whole workspace is read/written as one
+  document — Firestore's 1MiB-per-document limit is a real ceiling for
+  a single very large, very long-lived workspace (many tasks, big
+  whiteboards, big docs). Not a problem at normal usage levels; worth
+  splitting into subcollections (e.g. `orbit-workspaces/{id}/tasks`) if
+  a workspace ever grows large enough to approach it.
+- **Two people editing the same workspace at the same time** last-write-
+  wins on the whole `data` blob (autosaved 1.2s after the last change,
+  same debounce idea used elsewhere in this app for free-typed fields) —
+  there's no field-level merge. Fine for how a small team is likely to
+  use one Workspace, but flagged honestly rather than silently assumed
+  away.
+
 
