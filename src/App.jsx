@@ -7,7 +7,7 @@ import {
   Loader2, Building2, KeyRound, Image as ImageIcon, File as FileIcon,
   ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
   Database, Smile, CalendarCheck, Timer, Network, LayoutGrid, Pencil,
-  MessageSquare, Send, Phone, PhoneOff, Video, VideoOff, Mic, MicOff, UsersRound, PhoneMissed, PhoneIncoming,
+  MessageSquare, Send, Phone, PhoneOff, Video, VideoOff, Mic, MicOff, UsersRound, PhoneMissed, PhoneIncoming, Menu,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------- */
@@ -38,6 +38,65 @@ const CSS = `
   .cly-toggle.on::after { transform: translateX(16px); }
   .cly-toggle.off { background:#DCD8CC; }
   .cly-toggle:disabled { cursor:not-allowed; opacity:0.5; }
+
+  /* ---- Responsive: desktop / tablet / mobile ----
+     Breakpoint: 1024px. At/above it, the sidebar sits inline like a normal
+     desktop app. Below it (tablet and phone alike — tablets in portrait are
+     narrower than 1024px), the sidebar becomes an off-canvas drawer opened
+     by a hamburger button in the topbar, with a tap-to-close backdrop. */
+  .cly-sidebar { width: 216px; flex-shrink: 0; }
+  .cly-hamburger { display: none; }
+  .cly-mobile-only { display: none; }
+  .cly-sidebar-backdrop { display: none; }
+  @media (max-width: 1023px) {
+    .cly-mobile-only { display: inline-flex !important; }
+  }
+  @media (max-width: 1023px) {
+    .cly-sidebar {
+      position: fixed; top: 0; left: 0; bottom: 0; z-index: 50;
+      transform: translateX(-100%); transition: transform .2s ease;
+      box-shadow: 2px 0 24px rgba(0,0,0,0.25);
+    }
+    .cly-sidebar.cly-open { transform: translateX(0); }
+    .cly-hamburger { display: inline-flex !important; }
+    .cly-sidebar-backdrop.cly-open {
+      display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 45;
+    }
+    /* Chat: only one pane (the contacts/chat list, or the open
+       conversation) shows at a time instead of a permanent side-by-side
+       split — same idea as any mobile chat app. Whichever pane doesn't
+       apply right now gets .cly-hide-mobile from the component based on
+       whether a conversation is currently open. */
+    .cly-hide-mobile { display: none !important; }
+    .cly-chat-list, .cly-chat-view { width: 100% !important; }
+  }
+  /* Two/three-column forms collapse to fewer columns as the viewport
+     narrows — used for People/Project/Task/Leave-request forms and the
+     Time Tracking hours grid instead of a fixed inline gridTemplateColumns. */
+  .cly-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .cly-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  @media (max-width: 860px) { .cly-grid-3 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 600px) { .cly-grid-2, .cly-grid-3 { grid-template-columns: 1fr; } }
+  /* Wraps anything too wide to reflow on a phone (data tables, the Kanban
+     board, the org chart canvas) so it scrolls horizontally in place
+     rather than overflowing the page or crushing every column unreadably
+     thin — the standard, expected pattern for dense data on small screens. */
+  .cly-scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  @media (max-width: 640px) {
+    .cly-page-pad { padding: 16px !important; }
+    .cly-topbar { padding: 14px 16px !important; }
+    .cly-topbar-title { font-size: 17px !important; }
+    .cly-modal-card { width: 92vw !important; max-width: 92vw !important; }
+  }
+  /* Login screen: side-by-side brand panel + form on desktop, stacked on
+     phones/narrow tablets — the two panels use flex-basis percentages that
+     just shrink rather than wrap on their own, so this needs an explicit
+     direction switch rather than relying on flex-wrap. */
+  @media (max-width: 760px) {
+    .cly-login-shell { flex-direction: column !important; }
+    .cly-login-left { flex: none !important; padding: 28px 24px !important; }
+    .cly-login-right { flex: none !important; padding: 32px 24px !important; }
+  }
 `;
 
 const COLORS = {
@@ -299,9 +358,9 @@ function LoginScreen({ onLogin, loading, error, onForgot }) {
   const [showPw, setShowPw] = useState(false);
 
   return (
-    <div className="cly" style={{ display: "flex", minHeight: "100vh" }}>
+    <div className="cly cly-login-shell" style={{ display: "flex", minHeight: "100vh" }}>
       {/* left */}
-      <div className="cly-scan" style={{ flex: "1 1 46%", background: `linear-gradient(160deg, ${COLORS.ink} 0%, #0E2A33 100%)`, color: "#fff", padding: "40px 44px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+      <div className="cly-scan cly-login-left" style={{ flex: "1 1 46%", background: `linear-gradient(160deg, ${COLORS.ink} 0%, #0E2A33 100%)`, color: "#fff", padding: "40px 44px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ width: 26, height: 26, borderRadius: 6, background: `linear-gradient(135deg, ${COLORS.creative}, ${COLORS.data})` }} />
           <span className="cly-serif" style={{ fontSize: 16, letterSpacing: 1 }}><b>CLYDEC</b> STUDIO</span>
@@ -327,7 +386,7 @@ function LoginScreen({ onLogin, loading, error, onForgot }) {
       </div>
 
       {/* right */}
-      <div style={{ flex: "1 1 54%", background: COLORS.cream, padding: "44px 56px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+      <div className="cly-login-right" style={{ flex: "1 1 54%", background: COLORS.cream, padding: "44px 56px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
         <div style={{ maxWidth: 360, width: "100%", margin: "0 auto" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: COLORS.mute, marginBottom: 22 }}>
             <Lock size={13} /> Encrypted session
@@ -378,8 +437,11 @@ function LoginScreen({ onLogin, loading, error, onForgot }) {
 /* ---------------------------------------------------------------- */
 /* App shell: sidebar + topbar                                        */
 /* ---------------------------------------------------------------- */
-function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadMessageCount }) {
+function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadMessageCount, open, onClose }) {
   const meta = ROLE_META[user.role];
+  // Closes the mobile drawer after navigating, since it's an overlay there
+  // — on desktop (>=1024px) this is a no-op, the sidebar is always visible.
+  function go(key) { setPage(key); onClose && onClose(); }
   const storageItems = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, show: true },
     { key: "files", label: "Files", icon: FolderOpen, show: true },
@@ -411,10 +473,15 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
   const showTimeAttendanceGroup = timeAttendanceItems.some(i => i.show);
   const showCommunicationGroup = communicationItems.some(i => i.show);
   return (
-    <div className="cly-scan" style={{ width: 216, flexShrink: 0, background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 8px 22px" }}>
-        <div style={{ width: 22, height: 22, borderRadius: 5, background: `linear-gradient(135deg, ${COLORS.creative}, ${COLORS.data})` }} />
-        <span className="cly-serif" style={{ fontSize: 13.5, letterSpacing: 0.5 }}><b>CLYDEC</b> STUDIO</span>
+    <div className={`cly-scan cly-sidebar${open ? " cly-open" : ""}`} style={{ background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px", overflowY: "auto" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "0 8px 22px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 22, height: 22, borderRadius: 5, background: `linear-gradient(135deg, ${COLORS.creative}, ${COLORS.data})` }} />
+          <span className="cly-serif" style={{ fontSize: 13.5, letterSpacing: 0.5 }}><b>CLYDEC</b> STUDIO</span>
+        </div>
+        <button onClick={onClose} className="cly-hamburger cly-btn" style={{ background: "none", border: "none", color: "#fff", opacity: 0.8, padding: 4 }} aria-label="Close menu">
+          <X size={18} />
+        </button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <button onClick={() => setStorageOpen(o => !o)} className="cly-navitem cly-btn" style={{
@@ -428,7 +495,7 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
         {storageOpen && (
           <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
             {storageItems.filter(i => i.show).map(i => (
-              <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+              <button key={i.key} onClick={() => go(i.key)} className="cly-navitem cly-btn" style={{
                 display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
                 color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
               }}>
@@ -451,7 +518,7 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
             {portalOpen && (
               <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
                 {portalItems.filter(i => i.show).map(i => (
-                  <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+                  <button key={i.key} onClick={() => go(i.key)} className="cly-navitem cly-btn" style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
                     color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
                   }}>
@@ -477,7 +544,7 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
             {peopleOpen && (
               <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
                 {peopleItems.filter(i => i.show).map(i => (
-                  <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+                  <button key={i.key} onClick={() => go(i.key)} className="cly-navitem cly-btn" style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
                     color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
                   }}>
@@ -502,7 +569,7 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
             {timeAttendanceOpen && (
               <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
                 {timeAttendanceItems.filter(i => i.show).map(i => (
-                  <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+                  <button key={i.key} onClick={() => go(i.key)} className="cly-navitem cly-btn" style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
                     color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
                   }}>
@@ -528,7 +595,7 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
             {communicationOpen && (
               <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
                 {communicationItems.filter(i => i.show).map(i => (
-                  <button key={i.key} onClick={() => setPage(i.key)} className="cly-navitem cly-btn" style={{
+                  <button key={i.key} onClick={() => go(i.key)} className="cly-navitem cly-btn" style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
                     color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
                   }}>
@@ -558,12 +625,17 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
   );
 }
 
-function Topbar({ user, onLogout, title, subtitle }) {
+function Topbar({ user, onLogout, onMenuClick, title, subtitle }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 28px", borderBottom: `1px solid ${COLORS.line}` }}>
-      <div>
-        <h2 className="cly-serif" style={{ fontSize: 21, margin: 0 }}>{title}</h2>
-        {subtitle && <p style={{ fontSize: 12.5, color: COLORS.mute, margin: "3px 0 0" }}>{subtitle}</p>}
+    <div className="cly-topbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "18px 28px", borderBottom: `1px solid ${COLORS.line}`, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        <button onClick={onMenuClick} className="cly-hamburger cly-btn" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 8, color: COLORS.text, padding: 7, flexShrink: 0 }} aria-label="Open menu">
+          <Menu size={17} />
+        </button>
+        <div style={{ minWidth: 0 }}>
+          <h2 className="cly-serif cly-topbar-title" style={{ fontSize: 21, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</h2>
+          {subtitle && <p style={{ fontSize: 12.5, color: COLORS.mute, margin: "3px 0 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{subtitle}</p>}
+        </div>
       </div>
       <button onClick={onLogout} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, padding: "7px 12px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: COLORS.text }}>
         <LogOut size={13} /> Log out
@@ -597,13 +669,13 @@ function DashboardPage({ user, users, files, requests, folders, people, syncAllV
   ].filter(Boolean);
 
   return (
-    <div className="cly-fade-in" style={{ padding: 28 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
       <div style={{ background: `linear-gradient(120deg, ${COLORS.ink} 0%, #12262C 100%)`, borderRadius: 14, padding: "26px 28px", color: "#fff", marginBottom: 22 }}>
         <Badge color={meta.color} soft="rgba(255,255,255,0.12)" text="#fff">{meta.label}</Badge>
         <h3 className="cly-serif" style={{ fontSize: 22, margin: "10px 0 4px" }}>Welcome back, {user.name.split(" ")[0]}.</h3>
         <p style={{ fontSize: 13, color: "#C7CCD1", margin: 0, maxWidth: 460 }}>{meta.desc}.</p>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${stats.length}, 1fr)`, gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14 }}>
         {stats.map((s, i) => (
           <div key={i} style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: "16px 18px" }}>
             <div style={{ fontSize: 12, color: COLORS.mute, marginBottom: 6 }}>{s.label}</div>
@@ -831,7 +903,7 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
   }
 
   return (
-    <div className="cly-fade-in" style={{ padding: 28, display: "flex", gap: 22 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28, display: "flex", gap: 22 }}>
       <div style={{ width: 200, flexShrink: 0 }}>
         <div style={{ fontSize: 11.5, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Folders</div>
         {visibleFolders.map(f => (
@@ -1005,7 +1077,7 @@ function RequestsPage({ user, requests, resolveRequest }) {
     denied: { soft: COLORS.dangerSoft, text: COLORS.danger, icon: XCircle },
   };
   return (
-    <div className="cly-fade-in" style={{ padding: 28 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
       <p style={{ fontSize: 13, color: COLORS.mute, maxWidth: 560, marginTop: 0 }}>
         {user.role === "OWNER" ? "New users and access changes requested by admins wait here until you approve them." : "Track the status of the access changes you've requested from the owner."}
       </p>
@@ -1172,7 +1244,7 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
   const linkableUsers = users.filter(u => u.role !== "CLIENT" && (!personForUser(people, u.id) || personForUser(people, u.id).id === editingId));
 
   return (
-    <div className="cly-fade-in" style={{ padding: 28 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 10, flex: 1, minWidth: 280 }}>
           <div style={{ position: "relative", flex: 1, maxWidth: 340 }}>
@@ -1259,7 +1331,7 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
 
       {modalOpen && (
         <Modal title={editingId ? "Edit person" : "Add person"} onClose={closeModal} width={560}>
-          <form onSubmit={handleSubmit} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <form onSubmit={handleSubmit} className="cly-grid-2">
             <div style={{ gridColumn: "1 / -1" }}>
               <Field label="Full name"><input value={form.name} onChange={e => updateField("name", e.target.value)} placeholder="Juan Dela Cruz" style={inputStyle} /></Field>
               {errors.name && <div style={errorTextStyle}>{errors.name}</div>}
@@ -1548,7 +1620,7 @@ function OrgChartPage({ user, people, updatePerson }) {
     : [];
 
   return (
-    <div className="cly-fade-in" style={{ padding: 28 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
       {people.length === 0 ? (
         <div style={{ textAlign: "center", padding: "60px 20px", color: COLORS.mute }}>
           <Network size={28} style={{ opacity: 0.4, marginBottom: 10 }} />
@@ -1947,7 +2019,7 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
   const activeNow = isOwner ? timeEntries.filter(e => !e.clockOut).sort((a, b) => a.clockIn - b.clockIn) : [];
 
   return (
-    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 24 }}>
         <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "baseline", gap: 6, marginBottom: 14 }}>
           <span style={{ fontSize: 12, color: COLORS.mute }}>
@@ -2143,7 +2215,7 @@ function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
     <div style={{ background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", gap: 18 }}>
       <div>
         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Hours</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, maxWidth: 460 }}>
+        <div className="cly-grid-2" style={{ maxWidth: 460 }}>
           <label style={{ fontSize: 12, fontWeight: 600 }}>Work start time
             <input type="time" className="cly-input" value={rules.workStartTime} onChange={e => patch("workStartTime", e.target.value)} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
           </label>
@@ -2236,7 +2308,7 @@ function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
         {selectedDates.length > 0 && (
           <div style={{ marginTop: 12, background: "#fff", border: `2px solid ${COLORS.data}`, borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 10, maxWidth: 460 }}>
             <div style={{ fontSize: 12, fontWeight: 700 }}>{selectedDates.length} date{selectedDates.length === 1 ? "" : "s"} selected — {selectedDates.length === 1 ? formatPeopleDate(selectedDates[0]) : `${formatPeopleDate([...selectedDates].sort()[0])} and others`}</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <div className="cly-grid-3">
               <label style={{ fontSize: 11.5, fontWeight: 600 }}>Day type
                 <select value={panelDayType} onChange={e => setPanelDayType(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }}>
                   <option value="default">Default (follow weekly pattern)</option>
@@ -2366,7 +2438,7 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
     .sort((a, b) => b.clockIn - a.clockIn);
 
   return (
-    <div className="cly-fade-in" style={{ padding: 28 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
       {isOwner && (
         <div style={{ marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
           <select value={filterGroup} onChange={e => { setFilterGroup(e.target.value); setFilterUser("all"); }} style={{ ...inputStyle, width: "auto", minWidth: 160 }}>
@@ -2537,7 +2609,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
   const dayEntries = correctingDate ? monthEntries.filter(e => e.date === correctingDate).sort((a, b) => a.clockIn - b.clockIn) : [];
 
   return (
-    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 16 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         {isOwner ? (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -2947,14 +3019,14 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
   }
 
   return (
-    <div className="cly-fade-in" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 24 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 24 }}>
       {!isOwner && (
         <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>New leave request</div>
           <div style={{ fontSize: 12.5, color: COLORS.mute, marginBottom: 14 }}>
             {isAdmin ? "Goes straight to the Owner for approval." : "Goes to an Admin first, then the Owner for final approval."}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, maxWidth: 560 }}>
+          <div className="cly-grid-3" style={{ maxWidth: 560 }}>
             <label style={{ fontSize: 12, fontWeight: 600 }}>Type
               <select value={form.type} onChange={e => patch("type", e.target.value)} style={{ ...inputStyle, marginTop: 5 }}>
                 <option value="Sick Leave">Sick Leave</option>
@@ -3407,7 +3479,7 @@ function AdminSettings(props) {
   ];
   const [tab, setTab] = useState("auth");
   return (
-    <div className="cly-fade-in" style={{ padding: 28 }}>
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, borderBottom: `1px solid ${COLORS.line}` }}>
         {tabs.map(t => (
           <button key={t.key} onClick={() => setTab(t.key)} className="cly-btn" style={{
@@ -3615,7 +3687,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
 
   return (
     <div className="cly-fade-in" style={{ display: "flex", height: "calc(100vh - 130px)", background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden", margin: 4 }}>
-      <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column" }}>
+      <div className={`cly-chat-list${activeConversation ? " cly-hide-mobile" : ""}`} style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column" }}>
         <div style={{ padding: 14, borderBottom: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ position: "relative" }}>
             <button onClick={() => setStatusOpen(o => !o)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "7px 10px", textAlign: "left" }}>
@@ -3718,12 +3790,15 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
         </div>
       </div>
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div className={`cly-chat-view${!activeConversation ? " cly-hide-mobile" : ""}`} style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {!activeConversation ? (
           <EmptyState icon={MessageSquare} title="Pick a chat" body="Select someone from People, or an existing chat, to start messaging." />
         ) : (
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: `1px solid ${COLORS.line}`, position: "relative" }}>
+              <button onClick={() => setActiveConversationId(null)} className="cly-mobile-only cly-btn" style={{ background: "none", border: "none", color: COLORS.text, padding: 4, flexShrink: 0 }} aria-label="Back to chats">
+                <ChevronRight size={18} style={{ transform: "rotate(180deg)" }} />
+              </button>
               <div style={{ width: 34, height: 34, borderRadius: "50%", background: peopleColorFor(conversationLabel(activeConversation, user)), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
                 {activeConversation.type === "group" ? <UsersRound size={15} /> : peopleInitials(conversationLabel(activeConversation, user))}
               </div>
@@ -4132,6 +4207,7 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [page, setPage] = useState("dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile/tablet drawer only — always visually open on desktop via CSS
   const [toast, setToast] = useState(null);
 
   const [users, setUsers] = useState([]);
@@ -5023,12 +5099,6 @@ export default function App() {
       notify("Couldn't send that file — check your connection and try again.", "error");
     }
   }
-  // Deletes an entire chat (all its messages, then the conversation doc
-  // itself) for every participant — not just a "hide from my list." Any
-  // current participant can do this. Only supports the currently-open
-  // conversation, since that's the one whose messages are already loaded
-  // locally; there's no reason to fetch another conversation's full
-  // history just to delete it.
   // "Delete chat" only ever removes it from *your own* list — it never
   // touches the other participant(s)' messages or their copy of the
   // conversation. A new message to a hidden conversation un-hides it again
@@ -5252,12 +5322,13 @@ export default function App() {
         <LoginScreen onLogin={handleLogin} loading={loginLoading} error={loginError} onForgot={handleForgot} />
       ) : (
         <div style={{ display: "flex", minHeight: "100vh" }}>
-          <Sidebar user={user} page={page} setPage={setPage} pendingCount={requests.filter(r => r.status === "pending").length} leavePendingCount={
+          <div className={`cly-sidebar-backdrop${sidebarOpen ? " cly-open" : ""}`} onClick={() => setSidebarOpen(false)} />
+          <Sidebar user={user} page={page} setPage={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} pendingCount={requests.filter(r => r.status === "pending").length} leavePendingCount={
             user.role === "OWNER" ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner").length :
             user.role === "ADMIN" ? leaveRequests.filter(r => r.status === "pending_admin" && r.userId !== user.id).length : 0
           } unreadMessageCount={conversations.filter(c => (c.lastMessageAt || 0) > (c.lastReadAt?.[user.id] || 0) && c.lastMessageBy && c.lastMessageBy !== user.name).length} />
           <div style={{ flex: 1, background: COLORS.cream, minWidth: 0, display: "flex", flexDirection: "column" }}>
-            <Topbar user={user} onLogout={() => fbLogout()} title={
+            <Topbar user={user} onLogout={() => fbLogout()} onMenuClick={() => setSidebarOpen(true)} title={
               page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" :
               page === "people-info" ? "People Information" : page === "org-chart" ? "Organizational Chart" : page === "time-tracking" ? "Time Tracking" :
               page === "time-inout" ? "Time in/Time out information" :
