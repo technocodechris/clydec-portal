@@ -77,6 +77,9 @@ function applyFilterSort(tasks, filters) {
     if (filters.assignee !== "all" && filters.assignee !== "unassigned" && !t.assigneeIds.includes(filters.assignee)) return false;
     if (filters.priority !== "all" && t.priority !== filters.priority) return false;
     if (filters.tag !== "all" && !t.tags.includes(filters.tag)) return false;
+    if (filters.due === "overdue" && !isOverdue(t.dueDate, false)) return false;
+    if (filters.due === "soon" && !isDueSoon(t.dueDate, false)) return false;
+    if (filters.due === "none" && t.dueDate) return false;
     return true;
   });
   if (filters.sort === "dueDate") out = [...out].sort((a, b) => (a.dueDate ?? Infinity) - (b.dueDate ?? Infinity));
@@ -84,6 +87,7 @@ function applyFilterSort(tasks, filters) {
   if (filters.sort === "name") out = [...out].sort((a, b) => a.name.localeCompare(b.name));
   return out;
 }
+const DEFAULT_FILTERS = { assignee: "all", priority: "all", tag: "all", due: "all", sort: "manual" };
 
 let idCounter = 1;
 const uid = (p = "id") => `${p}_${idCounter++}_${Math.random().toString(36).slice(2, 7)}`;
@@ -111,6 +115,9 @@ function makeTask(name, statusId, opts = {}) {
     dueDate: opts.dueDate || null,
     tags: opts.tags || [],
     subtasks: [],
+    checklist: [], // lightweight { id, text, done } items — distinct from full `subtasks` objects
+    attachments: [], // { id, name, type, size, dataUrl, uploadedAt }
+    recurrence: null, // { freq: "daily" | "weekly" | "monthly", interval } | null — see setTaskStatus()
     comments: [],
     blockedBy: [],
     customFieldValues: {},
@@ -132,6 +139,7 @@ function makeList(name, opts = {}) {
     isSprint: opts.isSprint || false,
     sprintStart: opts.isSprint ? now : null,
     sprintEnd: opts.isSprint ? now + 14 * day : null,
+    savedViews: [], // { id, name, filters } — a named, reusable filter+sort combo (see saveView())
     tasks: [],
   };
 }
@@ -228,12 +236,23 @@ function isOverdue(ts, done) {
   if (!ts || done) return false;
   return ts < new Date().setHours(0, 0, 0, 0);
 }
+// "Due soon" = due within the next 24h and not already overdue/done — used by the
+// due_soon automation trigger, the ListView/BoardView badge, and My Tasks.
+function isDueSoon(ts, done) {
+  if (!ts || done) return false;
+  const now = Date.now();
+  return ts >= now && ts <= now + 24 * 60 * 60 * 1000;
+}
 
 // ---------- automation engine (Zapier/Make/n8n-style rules) ----------
 const AUTOMATION_TRIGGERS = {
   task_created: "When a task is created",
   status_changed: "When a task's status changes",
   priority_changed: "When a task's priority changes",
+  assignee_changed: "When a task's assignee changes",
+  custom_field_changed: "When a custom field changes",
+  comment_added: "When a comment is added",
+  due_soon: "When a task is due soon (runs on manual check)",
   due_passed: "When a task is overdue (runs on manual check)",
 };
 const CONDITION_FIELDS = {
@@ -242,6 +261,39 @@ const CONDITION_FIELDS = {
   statusId: "Status",
   tag: "Tag",
 };
+// Pre-built, one-click automation templates — a small starting gallery
+// rather than an exhaustive library, in the spirit of Zapier's template
+// gallery. `actions` reference a status by *name* (resolved against the
+// target list's actual statuses when applied — see "Use template" below)
+// since a template has to work on any list, whose statuses aren't known
+// ahead of time.
+const AUTOMATION_TEMPLATES = [
+  {
+    name: "Notify chat when a task is completed",
+    description: "Posts a message to this Space's chat whenever a task's status becomes its final one.",
+    build: (list) => ({ trigger: { type: "status_changed", statusId: list.statuses.find((s) => s.isFinal)?.id || "" }, logic: "AND", conditions: [], actions: [{ type: "post_chat", value: "A task was just completed 🎉" }] }),
+  },
+  {
+    name: "Tag overdue tasks",
+    description: "Adds an 'Overdue' tag whenever the due-date check finds a task past its due date.",
+    build: () => ({ trigger: { type: "due_passed" }, logic: "AND", conditions: [], actions: [{ type: "add_tag", value: "Overdue" }] }),
+  },
+  {
+    name: "Escalate urgent tasks",
+    description: "When priority changes to Urgent, posts a chat alert.",
+    build: () => ({ trigger: { type: "priority_changed" }, logic: "AND", conditions: [{ field: "priority", op: "equals", value: "urgent" }], actions: [{ type: "post_chat", value: "🚨 An urgent task needs attention" }] }),
+  },
+  {
+    name: "Remind before due",
+    description: "When a task is due within 24 hours (due-date check), adds a comment as a reminder.",
+    build: () => ({ trigger: { type: "due_soon" }, logic: "AND", conditions: [], actions: [{ type: "add_comment", value: "⏰ This task is due within 24 hours." }] }),
+  },
+  {
+    name: "New task created → notify",
+    description: "Posts to chat every time a new task lands in this list.",
+    build: () => ({ trigger: { type: "task_created" }, logic: "AND", conditions: [], actions: [{ type: "post_chat", value: "A new task was added." }] }),
+  },
+];
 function taskFieldValue(task, field) {
   if (field === "tag") return task.tags || [];
   if (field === "assignee") return task.assigneeIds || [];
@@ -278,10 +330,12 @@ function NavButton({ active, onClick, icon, label, badge }) {
   );
 }
 
-function FilterSortBar({ tasks, filters, setFilters }) {
+function FilterSortBar({ tasks, filters, setFilters, savedViews, onSaveView, onDeleteView }) {
   const members = useContext(MembersContext);
   const allTags = [...new Set(tasks.flatMap((t) => t.tags))];
-  const active = filters.assignee !== "all" || filters.priority !== "all" || filters.tag !== "all";
+  const active = filters.assignee !== "all" || filters.priority !== "all" || filters.tag !== "all" || filters.due !== "all";
+  const [savingView, setSavingView] = useState(false);
+  const [viewName, setViewName] = useState("");
   return (
     <div className="flex items-center gap-2 mb-2 text-xs flex-wrap">
       <select value={filters.assignee} onChange={(e) => setFilters((f) => ({ ...f, assignee: e.target.value }))} className="border border-slate-200 rounded px-2 py-1 bg-white">
@@ -297,6 +351,12 @@ function FilterSortBar({ tasks, filters, setFilters }) {
         <option value="all">Any tag</option>
         {allTags.map((t) => <option key={t} value={t}>{t}</option>)}
       </select>
+      <select value={filters.due || "all"} onChange={(e) => setFilters((f) => ({ ...f, due: e.target.value }))} className="border border-slate-200 rounded px-2 py-1 bg-white">
+        <option value="all">Any due date</option>
+        <option value="overdue">Overdue</option>
+        <option value="soon">Due soon (24h)</option>
+        <option value="none">No due date</option>
+      </select>
       <div className="w-px h-4 bg-slate-200" />
       <select value={filters.sort} onChange={(e) => setFilters((f) => ({ ...f, sort: e.target.value }))} className="border border-slate-200 rounded px-2 py-1 bg-white">
         <option value="manual">Sort: manual</option>
@@ -305,9 +365,26 @@ function FilterSortBar({ tasks, filters, setFilters }) {
         <option value="name">Sort: name</option>
       </select>
       {active && (
-        <button onClick={() => setFilters((f) => ({ assignee: "all", priority: "all", tag: "all", sort: f.sort }))} className="text-slate-400 hover:text-rose-500 flex items-center gap-0.5">
+        <button onClick={() => setFilters((f) => ({ ...DEFAULT_FILTERS, sort: f.sort }))} className="text-slate-400 hover:text-rose-500 flex items-center gap-0.5">
           <X className="w-3 h-3" /> Clear filters
         </button>
+      )}
+      <div className="w-px h-4 bg-slate-200" />
+      {(savedViews || []).map((v) => (
+        <div key={v.id} className="flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded px-1.5 py-1">
+          <button onClick={() => setFilters(v.filters)} className="font-medium">{v.name}</button>
+          <button onClick={() => onDeleteView(v.id)} className="text-indigo-300 hover:text-rose-500"><X className="w-2.5 h-2.5" /></button>
+        </div>
+      ))}
+      {savingView ? (
+        <input
+          autoFocus value={viewName} onChange={(e) => setViewName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && viewName.trim()) { onSaveView(viewName, filters); setViewName(""); setSavingView(false); } if (e.key === "Escape") setSavingView(false); }}
+          onBlur={() => setSavingView(false)}
+          placeholder="View name" className="border border-slate-200 rounded px-1.5 py-1 w-24"
+        />
+      ) : (
+        active && <button onClick={() => setSavingView(true)} className="text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5"><Plus className="w-3 h-3" /> Save view</button>
       )}
     </div>
   );
@@ -345,6 +422,7 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
   const [dashboards, setDashboards] = useState(() => initialData?.dashboards || []);
   const [whiteboards, setWhiteboards] = useState(() => initialData?.whiteboards || []);
   const [docs, setDocs] = useState(() => initialData?.docs || []);
+  const [docFolders, setDocFolders] = useState(() => initialData?.docFolders || []);
   const [forms, setForms] = useState(() => initialData?.forms || []);
   const [chatMessages, setChatMessages] = useState(() => initialData?.chatMessages || {});
   const [runningTimer, setRunningTimer] = useState(null); // { listId, taskId, startedAt }
@@ -368,10 +446,10 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
     if (firstRenderRef.current) { firstRenderRef.current = false; return; } // don't re-write what we just loaded
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      onDataChange({ spaces, activity, goals, dashboards, whiteboards, docs, forms, chatMessages });
+      onDataChange({ spaces, activity, goals, dashboards, whiteboards, docs, docFolders, forms, chatMessages });
     }, 1200);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
-  }, [spaces, activity, goals, dashboards, whiteboards, docs, forms, chatMessages, onDataChange]);
+  }, [spaces, activity, goals, dashboards, whiteboards, docs, docFolders, forms, chatMessages, onDataChange]);
 
   function logActivity(entry) {
     setActivity((prev) => [{ id: uid("act"), ts: Date.now(), ...entry }, ...prev].slice(0, 100));
@@ -407,6 +485,34 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
     }));
   }
 
+  // ---- Bulk actions (multi-select in ListView) ----
+  function bulkSetStatus(listId, taskIds, statusId) {
+    taskIds.forEach((taskId) => setTaskStatus(listId, taskId, statusId));
+  }
+  function bulkSetPriority(listId, taskIds, priority) {
+    updateList(listId, (l) => ({ ...l, tasks: l.tasks.map((t) => (taskIds.includes(t.id) ? { ...t, priority } : t)) }));
+  }
+  function bulkSetAssignee(listId, taskIds, assigneeId) {
+    updateList(listId, (l) => ({ ...l, tasks: l.tasks.map((t) => (taskIds.includes(t.id) ? { ...t, assigneeIds: assigneeId ? [assigneeId] : [] } : t)) }));
+  }
+  function bulkAddTag(listId, taskIds, tag) {
+    if (!tag.trim()) return;
+    updateList(listId, (l) => ({ ...l, tasks: l.tasks.map((t) => (taskIds.includes(t.id) && !t.tags.includes(tag) ? { ...t, tags: [...t.tags, tag.trim()] } : t)) }));
+  }
+  function bulkDeleteTasks(listId, taskIds) {
+    updateList(listId, (l) => ({ ...l, tasks: l.tasks.filter((t) => !taskIds.includes(t.id)) }));
+    logActivity({ type: "info", text: `Deleted ${taskIds.length} task${taskIds.length === 1 ? "" : "s"} in bulk`, listId });
+  }
+
+  // ---- Saved views (named filter+sort combos, per list) ----
+  function saveView(listId, name, filters) {
+    if (!name.trim()) return;
+    updateList(listId, (l) => ({ ...l, savedViews: [...(l.savedViews || []), { id: uid("view"), name: name.trim(), filters }] }));
+  }
+  function deleteView(listId, viewId) {
+    updateList(listId, (l) => ({ ...l, savedViews: (l.savedViews || []).filter((v) => v.id !== viewId) }));
+  }
+
   function addTask(listId, statusId, name) {
     if (!name.trim()) return;
     const task = makeTask(name.trim(), statusId);
@@ -422,8 +528,32 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
     updateTask(listId, taskId, { statusId });
     if (task && newStatus && newStatus.isFinal) {
       logActivity({ type: "completed", text: `Completed "${task.name}"`, listId, taskId });
+      if (task.recurrence) createNextRecurrence(listId, list, task);
     }
     if (task) fireAutomations(listId, { ...task, statusId }, "status_changed", { toStatusId: statusId });
+  }
+
+  // Called when a task with a `recurrence` is marked done — spins up a fresh
+  // copy in the same list, first non-final status, due date advanced by one
+  // interval (from the *original* due date if it had one, otherwise from
+  // today) — same core idea ClickUp/Asana's "repeat" does.
+  function createNextRecurrence(listId, list, completedTask) {
+    const day = 24 * 60 * 60 * 1000;
+    const advance = { daily: day, weekly: 7 * day, monthly: 30 * day }[completedTask.recurrence.freq] || day;
+    const base = completedTask.dueDate || Date.now();
+    const startStatus = list.statuses.find((s) => !s.isFinal)?.id || list.statuses[0]?.id;
+    const next = {
+      ...makeTask(completedTask.name, startStatus, {
+        priority: completedTask.priority, assigneeIds: completedTask.assigneeIds, tags: completedTask.tags,
+        dueDate: base + advance,
+      }),
+      description: completedTask.description,
+      recurrence: completedTask.recurrence,
+      checklist: (completedTask.checklist || []).map((c) => ({ ...c, id: uid("chk"), done: false })),
+    };
+    updateList(listId, (l) => ({ ...l, tasks: [...l.tasks, next] }));
+    logActivity({ type: "created", text: `Created "${next.name}" (repeats ${completedTask.recurrence.freq})`, listId, taskId: next.id });
+    fireAutomations(listId, next, "task_created");
   }
 
   function addComment(listId, taskId, text) {
@@ -431,6 +561,7 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
     const task = allLists.find((l) => l.id === listId)?.tasks.find((t) => t.id === taskId);
     updateTask(listId, taskId, (t) => ({ comments: [...t.comments, { id: uid("cm"), authorId: "m1", text: text.trim() }] }));
     logActivity({ type: "comment", text: `Commented on "${task?.name || "a task"}"`, listId, taskId });
+    if (task) fireAutomations(listId, task, "comment_added");
   }
 
   function toggleBlocker(listId, taskId, blockerId) {
@@ -545,6 +676,9 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
   }
 
   // Executes every action in a rule, in order, against one task.
+  // `a.value` for create_linked_task/move_task is a listId (from
+  // allLists); for the others it's the plain value described alongside
+  // each action's config in AutomationsEditorModal.
   function runRuleActions(listId, taskId, list, rule) {
     rule.actions.forEach((a) => {
       if (a.type === "set_status" && a.value) updateTask(listId, taskId, { statusId: a.value });
@@ -554,6 +688,31 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
       else if (a.type === "add_comment" && a.value) updateTask(listId, taskId, (t) => ({ comments: [...t.comments, { id: uid("cm"), authorId: "m1", text: a.value }] }));
       else if (a.type === "create_subtask" && a.value) updateTask(listId, taskId, (t) => ({ subtasks: [...t.subtasks, makeSubtask(a.value)] }));
       else if (a.type === "post_chat" && a.value) sendChatMessage(list.spaceId, `\u26a1 ${a.value}`);
+      else if (a.type === "create_linked_task" && a.value) {
+        const targetList = allLists.find((l) => l.id === a.value);
+        const source = list.tasks.find((t) => t.id === taskId);
+        if (targetList && source) {
+          const linked = makeTask(`Follow-up: ${source.name}`, targetList.statuses[0]?.id, { priority: source.priority });
+          updateList(targetList.id, (l) => ({ ...l, tasks: [...l.tasks, linked] }));
+          logActivity({ type: "created", text: `Automation created "${linked.name}" in "${targetList.name}"`, listId: targetList.id, taskId: linked.id });
+        }
+      }
+      else if (a.type === "move_task" && a.value) {
+        const targetList = allLists.find((l) => l.id === a.value);
+        const source = list.tasks.find((t) => t.id === taskId);
+        if (targetList && source && targetList.id !== listId) {
+          updateList(listId, (l) => ({ ...l, tasks: l.tasks.filter((t) => t.id !== taskId) }));
+          updateList(targetList.id, (l) => ({ ...l, tasks: [...l.tasks, { ...source, statusId: targetList.statuses[0]?.id }] }));
+          logActivity({ type: "info", text: `Automation moved "${source.name}" to "${targetList.name}"`, listId: targetList.id, taskId });
+        }
+      }
+      else if (a.type === "send_mock_email" && a.value) {
+        // No real email infrastructure is wired up (no SMTP/transactional-
+        // email provider configured for this app) — logged to Activity as a
+        // clearly-labeled mock, same honest-stub approach as the disabled
+        // AI assist, rather than silently pretending to send something.
+        logActivity({ type: "info", text: `[Mock email] To: ${a.value} — "${rule.name || "Untitled rule"}" would have emailed here`, listId, taskId });
+      }
       else if (a.type === "webhook" && a.value) {
         fetch(a.value, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rule: rule.name, listId, taskId, at: Date.now() }) })
           .then(() => logActivity({ type: "info", text: `Webhook sent to ${a.value}`, listId, taskId }))
@@ -572,7 +731,9 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
     });
   }
 
-  // Manual "polling" trigger: scans every task workspace-wide for overdue items.
+  // Manual "polling" trigger: scans every task workspace-wide for overdue /
+  // due-soon items. (Named runDueDateCheck for backwards compatibility with
+  // its one call site below; it now covers both due_passed and due_soon.)
   function runDueDateCheck() {
     let hits = 0;
     everyTask.forEach((t) => {
@@ -580,8 +741,9 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
       const st = list?.statuses.find((s) => s.id === t.statusId);
       const done = !!st?.isFinal;
       if (isOverdue(t.dueDate, done)) { fireAutomations(t.listId, t, "due_passed"); hits += 1; }
+      else if (isDueSoon(t.dueDate, done)) { fireAutomations(t.listId, t, "due_soon"); hits += 1; }
     });
-    logActivity({ type: "info", text: `Due-date check ran (${hits} overdue task${hits === 1 ? "" : "s"})` });
+    logActivity({ type: "info", text: `Due-date check ran (${hits} overdue/due-soon task${hits === 1 ? "" : "s"})` });
   }
 
   function startTimer(listId, taskId) {
@@ -601,8 +763,26 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
   }
 
   // ---- Goals ----
-  function addGoal(name, targetValue, unit) {
-    setGoals((prev) => [...prev, { id: uid("goal"), name, targetValue: Number(targetValue) || 100, currentValue: 0, unit, color: SPACE_COLORS[prev.length % SPACE_COLORS.length], dueDate: Date.now() + 30 * 86400000 }]);
+  // `spaceId` connects a goal to a Space (shown as a chip in GoalsView, and
+  // that Space's own page can show its goals — see SpaceHomeView usage
+  // below). `sourceListId`, if set, makes the goal's progress auto-compute
+  // from that list's task-completion percentage instead of being tracked
+  // manually — the concrete "Spaces and Goals should be connected" link.
+  function addGoal(name, targetValue, unit, spaceId, sourceListId) {
+    setGoals((prev) => [...prev, {
+      id: uid("goal"), name, targetValue: Number(targetValue) || 100, currentValue: 0, unit,
+      color: SPACE_COLORS[prev.length % SPACE_COLORS.length], dueDate: Date.now() + 30 * 86400000,
+      spaceId: spaceId || null, sourceListId: sourceListId || null,
+    }]);
+  }
+  // Reads live off `allLists` — never stored, so it can't drift out of sync
+  // with the list it's tracking.
+  function goalProgress(goal) {
+    if (!goal.sourceListId) return { value: goal.currentValue, auto: false };
+    const list = allLists.find((l) => l.id === goal.sourceListId);
+    if (!list || list.tasks.length === 0) return { value: 0, auto: true };
+    const done = list.tasks.filter((t) => list.statuses.find((s) => s.id === t.statusId)?.isFinal).length;
+    return { value: Math.round((done / list.tasks.length) * (goal.targetValue || 100)), auto: true };
   }
   function updateGoalProgress(goalId, value) {
     setGoals((prev) => prev.map((g) => g.id === goalId ? { ...g, currentValue: Math.max(0, Math.min(g.targetValue, Number(value))) } : g));
@@ -647,8 +827,14 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
   }
 
   // ---- Docs ----
-  function addDoc(name) {
-    const doc = { id: uid("doc"), name, content: "", updatedAt: Date.now() };
+  // Content is a `blocks` array — { id, type: "paragraph"|"bullet"|"image"|"video"|"file", text?, dataUrl?, name?, size? } —
+  // instead of one plain-text field, so a doc can mix paragraphs, bullet
+  // points, and embedded images/files/video links. Deliberately a flat
+  // append/edit/delete/reorder block list rather than a full rich-text
+  // editor (contentEditable + selection/formatting state) — that's a much
+  // larger, separate piece of work than this pass covers.
+  function addDoc(name, folderId = null) {
+    const doc = { id: uid("doc"), name, folderId, blocks: [], linkedSpaceId: null, linkedGoalId: null, updatedAt: Date.now() };
     setDocs((prev) => [...prev, doc]);
     return doc.id;
   }
@@ -658,10 +844,39 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
   function deleteDoc(docId) {
     setDocs((prev) => prev.filter((d) => d.id !== docId));
   }
+  function addDocFolder(name) {
+    if (!name.trim()) return;
+    setDocFolders((prev) => [...prev, { id: uid("dfold"), name: name.trim() }]);
+  }
+  function deleteDocFolder(folderId) {
+    setDocFolders((prev) => prev.filter((f) => f.id !== folderId));
+    setDocs((prev) => prev.map((d) => (d.folderId === folderId ? { ...d, folderId: null } : d)));
+  }
+  function addDocBlock(docId, type, value = "") {
+    setDocs((prev) => prev.map((d) => {
+      if (d.id !== docId) return d;
+      const block = type === "paragraph" || type === "bullet" ? { id: uid("blk"), type, text: value } : { id: uid("blk"), type, ...value };
+      return { ...d, blocks: [...d.blocks, block], updatedAt: Date.now() };
+    }));
+  }
+  function updateDocBlock(docId, blockId, patch) {
+    setDocs((prev) => prev.map((d) => d.id === docId ? { ...d, blocks: d.blocks.map((b) => b.id === blockId ? { ...b, ...patch } : b), updatedAt: Date.now() } : d));
+  }
+  function deleteDocBlock(docId, blockId) {
+    setDocs((prev) => prev.map((d) => d.id === docId ? { ...d, blocks: d.blocks.filter((b) => b.id !== blockId) } : d));
+  }
 
   // ---- Forms ----
+  // `slug` is a short, stable reference id shown as a "shareable link" in
+  // FormsView. Scoped deliberately: it's a copyable reference for a
+  // teammate who already has portal access (e.g. paste into Slack, "here's
+  // the intake form"), not a public/unauthenticated URL — building real
+  // anonymous external submission would mean opening Firestore writes to
+  // logged-out visitors, a meaningfully bigger security surface than this
+  // pass covers. Flagged in clydec-portal-history.md rather than silently
+  // assumed to be full public form hosting.
   function addForm(name, listId) {
-    const form = { id: uid("form"), name, listId, fields: [{ id: uid("ff"), label: "Task name", type: "text" }, { id: uid("ff"), label: "Details", type: "textarea" }] };
+    const form = { id: uid("form"), name, listId, slug: uid("frm").slice(0, 10), linkedGoalId: null, fields: [{ id: uid("ff"), label: "Task name", type: "text" }, { id: uid("ff"), label: "Details", type: "textarea" }] };
     setForms((prev) => [...prev, form]);
     return form.id;
   }
@@ -674,6 +889,9 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
   function deleteForm(formId) {
     setForms((prev) => prev.filter((f) => f.id !== formId));
   }
+  function setFormGoal(formId, goalId) {
+    setForms((prev) => prev.map((f) => f.id === formId ? { ...f, linkedGoalId: goalId || null } : f));
+  }
   function submitForm(form, values) {
     const nameField = form.fields.find((f) => /name/i.test(f.label));
     const title = (nameField && values[nameField.id]) || "New form submission";
@@ -684,6 +902,14 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
     task.description = detailParts.join("\n");
     updateList(list.id, (l) => ({ ...l, tasks: [...l.tasks, task] }));
     logActivity({ type: "created", text: `Form "${form.name}" created "${title}"`, listId: list.id, taskId: task.id });
+    // If this form is linked to a manually-tracked Goal (one without its own
+    // auto-tracking list), each submission nudges that Goal's progress —
+    // the concrete "Forms connected to Goals" link. A Goal that's already
+    // auto-tracked from a list doesn't need this (it moves from task
+    // completion instead, see goalProgress()).
+    if (form.linkedGoalId) {
+      setGoals((prev) => prev.map((g) => (g.id === form.linkedGoalId && !g.sourceListId ? { ...g, currentValue: g.currentValue + 1 } : g)));
+    }
   }
 
   // ---- Chat ----
@@ -852,7 +1078,7 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
               onOpen={(listId, taskId) => { setCurrentListId(listId); setRoute("list"); setSelectedTaskId(taskId); }}
             />
           ) : route === "goals" ? (
-            <GoalsView goals={goals} onAdd={addGoal} onUpdateProgress={updateGoalProgress} onDelete={deleteGoal} />
+            <GoalsView goals={goals} spaces={spaces} allLists={allLists} goalProgress={goalProgress} onAdd={addGoal} onUpdateProgress={updateGoalProgress} onDelete={deleteGoal} onOpenList={(listId) => { setCurrentListId(listId); setRoute("list"); }} />
           ) : route === "workload" ? (
             <WorkloadView everyTask={everyTask} allLists={allLists} />
           ) : route === "whiteboards" ? (
@@ -865,9 +1091,14 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
               onDeleteBoard={deleteWhiteboard}
             />
           ) : route === "docs" ? (
-            <DocsView docs={docs} onAdd={addDoc} onUpdate={updateDoc} onDelete={deleteDoc} />
+            <DocsView
+              docs={docs} docFolders={docFolders} spaces={spaces} goals={goals}
+              onAdd={addDoc} onUpdate={updateDoc} onDelete={deleteDoc}
+              onAddFolder={addDocFolder} onDeleteFolder={deleteDocFolder}
+              onAddBlock={addDocBlock} onUpdateBlock={updateDocBlock} onDeleteBlock={deleteDocBlock}
+            />
           ) : route === "forms" ? (
-            <FormsView forms={forms} allLists={allLists} onAdd={addForm} onAddField={addFormField} onDeleteField={deleteFormField} onDelete={deleteForm} onSubmitForm={submitForm} />
+            <FormsView forms={forms} allLists={allLists} goals={goals} onAdd={addForm} onAddField={addFormField} onDeleteField={deleteFormField} onDelete={deleteForm} onSubmitForm={submitForm} onSetGoal={setFormGoal} />
           ) : route === "chat" ? (
             <ChatView spaces={spaces} messages={chatMessages} onSend={sendChatMessage} />
           ) : route === "automations" ? (
@@ -889,6 +1120,13 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
                 onEditStatuses={() => setStatusEditorList(currentList)}
                 onEditFields={() => setFieldsEditorList(currentList)}
                 onEditAutomations={() => setAutomationsEditorList(currentList)}
+                onBulkSetStatus={(taskIds, statusId) => bulkSetStatus(currentList.id, taskIds, statusId)}
+                onBulkSetPriority={(taskIds, priority) => bulkSetPriority(currentList.id, taskIds, priority)}
+                onBulkSetAssignee={(taskIds, assigneeId) => bulkSetAssignee(currentList.id, taskIds, assigneeId)}
+                onBulkAddTag={(taskIds, tag) => bulkAddTag(currentList.id, taskIds, tag)}
+                onBulkDelete={(taskIds) => bulkDeleteTasks(currentList.id, taskIds)}
+                onSaveView={(name, filters) => saveView(currentList.id, name, filters)}
+                onDeleteView={(viewId) => deleteView(currentList.id, viewId)}
               />
             ) : view === "board" ? (
               <BoardView
@@ -923,11 +1161,14 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
             if (patch && Object.prototype.hasOwnProperty.call(patch, "priority")) {
               fireAutomations(currentList.id, { ...selectedTask, ...patch }, "priority_changed");
             }
+            if (patch && Object.prototype.hasOwnProperty.call(patch, "assigneeIds")) {
+              fireAutomations(currentList.id, { ...selectedTask, ...patch }, "assignee_changed");
+            }
           }}
           onStatusChange={(statusId) => setTaskStatus(currentList.id, selectedTask.id, statusId)}
           onComment={(text) => addComment(currentList.id, selectedTask.id, text)}
           onToggleBlocker={(blockerId) => toggleBlocker(currentList.id, selectedTask.id, blockerId)}
-          onSetFieldValue={(fieldId, value) => setCustomFieldValue(currentList.id, selectedTask.id, fieldId, value)}
+          onSetFieldValue={(fieldId, value) => { setCustomFieldValue(currentList.id, selectedTask.id, fieldId, value); fireAutomations(currentList.id, selectedTask, "custom_field_changed"); }}
           onDelete={() => deleteTask(currentList.id, selectedTask.id)}
           runningTimer={runningTimer}
           onStartTimer={() => startTimer(currentList.id, selectedTask.id)}
@@ -961,6 +1202,7 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
       {automationsEditorList && (
         <AutomationsEditorModal
           list={allLists.find((l) => l.id === automationsEditorList.id) || automationsEditorList}
+          allLists={allLists}
           onClose={() => setAutomationsEditorList(null)}
           onAdd={(rule) => addAutomation(automationsEditorList.id, rule)}
           onUpdate={(autoId, patch) => updateAutomation(automationsEditorList.id, autoId, patch)}
@@ -1052,11 +1294,15 @@ function ListNode({ list, active, onSelect, onDelete }) {
 }
 
 // ---------- List (table) view ----------
-function ListView({ list, onAddTask, onOpenTask, onSetStatus, onEditStatuses, onEditFields, onEditAutomations }) {
+function ListView({ list, onAddTask, onOpenTask, onSetStatus, onEditStatuses, onEditFields, onEditAutomations, onBulkSetStatus, onBulkSetPriority, onBulkSetAssignee, onBulkAddTag, onBulkDelete, onSaveView, onDeleteView }) {
+  const members = useContext(MembersContext);
   const [draft, setDraft] = useState({});
-  const [filters, setFilters] = useState({ assignee: "all", priority: "all", tag: "all", sort: "manual" });
+  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const [selected, setSelected] = useState([]); // task ids
+  const [bulkTag, setBulkTag] = useState("");
   const doneCount = list.tasks.filter((t) => list.statuses.find((s) => s.id === t.statusId)?.isFinal).length;
   const filteredTasks = applyFilterSort(list.tasks, filters);
+  const toggleSelect = (id) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   return (
     <div className="p-4">
       {list.isSprint && (
@@ -1071,7 +1317,7 @@ function ListView({ list, onAddTask, onOpenTask, onSetStatus, onEditStatuses, on
         </div>
       )}
       <div className="flex justify-between items-center gap-3 mb-2 flex-wrap">
-        <FilterSortBar tasks={list.tasks} filters={filters} setFilters={setFilters} />
+        <FilterSortBar tasks={list.tasks} filters={filters} setFilters={setFilters} savedViews={list.savedViews} onSaveView={onSaveView} onDeleteView={onDeleteView} />
         <div className="flex gap-3">
           <button onClick={onEditAutomations} className="flex items-center gap-1 text-xs text-slate-500 hover:text-indigo-600">
             <Zap className="w-3.5 h-3.5" /> Automations
@@ -1084,6 +1330,31 @@ function ListView({ list, onAddTask, onOpenTask, onSetStatus, onEditStatuses, on
           </button>
         </div>
       </div>
+      {selected.length > 0 && (
+        <div className="flex items-center gap-2 mb-3 bg-indigo-600 text-white rounded-lg px-3 py-2 text-xs flex-wrap">
+          <span className="font-medium">{selected.length} selected</span>
+          <select onChange={(e) => { if (e.target.value) { onBulkSetStatus(selected, e.target.value); e.target.value = ""; } }} className="bg-indigo-500 border border-indigo-400 rounded px-1.5 py-1 text-white">
+            <option value="">Set status…</option>
+            {list.statuses.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <select onChange={(e) => { if (e.target.value) { onBulkSetPriority(selected, e.target.value); e.target.value = ""; } }} className="bg-indigo-500 border border-indigo-400 rounded px-1.5 py-1 text-white">
+            <option value="">Set priority…</option>
+            {Object.entries(PRIORITIES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+          <select onChange={(e) => { if (e.target.value) { onBulkSetAssignee(selected, e.target.value === "unassign" ? null : e.target.value); e.target.value = ""; } }} className="bg-indigo-500 border border-indigo-400 rounded px-1.5 py-1 text-white">
+            <option value="">Set assignee…</option>
+            <option value="unassign">Unassign</option>
+            {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+          <input
+            value={bulkTag} onChange={(e) => setBulkTag(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && bulkTag.trim()) { onBulkAddTag(selected, bulkTag); setBulkTag(""); } }}
+            placeholder="+ tag, Enter" className="bg-indigo-500 border border-indigo-400 rounded px-1.5 py-1 w-24 placeholder:text-indigo-200"
+          />
+          <button onClick={() => { onBulkDelete(selected); setSelected([]); }} className="flex items-center gap-1 bg-rose-500 hover:bg-rose-400 rounded px-2 py-1"><Trash2 className="w-3 h-3" /> Delete</button>
+          <button onClick={() => setSelected([])} className="ml-auto text-indigo-200 hover:text-white">Clear selection</button>
+        </div>
+      )}
       {list.statuses.map((status) => {
         const tasks = filteredTasks.filter((t) => t.statusId === status.id);
         return (
@@ -1094,7 +1365,7 @@ function ListView({ list, onAddTask, onOpenTask, onSetStatus, onEditStatuses, on
               <span className="text-xs text-slate-400">{tasks.length}</span>
             </div>
             {tasks.map((t) => (
-              <TaskRow key={t.id} task={t} statuses={list.statuses} allTasks={list.tasks} onOpen={() => onOpenTask(t.id)} onSetStatus={(sid) => onSetStatus(t.id, sid)} />
+              <TaskRow key={t.id} task={t} statuses={list.statuses} allTasks={list.tasks} onOpen={() => onOpenTask(t.id)} onSetStatus={(sid) => onSetStatus(t.id, sid)} selected={selected.includes(t.id)} onToggleSelect={() => toggleSelect(t.id)} />
             ))}
             <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-100">
               <Plus className="w-3.5 h-3.5 text-slate-300" />
@@ -1115,10 +1386,11 @@ function ListView({ list, onAddTask, onOpenTask, onSetStatus, onEditStatuses, on
   );
 }
 
-function TaskRow({ task, statuses, allTasks, onOpen, onSetStatus }) {
+function TaskRow({ task, statuses, allTasks, onOpen, onSetStatus, selected, onToggleSelect }) {
   const [menu, setMenu] = useState(false);
   const status = statuses.find((s) => s.id === task.statusId);
   const overdue = isOverdue(task.dueDate, !!status?.isFinal);
+  const dueSoon = !overdue && isDueSoon(task.dueDate, !!status?.isFinal);
   const doneCount = task.subtasks.filter((s) => s.done).length;
   const activeBlockers = (task.blockedBy || []).filter((bid) => {
     const b = allTasks?.find((x) => x.id === bid);
@@ -1126,11 +1398,15 @@ function TaskRow({ task, statuses, allTasks, onOpen, onSetStatus }) {
     return b && !bs?.isFinal;
   });
   return (
-    <div className="flex items-center gap-3 px-3 py-2 border-t border-slate-100 hover:bg-slate-50 group">
+    <div className={`flex items-center gap-3 px-3 py-2 border-t border-slate-100 hover:bg-slate-50 group ${selected ? "bg-indigo-50/60" : ""}`}>
+      <button onClick={onToggleSelect} className="shrink-0">
+        {selected ? <CheckCircle2 className="w-4 h-4 text-indigo-600" /> : <Circle className="w-4 h-4 text-slate-200 group-hover:text-slate-300" />}
+      </button>
       <PriorityFlag p={task.priority} />
       <button onClick={onOpen} className="flex-1 min-w-0 text-left truncate hover:text-indigo-700">
         {task.name}
       </button>
+      {task.recurrence && <span title={`Repeats ${task.recurrence.freq}`}><Zap className="w-3 h-3 text-violet-400" /></span>}
       {activeBlockers.length > 0 && (
         <span title={`Blocked by ${activeBlockers.length} task(s)`} className="flex items-center gap-1 text-[11px] text-amber-600">
           <AlertTriangle className="w-3 h-3" />{activeBlockers.length}
@@ -1139,14 +1415,20 @@ function TaskRow({ task, statuses, allTasks, onOpen, onSetStatus }) {
       {task.tags.map((tag) => (
         <span key={tag} className="hidden sm:inline-flex text-[10px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-600 border border-violet-100">{tag}</span>
       ))}
+      {task.checklist?.length > 0 && (
+        <span className="flex items-center gap-1 text-[11px] text-slate-400"><SquareIcon className="w-3 h-3" />{task.checklist.filter((c) => c.done).length}/{task.checklist.length}</span>
+      )}
       {task.subtasks.length > 0 && (
         <span className="flex items-center gap-1 text-[11px] text-slate-400"><CheckSquare className="w-3 h-3" />{doneCount}/{task.subtasks.length}</span>
+      )}
+      {task.attachments?.length > 0 && (
+        <span className="flex items-center gap-1 text-[11px] text-slate-400"><FileText className="w-3 h-3" />{task.attachments.length}</span>
       )}
       {task.comments.length > 0 && (
         <span className="flex items-center gap-1 text-[11px] text-slate-400"><MessageSquare className="w-3 h-3" />{task.comments.length}</span>
       )}
       {task.dueDate && (
-        <span className={`flex items-center gap-1 text-[11px] ${overdue ? "text-rose-600 font-medium" : "text-slate-400"}`}>
+        <span className={`flex items-center gap-1 text-[11px] ${overdue ? "text-rose-600 font-medium" : dueSoon ? "text-amber-600 font-medium" : "text-slate-400"}`} title={dueSoon ? "Due within 24 hours" : undefined}>
           <Calendar className="w-3 h-3" />{fmtDate(task.dueDate)}
         </span>
       )}
@@ -1239,11 +1521,49 @@ function BoardView({ list, onAddTask, onOpenTask, onMove, onEditStatuses }) {
 }
 
 // ---------- Task Drawer ----------
+// Renders comment text with "@Name" tokens (matched against real member
+// names, longest-name-first so "@Jan" doesn't shadow "@Jane") highlighted as
+// mention chips. Plain-text-in, JSX-out — no stored rich structure, so a
+// mention that's typed before that person is a workspace member just renders
+// as plain text (harmless, matches how most lightweight chat/comment mention
+// implementations degrade).
+// Shared across TaskDrawer's "AI draft"/"AI suggest subtasks" and the
+// Automations editor's "AI: describe it" builder. Disabled in the Clydec
+// Studio build. The original artifact called api.anthropic.com directly
+// from the browser, which only works inside the Claude.ai artifact sandbox
+// (Anthropic auto-injects that connection there, with no exposed key). A
+// real deployed app needs its own serverless route holding a server-side
+// ANTHROPIC_API_KEY — same pattern as api/drive-*.js for Google Drive —
+// which hasn't been built yet. Flagged here rather than silently left
+// broken; see clydec-portal-history.md for the full note and next-step.
+async function callClaude(prompt) {
+  throw new Error("AI assist isn't wired up yet in this deployment — it needs a server-side API route (see clydec-portal-history.md).");
+}
+
+function renderMentionText(text, members) {
+  if (!text) return text;
+  const names = [...members].map((m) => m.name).filter(Boolean).sort((a, b) => b.length - a.length);
+  if (names.length === 0) return text;
+  const pattern = new RegExp(`@(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "g");
+  const parts = [];
+  let last = 0, m, key = 0;
+  while ((m = pattern.exec(text))) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    parts.push(<span key={`mention-${key++}`} className="text-indigo-600 font-medium bg-indigo-50 rounded px-1">@{m[1]}</span>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
 function TaskDrawer({ task, statuses, customFields, siblingTasks, onClose, onPatch, onStatusChange, onComment, onToggleBlocker, onSetFieldValue, onDelete, runningTimer, onStartTimer, onStopTimer, onAddManualTime }) {
   const members = useContext(MembersContext);
   const [newSub, setNewSub] = useState("");
+  const [newChecklistItem, setNewChecklistItem] = useState("");
+  const [attachError, setAttachError] = useState("");
   const [newTag, setNewTag] = useState("");
   const [newComment, setNewComment] = useState("");
+  const [mentionQuery, setMentionQuery] = useState(null); // string | null — non-null while a "@..." token is being typed in the comment box
   const [depPicker, setDepPicker] = useState(false);
   const [assigneePicker, setAssigneePicker] = useState(false);
   const [openSubtaskId, setOpenSubtaskId] = useState(null);
@@ -1253,18 +1573,6 @@ function TaskDrawer({ task, statuses, customFields, siblingTasks, onClose, onPat
   const status = statuses.find((s) => s.id === task.statusId);
   const isTrackingThis = runningTimer && runningTimer.taskId === task.id;
   const totalMinutes = task.timeEntries.reduce((sum, e) => sum + e.minutes, 0);
-
-  async function callClaude(prompt) {
-    // Disabled in the Clydec Studio build. The original artifact called
-    // api.anthropic.com directly from the browser, which only works inside
-    // the Claude.ai artifact sandbox (Anthropic auto-injects that
-    // connection there, with no exposed key). A real deployed app needs
-    // its own serverless route holding a server-side ANTHROPIC_API_KEY —
-    // same pattern as api/drive-*.js for Google Drive — which hasn't been
-    // built yet. Flagged here rather than silently left broken; see
-    // clydec-portal-history.md for the full note and next-step.
-    throw new Error("AI assist isn't wired up yet in this deployment — it needs a server-side API route (see clydec-portal-history.md).");
-  }
 
   async function aiDraftDescription() {
     setAiLoading("description"); setAiError("");
@@ -1358,6 +1666,19 @@ function TaskDrawer({ task, statuses, customFields, siblingTasks, onClose, onPat
             onChange={(e) => onPatch({ dueDate: e.target.value ? new Date(e.target.value).getTime() : null })}
             className="col-span-2 border border-slate-200 rounded px-2 py-1 text-xs"
           />
+
+          <span className="text-slate-400">Repeats</span>
+          <select
+            value={task.recurrence?.freq || "none"}
+            onChange={(e) => onPatch({ recurrence: e.target.value === "none" ? null : { freq: e.target.value, interval: 1 } })}
+            title="When this task is marked done, a new copy is created automatically with the due date moved forward"
+            className="col-span-2 border border-slate-200 rounded px-2 py-1 text-xs"
+          >
+            <option value="none">Doesn't repeat</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
 
           <span className="text-slate-400">Tags</span>
           <div className="col-span-2 flex flex-wrap gap-1 items-center">
@@ -1500,6 +1821,78 @@ function TaskDrawer({ task, statuses, customFields, siblingTasks, onClose, onPat
           )}
         </div>
 
+        {/* Checklist — lighter-weight than Subtasks: just text + a checkbox, no
+            assignee/due-date/description of its own. For quick to-do lists
+            inside a task, distinct from full Subtask objects below. */}
+        <div>
+          <div className="text-xs font-semibold text-slate-500 mb-1">
+            Checklist {task.checklist?.length > 0 && `(${task.checklist.filter((c) => c.done).length}/${task.checklist.length})`}
+          </div>
+          <div className="space-y-1">
+            {(task.checklist || []).map((c) => (
+              <div key={c.id} className="flex items-center gap-2 group">
+                <button onClick={() => onPatch({ checklist: task.checklist.map((x) => x.id === c.id ? { ...x, done: !x.done } : x) })}>
+                  {c.done ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> : <SquareIcon className="w-3.5 h-3.5 text-slate-300" />}
+                </button>
+                <span className={`text-xs flex-1 ${c.done ? "line-through text-slate-400" : ""}`}>{c.text}</span>
+                <button onClick={() => onPatch({ checklist: task.checklist.filter((x) => x.id !== c.id) })} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <Plus className="w-3.5 h-3.5 text-slate-300" />
+            <input
+              value={newChecklistItem}
+              onChange={(e) => setNewChecklistItem(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && newChecklistItem.trim()) { onPatch({ checklist: [...(task.checklist || []), { id: uid("chk"), text: newChecklistItem.trim(), done: false }] }); setNewChecklistItem(""); } }}
+              placeholder="Add checklist item"
+              className="flex-1 text-xs outline-none placeholder:text-slate-300"
+            />
+          </div>
+        </div>
+
+        {/* Attachments — small files only (browser data-URL storage, same
+            500KB cap Communication uses for chat attachments, for the same
+            reason: comfortably under Firestore's 1MiB document limit once
+            other task fields are added). */}
+        <div>
+          <div className="text-xs font-semibold text-slate-500 mb-1">Attachments {task.attachments?.length > 0 && `(${task.attachments.length})`}</div>
+          <div className="space-y-1 mb-1">
+            {(task.attachments || []).map((a) => (
+              <div key={a.id} className="flex items-center gap-2 bg-slate-50/60 rounded px-1.5 py-1 group">
+                {a.type?.startsWith("image/") ? (
+                  <img src={a.dataUrl} alt={a.name} className="w-6 h-6 rounded object-cover shrink-0" />
+                ) : (
+                  <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                )}
+                <a href={a.dataUrl} download={a.name} className="text-xs flex-1 truncate text-indigo-600 hover:underline">{a.name}</a>
+                <span className="text-[10px] text-slate-400">{Math.round((a.size || 0) / 1024)}KB</span>
+                <button onClick={() => onPatch({ attachments: task.attachments.filter((x) => x.id !== a.id) })} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <label className="flex items-center gap-1 text-[11px] text-indigo-600 hover:text-indigo-800 cursor-pointer w-fit">
+            <Plus className="w-3 h-3" /> Attach a file
+            <input type="file" className="hidden" onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              if (file.size > 500 * 1024) { setAttachError("Files over 500KB aren't supported here — link to a file in Storage instead for anything larger."); return; }
+              setAttachError("");
+              const reader = new FileReader();
+              reader.onload = () => {
+                onPatch({ attachments: [...(task.attachments || []), { id: uid("att"), name: file.name, type: file.type, size: file.size, dataUrl: reader.result, uploadedAt: Date.now() }] });
+              };
+              reader.readAsDataURL(file);
+            }} />
+          </label>
+          {attachError && <p className="text-[10px] text-rose-500 mt-1">{attachError}</p>}
+        </div>
+
         {/* Subtasks */}
         <div>
           <div className="flex items-center justify-between mb-1">
@@ -1556,23 +1949,44 @@ function TaskDrawer({ task, statuses, customFields, siblingTasks, onClose, onPat
                 <Avatar id={c.authorId} size="w-5 h-5" />
                 <div className="bg-slate-50 rounded-md px-2 py-1 flex-1">
                   <div className="text-[11px] font-medium text-slate-600">{members.find((m) => m.id === c.authorId)?.name || "You"}</div>
-                  <div className="text-xs text-slate-700">{c.text}</div>
+                  <div className="text-xs text-slate-700">{renderMentionText(c.text, members)}</div>
                 </div>
               </div>
             ))}
           </div>
-          <div className="flex items-center gap-2 mt-2">
+          <div className="relative flex items-center gap-2 mt-2">
             <input
               value={newComment}
-              onChange={(e) => setNewComment(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && newComment.trim()) { onComment(newComment); setNewComment(""); } }}
-              placeholder="Write a comment..."
+              onChange={(e) => {
+                const v = e.target.value;
+                setNewComment(v);
+                const m = v.slice(0, e.target.selectionStart ?? v.length).match(/@([^\s@]*)$/);
+                setMentionQuery(m ? m[1] : null);
+              }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !mentionQuery && newComment.trim()) { onComment(newComment); setNewComment(""); } if (e.key === "Escape") setMentionQuery(null); }}
+              placeholder="Write a comment... (@ to mention someone)"
               className="flex-1 text-xs border border-slate-200 rounded px-2 py-1.5 outline-none focus:ring-2 focus:ring-indigo-100"
             />
             <button
-              onClick={() => { if (newComment.trim()) { onComment(newComment); setNewComment(""); } }}
+              onClick={() => { if (newComment.trim()) { onComment(newComment); setNewComment(""); setMentionQuery(null); } }}
               className="text-indigo-600 hover:text-indigo-800"
             ><Send className="w-4 h-4" /></button>
+            {mentionQuery !== null && (
+              <div className="absolute left-0 bottom-full mb-1 z-10 bg-white border border-slate-200 rounded-md shadow-lg py-1 w-48 max-h-40 overflow-y-auto">
+                {members.filter((m) => m.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 6).map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => { setNewComment((v) => v.replace(/@([^\s@]*)$/, `@${m.name} `)); setMentionQuery(null); }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-slate-50 text-left"
+                  >
+                    <Avatar id={m.id} size="w-5 h-5" /> {m.name}
+                  </button>
+                ))}
+                {members.filter((m) => m.name.toLowerCase().includes(mentionQuery.toLowerCase())).length === 0 && (
+                  <div className="px-3 py-1.5 text-xs text-slate-400">No matching member</div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1769,11 +2183,15 @@ function CustomFieldsEditorModal({ list, onClose, onAdd, onDelete }) {
 }
 
 // ---------- Automations editor ----------
-function AutomationsEditorModal({ list, onClose, onAdd, onUpdate, onDelete, onToggle }) {
+function AutomationsEditorModal({ list, allLists, onClose, onAdd, onUpdate, onDelete, onToggle }) {
   const members = useContext(MembersContext);
   const blankForm = { name: "", trigger: { type: "status_changed", statusId: "" }, logic: "AND", conditions: [], actions: [] };
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(blankForm);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
 
   function loadRule(rule) {
     setEditingId(rule.id);
@@ -1801,6 +2219,50 @@ function AutomationsEditorModal({ list, onClose, onAdd, onUpdate, onDelete, onTo
     if (editingId) onUpdate(editingId, rule);
     else onAdd(rule);
     resetForm();
+  }
+
+  function useTemplate(tpl) {
+    const built = tpl.build(list);
+    setForm({ name: tpl.name, trigger: built.trigger, logic: built.logic, conditions: built.conditions, actions: built.actions });
+    setEditingId(null);
+    setShowTemplates(false);
+  }
+
+  // "AI: describe it" — sends the plain-English description to Claude and
+  // asks for trigger/conditions/actions back as JSON, matching this rule's
+  // own shape, then pre-fills the form below for review (never auto-saved
+  // without a look — same "review before it takes effect" spirit as every
+  // other automation here). Uses the same (currently disabled) callClaude
+  // as TaskDrawer's AI features — see the comment on callClaude above.
+  async function aiGenerateRule() {
+    if (!aiPrompt.trim()) return;
+    setAiLoading(true); setAiError("");
+    try {
+      const triggerKeys = Object.keys(AUTOMATION_TRIGGERS).join(" | ");
+      const statusNames = list.statuses.map((s) => `"${s.name}"`).join(", ");
+      const text = await callClaude(
+        `You configure automation rules for a project-management tool. Given this request: "${aiPrompt.trim()}", ` +
+        `respond with ONLY minified JSON, no prose, in exactly this shape: ` +
+        `{"name": string, "trigger": {"type": one of [${triggerKeys}]}, "conditions": [{"field": "priority"|"assignee"|"statusId"|"tag", "op": "equals"|"not_equals"|"contains", "value": string}], ` +
+        `"actions": [{"type": "set_status"|"set_priority"|"set_assignee"|"add_tag"|"add_comment"|"create_subtask"|"post_chat", "value": string}]}. ` +
+        `Available statuses on this list: ${statusNames}. Use a status *name* as the value for a "statusId" condition/action field — it will be matched to the real status.`
+      );
+      const parsed = JSON.parse(text.trim());
+      const resolveStatus = (name) => list.statuses.find((s) => s.name.toLowerCase() === String(name).toLowerCase())?.id || "";
+      setForm({
+        name: parsed.name || aiPrompt.trim(),
+        trigger: { type: parsed.trigger?.type || "task_created", statusId: parsed.trigger?.type === "status_changed" ? resolveStatus(parsed.trigger?.statusId) : "" },
+        logic: "AND",
+        conditions: (parsed.conditions || []).map((c) => ({ field: c.field, op: c.op || "equals", value: c.field === "statusId" ? resolveStatus(c.value) : c.value })),
+        actions: (parsed.actions || []).map((a) => ({ type: a.type, value: a.type === "set_status" ? resolveStatus(a.value) : a.value })),
+      });
+      setEditingId(null);
+      setAiPrompt("");
+    } catch (e) {
+      setAiError("Couldn't reach AI assist — it needs a server-side API route that isn't wired up in this deployment yet (see clydec-portal-history.md). Build the rule manually below instead.");
+    } finally {
+      setAiLoading(false);
+    }
   }
 
   const conditionValueInput = (c, i) => {
@@ -1853,18 +2315,44 @@ function AutomationsEditorModal({ list, onClose, onAdd, onUpdate, onDelete, onTo
         </select>
       );
     }
+    if (a.type === "create_linked_task" || a.type === "move_task") {
+      return (
+        <select value={a.value} onChange={(e) => updateAction(i, { value: e.target.value })} className="flex-1 border border-slate-200 rounded px-2 py-1 text-xs">
+          <option value="">Choose a list…</option>
+          {allLists.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
+      );
+    }
     const placeholder =
       a.type === "webhook" ? "https://your-endpoint.example.com" :
       a.type === "add_tag" ? "Tag name" :
       a.type === "add_comment" ? "Comment text" :
       a.type === "create_subtask" ? "Subtask name" :
+      a.type === "send_mock_email" ? "recipient@example.com" :
       "Message to post";
     return <input value={a.value || ""} onChange={(e) => updateAction(i, { value: e.target.value })} placeholder={placeholder} className="flex-1 border border-slate-200 rounded px-2 py-1 text-xs" />;
   };
 
+  // A small non-interactive flow summary (Trigger → Conditions → Actions),
+  // shown above the form fields. Explicitly *not* the drag/connect visual
+  // node-canvas a full n8n/Make-style builder would have — that's a much
+  // larger, separate piece of work (an interactive canvas with draggable,
+  // connectable nodes) that wasn't attempted here; this is just a clearer
+  // at-a-glance readout of the same rule using the fields below it.
+  const flowSummary = (
+    <div className="flex items-center gap-1.5 text-[11px] flex-wrap bg-slate-50 border border-slate-100 rounded-md px-2 py-1.5">
+      <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-medium">{AUTOMATION_TRIGGERS[form.trigger.type]}</span>
+      {form.conditions.length > 0 && <><ChevronRight className="w-3 h-3 text-slate-300" /><span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{form.conditions.length} condition{form.conditions.length === 1 ? "" : "s"} ({form.logic})</span></>}
+      <ChevronRight className="w-3 h-3 text-slate-300" />
+      {form.actions.length === 0 ? <span className="text-slate-400">no actions yet</span> : form.actions.map((a, i) => (
+        <span key={i} className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">{a.type.replace(/_/g, " ")}</span>
+      ))}
+    </div>
+  );
+
   return (
     <div className="fixed inset-0 bg-slate-900/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-xl w-[36rem] max-h-[90vh] overflow-y-auto p-4" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-lg shadow-xl w-[38rem] max-h-[90vh] overflow-y-auto p-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-slate-900 flex items-center gap-1.5"><Zap className="w-4 h-4 text-amber-500" /> Automations — {list.name}</h3>
           <button onClick={onClose}><X className="w-4 h-4 text-slate-400" /></button>
@@ -1884,11 +2372,46 @@ function AutomationsEditorModal({ list, onClose, onAdd, onUpdate, onDelete, onTo
           ))}
         </div>
 
+        {/* AI automation builder */}
+        <div className="mb-3 bg-violet-50 border border-violet-100 rounded-lg p-2.5">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-violet-700 mb-1"><Sparkles className="w-3.5 h-3.5" /> AI: describe what you want automated</div>
+          <div className="flex items-center gap-2">
+            <input
+              value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") aiGenerateRule(); }}
+              placeholder='e.g. "When priority becomes Urgent, post a chat alert"'
+              className="flex-1 border border-violet-200 rounded px-2 py-1 text-xs bg-white"
+            />
+            <button onClick={aiGenerateRule} disabled={aiLoading || !aiPrompt.trim()} className="flex items-center gap-1 text-xs bg-violet-600 text-white px-2 py-1 rounded disabled:opacity-40">
+              {aiLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} Generate
+            </button>
+          </div>
+          {aiError && <p className="text-[10px] text-rose-600 mt-1">{aiError}</p>}
+        </div>
+
+        {/* Templates gallery */}
+        <div className="mb-3">
+          <button onClick={() => setShowTemplates((s) => !s)} className="text-xs text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
+            <LayoutGrid className="w-3.5 h-3.5" /> {showTemplates ? "Hide" : "Browse"} automation templates
+          </button>
+          {showTemplates && (
+            <div className="mt-2 grid grid-cols-1 gap-1.5">
+              {AUTOMATION_TEMPLATES.map((tpl) => (
+                <button key={tpl.name} onClick={() => useTemplate(tpl)} className="text-left bg-white border border-slate-200 rounded-md px-2.5 py-1.5 hover:border-indigo-300 hover:bg-indigo-50/40">
+                  <div className="text-xs font-medium text-slate-800">{tpl.name}</div>
+                  <div className="text-[11px] text-slate-400">{tpl.description}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="space-y-3 pt-3 border-t border-slate-100">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-600">{editingId ? "Edit rule" : "New rule"}</span>
             {editingId && <button onClick={resetForm} className="text-[11px] text-indigo-600 hover:underline">Start a new rule instead</button>}
           </div>
+          {flowSummary}
           <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Rule name (e.g. Auto-assign urgent bugs)" className="w-full border border-slate-200 rounded px-2 py-1.5 text-xs" />
 
           <div className="flex items-center gap-2 text-xs">
@@ -1947,6 +2470,9 @@ function AutomationsEditorModal({ list, onClose, onAdd, onUpdate, onDelete, onTo
                     <option value="add_comment">Add comment</option>
                     <option value="create_subtask">Create subtask</option>
                     <option value="post_chat">Post chat message</option>
+                    <option value="create_linked_task">Create linked task in…</option>
+                    <option value="move_task">Move task to…</option>
+                    <option value="send_mock_email">Send email (mock)</option>
                     <option value="webhook">Send webhook (POST)</option>
                   </select>
                   {actionValueInput(a, i)}
@@ -2315,6 +2841,7 @@ function TimelineView({ list, onOpenTask }) {
 function MyTasksView({ everyTask, allLists, onOpen, onSetStatus }) {
   const members = useContext(MembersContext);
   const me = members.find((m) => m.id === "m1");
+  const [view, setView] = useState("list"); // list | calendar
   const findStatus = (t) => allLists.find((l) => l.id === t.listId)?.statuses.find((s) => s.id === t.statusId);
   const isDone = (t) => !!findStatus(t)?.isFinal;
   const mine = everyTask.filter((t) => t.assigneeIds.includes("m1"));
@@ -2330,41 +2857,57 @@ function MyTasksView({ everyTask, allLists, onOpen, onSetStatus }) {
   };
 
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold text-slate-900 flex items-center gap-2"><ListChecks className="w-5 h-5 text-indigo-600" /> My Tasks</h1>
-        <p className="text-slate-500 text-sm">Everything assigned to{me ? ` ${me.name}` : " you"}, across every list.</p>
+    <div className={view === "list" ? "p-6 max-w-3xl mx-auto space-y-6" : ""}>
+      <div className={`flex items-center justify-between ${view === "list" ? "" : "px-4 pt-4"}`}>
+        <div>
+          <h1 className="text-xl font-semibold text-slate-900 flex items-center gap-2"><ListChecks className="w-5 h-5 text-indigo-600" /> My Tasks</h1>
+          <p className="text-slate-500 text-sm">Everything assigned to{me ? ` ${me.name}` : " you"}, across every list.</p>
+        </div>
+        <div className="flex items-center gap-1 bg-slate-100 rounded-md p-0.5">
+          <button onClick={() => setView("list")} className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 ${view === "list" ? "bg-white shadow-sm text-slate-800" : "text-slate-500"}`}>
+            <Rows className="w-3.5 h-3.5" /> List
+          </button>
+          <button onClick={() => setView("calendar")} className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 ${view === "calendar" ? "bg-white shadow-sm text-slate-800" : "text-slate-500"}`}>
+            <CalendarDays className="w-3.5 h-3.5" /> Calendar
+          </button>
+        </div>
       </div>
-      {Object.entries(buckets).map(([label, items]) => (
-        items.length === 0 ? null : (
-          <div key={label}>
-            <h2 className={`text-xs font-semibold uppercase tracking-wide mb-2 ${label === "Overdue" ? "text-rose-600" : "text-slate-500"}`}>{label} ({items.length})</h2>
-            <div className="bg-white rounded-lg border border-slate-200 divide-y divide-slate-50">
-              {items.map((t) => {
-                const s = findStatus(t);
-                const doneStatus = allLists.find((l) => l.id === t.listId)?.statuses.find((st) => st.isFinal);
-                const todoStatus = allLists.find((l) => l.id === t.listId)?.statuses[0];
-                return (
-                  <div key={t.id} className="flex items-center gap-2 px-3 py-2">
-                    <button
-                      onClick={() => onSetStatus(t.listId, t.id, isDone(t) ? (todoStatus?.id || t.statusId) : (doneStatus?.id || t.statusId))}
-                      title={isDone(t) ? "Mark incomplete" : "Mark complete"}
-                    >
-                      {isDone(t) ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Circle className="w-4 h-4 text-slate-300" />}
-                    </button>
-                    <PriorityFlag p={t.priority} />
-                    <button onClick={() => onOpen(t.listId, t.id)} className={`flex-1 text-left text-xs truncate ${isDone(t) ? "line-through text-slate-400" : ""}`}>{t.name}</button>
-                    <span className="text-[10px] text-slate-400">{t.listName}</span>
-                    {s && <StatusPill status={s} onClick={() => {}} />}
-                    {t.dueDate && <span className="text-[10px] text-slate-400 flex items-center gap-1"><Calendar className="w-3 h-3" />{fmtDate(t.dueDate)}</span>}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )
-      ))}
-      {mine.length === 0 && <p className="text-sm text-slate-400">No tasks assigned to you yet.</p>}
+      {view === "calendar" ? (
+        <CalendarView everyTask={mine} onOpen={onOpen} />
+      ) : (
+        <>
+          {Object.entries(buckets).map(([label, items]) => (
+            items.length === 0 ? null : (
+              <div key={label}>
+                <h2 className={`text-xs font-semibold uppercase tracking-wide mb-2 ${label === "Overdue" ? "text-rose-600" : "text-slate-500"}`}>{label} ({items.length})</h2>
+                <div className="bg-white rounded-lg border border-slate-200 divide-y divide-slate-50">
+                  {items.map((t) => {
+                    const s = findStatus(t);
+                    const doneStatus = allLists.find((l) => l.id === t.listId)?.statuses.find((st) => st.isFinal);
+                    const todoStatus = allLists.find((l) => l.id === t.listId)?.statuses[0];
+                    return (
+                      <div key={t.id} className="flex items-center gap-2 px-3 py-2">
+                        <button
+                          onClick={() => onSetStatus(t.listId, t.id, isDone(t) ? (todoStatus?.id || t.statusId) : (doneStatus?.id || t.statusId))}
+                          title={isDone(t) ? "Mark incomplete" : "Mark complete"}
+                        >
+                          {isDone(t) ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Circle className="w-4 h-4 text-slate-300" />}
+                        </button>
+                        <PriorityFlag p={t.priority} />
+                        <button onClick={() => onOpen(t.listId, t.id)} className={`flex-1 text-left text-xs truncate ${isDone(t) ? "line-through text-slate-400" : ""}`}>{t.name}</button>
+                        <span className="text-[10px] text-slate-400">{t.listName}</span>
+                        {s && <StatusPill status={s} onClick={() => {}} />}
+                        {t.dueDate && <span className="text-[10px] text-slate-400 flex items-center gap-1"><Calendar className="w-3 h-3" />{fmtDate(t.dueDate)}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )
+          ))}
+          {mine.length === 0 && <p className="text-sm text-slate-400">No tasks assigned to you yet.</p>}
+        </>
+      )}
     </div>
   );
 }
@@ -2596,49 +3139,65 @@ function BarBreakdown({ title, data }) {
 }
 
 // ---------- Goals & OKRs ----------
-function GoalsView({ goals, onAdd, onUpdateProgress, onDelete }) {
+function GoalsView({ goals, spaces, allLists, goalProgress, onAdd, onUpdateProgress, onDelete, onOpenList }) {
   const [name, setName] = useState("");
   const [target, setTarget] = useState(100);
   const [unit, setUnit] = useState("%");
+  const [spaceId, setSpaceId] = useState("");
+  const [sourceListId, setSourceListId] = useState("");
 
   return (
     <div className="p-6 max-w-2xl mx-auto space-y-4">
       <div>
         <h1 className="text-xl font-semibold text-slate-900 flex items-center gap-2"><Target className="w-5 h-5 text-indigo-600" /> Goals & OKRs</h1>
-        <p className="text-slate-500 text-sm">Create goals, break them into measurable targets, and track progress.</p>
+        <p className="text-slate-500 text-sm">Create goals, break them into measurable targets, and track progress — optionally auto-tracked from a Space's list.</p>
       </div>
       <div className="space-y-3">
         {goals.map((g) => {
-          const pct = Math.min(100, Math.round((g.currentValue / g.targetValue) * 100));
+          const progress = goalProgress ? goalProgress(g) : { value: g.currentValue, auto: false };
+          const pct = Math.min(100, Math.round((progress.value / g.targetValue) * 100));
+          const space = spaces?.find((s) => s.id === g.spaceId);
+          const sourceList = allLists?.find((l) => l.id === g.sourceListId);
           return (
             <div key={g.id} className="bg-white rounded-lg border border-slate-200 p-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="font-medium text-sm text-slate-800">{g.name}</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-sm text-slate-800">{g.name}</span>
+                  {space && <span className={`text-[10px] px-1.5 py-0.5 rounded ${COLOR_BADGE[space.color] || "bg-slate-100 text-slate-600"}`}>{space.name}</span>}
+                </div>
                 <button onClick={() => onDelete(g.id)} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-3.5 h-3.5" /></button>
               </div>
               <div className="h-2 bg-slate-100 rounded-full overflow-hidden mb-2">
                 <div className={`h-full ${COLOR_DOT[g.color] || "bg-indigo-500"}`} style={{ width: `${pct}%` }} />
               </div>
-              <div className="flex items-center gap-2 text-xs text-slate-500">
+              <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
                 <span>{pct}% complete</span>
                 <span>·</span>
                 <span>Due {fmtDate(g.dueDate)}</span>
-                <div className="flex-1" />
-                <input
-                  type="number"
-                  value={g.currentValue}
-                  onChange={(e) => onUpdateProgress(g.id, e.target.value)}
-                  className="w-16 border border-slate-200 rounded px-1.5 py-0.5 text-xs"
-                />
-                <span>/ {g.targetValue}{g.unit}</span>
+                {progress.auto ? (
+                  <button onClick={() => sourceList && onOpenList(sourceList.id)} className="flex items-center gap-1 text-indigo-600 hover:underline">
+                    <Link2 className="w-3 h-3" /> Auto-tracked from "{sourceList?.name || "a deleted list"}"
+                  </button>
+                ) : (
+                  <>
+                    <div className="flex-1" />
+                    <input
+                      type="number"
+                      value={g.currentValue}
+                      onChange={(e) => onUpdateProgress(g.id, e.target.value)}
+                      className="w-16 border border-slate-200 rounded px-1.5 py-0.5 text-xs"
+                    />
+                    <span>/ {g.targetValue}{g.unit}</span>
+                  </>
+                )}
               </div>
             </div>
           );
         })}
         {goals.length === 0 && <p className="text-xs text-slate-400">No goals yet — set one below.</p>}
       </div>
-      <div className="bg-white rounded-lg border border-slate-200 p-4">
-        <div className="text-xs font-semibold text-slate-500 mb-2">Set a new goal</div>
+      <div className="bg-white rounded-lg border border-slate-200 p-4 space-y-2">
+        <div className="text-xs font-semibold text-slate-500">Set a new goal</div>
         <div className="flex items-center gap-2">
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Goal name" className="flex-1 text-xs border border-slate-200 rounded px-2 py-1.5" />
           <input type="number" value={target} onChange={(e) => setTarget(e.target.value)} className="w-20 text-xs border border-slate-200 rounded px-2 py-1.5" />
@@ -2647,8 +3206,18 @@ function GoalsView({ goals, onAdd, onUpdateProgress, onDelete }) {
             <option value="tasks">tasks</option>
             <option value="$">$</option>
           </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={spaceId} onChange={(e) => setSpaceId(e.target.value)} className="flex-1 text-xs border border-slate-200 rounded px-2 py-1.5">
+            <option value="">No Space</option>
+            {(spaces || []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <select value={sourceListId} onChange={(e) => setSourceListId(e.target.value)} className="flex-1 text-xs border border-slate-200 rounded px-2 py-1.5" title="Optional — track progress automatically from a list's completion %">
+            <option value="">Track manually</option>
+            {(allLists || []).map((l) => <option key={l.id} value={l.id}>Auto-track: {l.name}</option>)}
+          </select>
           <button
-            onClick={() => { if (name.trim()) { onAdd(name.trim(), target, unit); setName(""); } }}
+            onClick={() => { if (name.trim()) { onAdd(name.trim(), target, unit, spaceId || null, sourceListId || null); setName(""); setSpaceId(""); setSourceListId(""); } }}
             className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded hover:bg-indigo-700 whitespace-nowrap"
           >Set Goal</button>
         </div>
@@ -2765,36 +3334,175 @@ function WhiteboardsView({ whiteboards, onAddBoard, onAddElement, onUpdateElemen
 }
 
 // ---------- Docs & Wikis ----------
-function DocsView({ docs, onAdd, onUpdate, onDelete }) {
+function DocBlock({ block, onUpdate, onDelete }) {
+  if (block.type === "paragraph" || block.type === "bullet") {
+    return (
+      <div className="flex items-start gap-2 group">
+        {block.type === "bullet" && <span className="mt-2 w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />}
+        <textarea
+          value={block.text}
+          onChange={(e) => onUpdate({ text: e.target.value })}
+          rows={Math.max(1, block.text.split("\n").length)}
+          placeholder={block.type === "bullet" ? "List item" : "Write something..."}
+          className="flex-1 text-sm outline-none resize-none leading-relaxed bg-transparent"
+        />
+        <button onClick={onDelete} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500 mt-1.5"><X className="w-3.5 h-3.5" /></button>
+      </div>
+    );
+  }
+  if (block.type === "image") {
+    return (
+      <div className="relative group w-fit">
+        <img src={block.dataUrl} alt={block.name || "image"} className="max-w-full max-h-96 rounded-lg border border-slate-200" />
+        <button onClick={onDelete} className="absolute top-1.5 right-1.5 bg-white/90 rounded-full p-1 opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-500"><X className="w-3.5 h-3.5" /></button>
+      </div>
+    );
+  }
+  if (block.type === "video") {
+    // Reference-only: an embedded player for a video *link* (YouTube/Vimeo/
+    // Loom/a direct .mp4 URL) — not an uploaded video file. Uploaded video
+    // files would routinely blow past Firestore's 1MiB document limit even
+    // at low resolution/short length, unlike the small image/file
+    // attachments above, so linking out is the sound choice here rather
+    // than a corner silently cut.
+    const isDirectFile = /\.(mp4|webm|ogg)(\?.*)?$/i.test(block.url || "");
+    return (
+      <div className="relative group">
+        {isDirectFile ? (
+          <video src={block.url} controls className="max-w-full max-h-96 rounded-lg border border-slate-200" />
+        ) : (
+          <a href={block.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-indigo-600 hover:underline w-fit">
+            <Play className="w-3.5 h-3.5" /> {block.url}
+          </a>
+        )}
+        <button onClick={onDelete} className="absolute -top-2 -right-2 bg-white rounded-full p-1 opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 border border-slate-200"><X className="w-3 h-3" /></button>
+      </div>
+    );
+  }
+  if (block.type === "file") {
+    return (
+      <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 w-fit group">
+        <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+        <a href={block.dataUrl} download={block.name} className="text-xs text-indigo-600 hover:underline">{block.name}</a>
+        <span className="text-[10px] text-slate-400">{Math.round((block.size || 0) / 1024)}KB</span>
+        <button onClick={onDelete} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500"><X className="w-3 h-3" /></button>
+      </div>
+    );
+  }
+  return null;
+}
+
+function DocsView({ docs, docFolders, spaces, goals, onAdd, onUpdate, onDelete, onAddFolder, onDeleteFolder, onAddBlock, onUpdateBlock, onDeleteBlock }) {
   const [activeId, setActiveId] = useState(docs[0]?.id || null);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [addingFolder, setAddingFolder] = useState(false);
+  const [videoUrl, setVideoUrl] = useState("");
+  const [addingVideo, setAddingVideo] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const active = docs.find((d) => d.id === activeId) || docs[0];
+  const unfiled = docs.filter((d) => !d.folderId);
+
+  function handleFileBlock(file, type) {
+    if (file.size > 500 * 1024) { setUploadError("Files over 500KB aren't supported here — link to a file in Storage instead for anything larger."); return; }
+    setUploadError("");
+    const reader = new FileReader();
+    reader.onload = () => onAddBlock(active.id, type, { name: file.name, size: file.size, dataUrl: reader.result });
+    reader.readAsDataURL(file);
+  }
+
   return (
     <div className="flex h-full">
       <div className="w-56 shrink-0 border-r border-slate-200 p-2 overflow-y-auto">
         <div className="flex items-center justify-between px-1 mb-1">
           <span className="text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Docs</span>
-          <button onClick={() => { const id = onAdd("Untitled doc"); setActiveId(id); }} className="text-slate-400 hover:text-slate-700"><Plus className="w-3.5 h-3.5" /></button>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setAddingFolder((s) => !s)} title="New folder" className="text-slate-400 hover:text-slate-700"><Folder className="w-3.5 h-3.5" /></button>
+            <button onClick={() => { const id = onAdd("Untitled doc"); setActiveId(id); }} title="New doc" className="text-slate-400 hover:text-slate-700"><Plus className="w-3.5 h-3.5" /></button>
+          </div>
         </div>
-        {docs.map((d) => (
+        {addingFolder && (
+          <div className="flex items-center gap-1 px-1 mb-2">
+            <input
+              autoFocus value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && newFolderName.trim()) { onAddFolder(newFolderName); setNewFolderName(""); setAddingFolder(false); } if (e.key === "Escape") setAddingFolder(false); }}
+              placeholder="Folder name" className="flex-1 text-xs border border-slate-200 rounded px-1.5 py-1"
+            />
+          </div>
+        )}
+        {docFolders.map((folder) => (
+          <div key={folder.id} className="mb-1">
+            <div className="flex items-center gap-1 px-2 py-1 group">
+              <Folder className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span className="flex-1 text-[11px] font-medium text-slate-500 truncate">{folder.name}</span>
+              <button onClick={() => onDeleteFolder(folder.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500"><Trash2 className="w-3 h-3" /></button>
+            </div>
+            {docs.filter((d) => d.folderId === folder.id).map((d) => (
+              <button key={d.id} onClick={() => setActiveId(d.id)} className={`w-full flex items-center gap-2 pl-6 pr-2 py-1.5 rounded-md text-left text-xs ${active?.id === d.id ? "bg-indigo-50 text-indigo-700 font-medium" : "hover:bg-slate-100"}`}>
+                <FileText className="w-3.5 h-3.5 shrink-0" /> <span className="truncate">{d.name}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+        {unfiled.map((d) => (
           <button key={d.id} onClick={() => setActiveId(d.id)} className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs ${active?.id === d.id ? "bg-indigo-50 text-indigo-700 font-medium" : "hover:bg-slate-100"}`}>
             <FileText className="w-3.5 h-3.5 shrink-0" /> <span className="truncate">{d.name}</span>
           </button>
         ))}
       </div>
-      <div className="flex-1 p-6 max-w-3xl">
+      <div className="flex-1 p-6 max-w-3xl overflow-y-auto">
         {active ? (
           <>
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center gap-2 mb-2">
               <input value={active.name} onChange={(e) => onUpdate(active.id, { name: e.target.value })} className="text-xl font-semibold text-slate-900 outline-none flex-1" />
               <button onClick={() => onDelete(active.id)} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
             </div>
-            <textarea
-              value={active.content}
-              onChange={(e) => onUpdate(active.id, { content: e.target.value })}
-              placeholder="Start writing..."
-              className="w-full h-[60vh] text-sm outline-none resize-none leading-relaxed"
-            />
-            <div className="text-[10px] text-slate-400 mt-2">Last edited {new Date(active.updatedAt).toLocaleString()}</div>
+            <div className="flex items-center gap-2 mb-4 flex-wrap">
+              <select value={active.folderId || ""} onChange={(e) => onUpdate(active.id, { folderId: e.target.value || null })} className="text-[11px] border border-slate-200 rounded px-1.5 py-1 text-slate-500">
+                <option value="">No folder</option>
+                {docFolders.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </select>
+              <select value={active.linkedSpaceId || ""} onChange={(e) => onUpdate(active.id, { linkedSpaceId: e.target.value || null })} className="text-[11px] border border-slate-200 rounded px-1.5 py-1 text-slate-500">
+                <option value="">Not linked to a Space</option>
+                {spaces.map((s) => <option key={s.id} value={s.id}>Space: {s.name}</option>)}
+              </select>
+              <select value={active.linkedGoalId || ""} onChange={(e) => onUpdate(active.id, { linkedGoalId: e.target.value || null })} className="text-[11px] border border-slate-200 rounded px-1.5 py-1 text-slate-500">
+                <option value="">Not linked to a Goal</option>
+                {goals.map((g) => <option key={g.id} value={g.id}>Goal: {g.name}</option>)}
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              {active.blocks.length === 0 && <p className="text-sm text-slate-300">Start writing...</p>}
+              {active.blocks.map((b) => (
+                <DocBlock key={b.id} block={b} onUpdate={(patch) => onUpdateBlock(active.id, b.id, patch)} onDelete={() => onDeleteBlock(active.id, b.id)} />
+              ))}
+            </div>
+
+            <div className="flex items-center gap-3 mt-4 pt-3 border-t border-slate-100 text-xs text-slate-500 flex-wrap">
+              <button onClick={() => onAddBlock(active.id, "paragraph", "")} className="flex items-center gap-1 hover:text-indigo-600"><TypeIcon className="w-3.5 h-3.5" /> Text</button>
+              <button onClick={() => onAddBlock(active.id, "bullet", "")} className="flex items-center gap-1 hover:text-indigo-600"><ListIcon className="w-3.5 h-3.5" /> Bullet</button>
+              <label className="flex items-center gap-1 hover:text-indigo-600 cursor-pointer">
+                <StickyNote className="w-3.5 h-3.5" /> Image
+                <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) handleFileBlock(f, "image"); }} />
+              </label>
+              <label className="flex items-center gap-1 hover:text-indigo-600 cursor-pointer">
+                <Plus className="w-3.5 h-3.5" /> File
+                <input type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) handleFileBlock(f, "file"); }} />
+              </label>
+              {addingVideo ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    autoFocus value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && videoUrl.trim()) { onAddBlock(active.id, "video", { url: videoUrl.trim() }); setVideoUrl(""); setAddingVideo(false); } if (e.key === "Escape") setAddingVideo(false); }}
+                    placeholder="Video URL (YouTube, Loom, .mp4...)" className="border border-slate-200 rounded px-1.5 py-1 text-xs w-56"
+                  />
+                </div>
+              ) : (
+                <button onClick={() => setAddingVideo(true)} className="flex items-center gap-1 hover:text-indigo-600"><Play className="w-3.5 h-3.5" /> Video link</button>
+              )}
+            </div>
+            {uploadError && <p className="text-[10px] text-rose-500 mt-1">{uploadError}</p>}
+            <div className="text-[10px] text-slate-400 mt-3">Last edited {new Date(active.updatedAt).toLocaleString()}</div>
           </>
         ) : <p className="text-sm text-slate-400">No docs yet.</p>}
       </div>
@@ -2803,13 +3511,14 @@ function DocsView({ docs, onAdd, onUpdate, onDelete }) {
 }
 
 // ---------- Forms ----------
-function FormsView({ forms, allLists, onAdd, onAddField, onDeleteField, onDelete, onSubmitForm }) {
+function FormsView({ forms, allLists, goals, onAdd, onAddField, onDeleteField, onDelete, onSubmitForm, onSetGoal }) {
   const [activeId, setActiveId] = useState(forms[0]?.id || null);
   const [newName, setNewName] = useState("");
   const [targetList, setTargetList] = useState(allLists[0]?.id || "");
   const [fieldLabel, setFieldLabel] = useState("");
   const [preview, setPreview] = useState(false);
   const [values, setValues] = useState({});
+  const [copied, setCopied] = useState(false);
   const active = forms.find((f) => f.id === activeId);
 
   return (
@@ -2884,6 +3593,28 @@ function FormsView({ forms, allLists, onAdd, onAddField, onDeleteField, onDelete
               <button onClick={() => { if (fieldLabel.trim()) { onAddField(active.id, fieldLabel.trim(), "text"); setFieldLabel(""); } }} className="text-xs bg-slate-800 text-white px-2 py-1.5 rounded hover:bg-slate-900">Add field</button>
             </div>
             <p className="text-[10px] text-slate-400 mt-2">Submitting this form creates a new task in "{allLists.find((l) => l.id === active.listId)?.name}".</p>
+
+            <div className="mt-4 pt-3 border-t border-slate-100 space-y-2">
+              <div>
+                <label className="text-[11px] font-semibold text-slate-500 flex items-center gap-1 mb-1"><Link2 className="w-3 h-3" /> Shareable link</label>
+                <div className="flex items-center gap-2">
+                  <input readOnly value={`orbit-workspace/forms/${active.slug}`} className="flex-1 text-[11px] border border-slate-200 rounded px-2 py-1.5 bg-slate-50 text-slate-500 font-mono" />
+                  <button
+                    onClick={() => { navigator.clipboard?.writeText(`orbit-workspace/forms/${active.slug}`); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+                    className="text-xs bg-slate-100 hover:bg-slate-200 px-2 py-1.5 rounded whitespace-nowrap"
+                  >{copied ? "Copied!" : "Copy"}</button>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">A stable reference for teammates who already have portal access — not a public, logged-out URL (that would need a separate, unauthenticated submission endpoint).</p>
+              </div>
+              <div>
+                <label className="text-[11px] font-semibold text-slate-500 flex items-center gap-1 mb-1"><Target className="w-3 h-3" /> Contributes to Goal</label>
+                <select value={active.linkedGoalId || ""} onChange={(e) => onSetGoal(active.id, e.target.value || null)} className="w-full text-xs border border-slate-200 rounded px-2 py-1.5">
+                  <option value="">Not linked</option>
+                  {goals.filter((g) => !g.sourceListId).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                </select>
+                {active.linkedGoalId && <p className="text-[10px] text-slate-400 mt-1">Each submission adds +1 to that Goal's progress.</p>}
+              </div>
+            </div>
           </div>
         )}
       </div>
