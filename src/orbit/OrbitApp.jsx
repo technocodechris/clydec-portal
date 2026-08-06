@@ -405,7 +405,7 @@ function FilterSortBar({ tasks, filters, setFilters, savedViews, onSaveView, onD
 // `onExit()` — returns to the Workspace list in Clydec.
 // `workspaceName` — shown in the sidebar header in place of the old
 // static "Orbit Workspace" label.
-export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null, onDataChange, onExit, workspaceName = "Orbit Workspace" }) {
+export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null, onDataChange, onExit, workspaceName = "Orbit Workspace", currentUserId = null }) {
   const [spaces, setSpaces] = useState(() => initialData?.spaces || []);
   const [expanded, setExpanded] = useState({});
   const [currentListId, setCurrentListId] = useState(null);
@@ -451,8 +451,15 @@ export default function OrbitApp({ members = DEFAULT_MEMBERS, initialData = null
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [spaces, activity, goals, dashboards, whiteboards, docs, docFolders, forms, chatMessages, onDataChange]);
 
+  // `actorId`/`actorName` identify the *real* Clydec person who performed
+  // this, separate from the "m1" sentinel used everywhere else in this
+  // file for "the current viewer" (see the big comment above OrbitApp).
+  // Needed so the Owner's cross-workspace live activity feed (built in
+  // App.jsx from every workspace's `data.activity`) can say who did what,
+  // not just what happened.
   function logActivity(entry) {
-    setActivity((prev) => [{ id: uid("act"), ts: Date.now(), ...entry }, ...prev].slice(0, 100));
+    const me = members.find((m) => m.id === "m1");
+    setActivity((prev) => [{ id: uid("act"), ts: Date.now(), actorId: currentUserId || null, actorName: me?.name || "Someone", ...entry }, ...prev].slice(0, 100));
   }
 
   // ---- helpers to locate / update tree ----
