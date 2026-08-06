@@ -34,6 +34,7 @@ const CSS = `
   .cly-navitem:hover { background: rgba(255,255,255,0.06); }
   .cly-spin { animation: clySpin 0.9s linear infinite; }
   @keyframes clySpin { to { transform: rotate(360deg); } }
+  @keyframes cly-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(1.3); } }
   .cly-toggle { position:relative; width:38px; height:22px; border-radius:11px; cursor:pointer; transition: background .15s; border:none; flex-shrink:0; }
   .cly-toggle::after { content:''; position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
   .cly-toggle.on { background:#14181C; }
@@ -2032,7 +2033,248 @@ function formatTimeStrTo12h(hhmm) {
 }
 
 
-function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut, setUserTimeTrackingEnabled, saveUserAttendanceRules }) {
+// Turns an open time entry's heartbeat fields into a live status.
+// - No heartbeat yet at all (older entry from before this feature, or the
+//   first ~20s after clocking in before the first beat lands): "Unknown".
+// - Heartbeat itself is stale (>90s — roughly 4 missed 20s beats): "Away".
+//   Most likely they closed the tab/lost their connection without
+//   remembering to clock out, not that they're deliberately hiding.
+// - Heartbeat is fresh but no real interaction in the last 3 minutes:
+//   "Idle" — the tab's open but nothing's actually happening.
+// - Otherwise: "Working now".
+const IDLE_AFTER_MS = 3 * 60 * 1000;
+const AWAY_AFTER_MS = 90 * 1000;
+function liveWorkStatus(entry, nowMs) {
+  if (!entry.heartbeatAt) return { label: "Status pending", color: COLORS.mute, dot: "#94a3b8" };
+  const sinceHeartbeat = nowMs - entry.heartbeatAt;
+  if (sinceHeartbeat > AWAY_AFTER_MS) {
+    return { label: `Away · last seen ${timeAgo(entry.heartbeatAt)}`, color: COLORS.mute, dot: "#94a3b8" };
+  }
+  const sinceInteraction = nowMs - (entry.lastInteractionAt || entry.heartbeatAt);
+  if (sinceInteraction > IDLE_AFTER_MS) {
+    return { label: `Idle ${Math.round(sinceInteraction / 60000)}m`, color: "#b45309", dot: "#f59e0b" };
+  }
+  return { label: "Working now", color: "#15803d", dot: "#22c55e" };
+}
+function LiveStatusDot({ entry, nowMs }) {
+  const s = liveWorkStatus(entry, nowMs);
+  const pulsing = s.label === "Working now";
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: s.color }}>
+      <span style={{ width: 7, height: 7, borderRadius: "50%", background: s.dot, animation: pulsing ? "cly-pulse 1.6s ease-in-out infinite" : "none" }} />
+      {s.label}
+    </span>
+  );
+}
+
+// Renders today's `activityByHour` (hour-of-day -> interaction count, see
+// the heartbeat effect in App() for exactly what counts as "an
+// interaction" — never content, just discrete clicks/keydowns/scroll/
+// touch) as a small bar per hour worked so far. Bar height is relative to
+// that person's own busiest hour today, not an absolute scale — the point
+// is "were they consistently doing something," not a productivity score.
+function ActivityBar({ activityByHour, compact }) {
+  const entries = Object.entries(activityByHour || {}).map(([h, n]) => [Number(h), n]).sort((a, b) => a[0] - b[0]);
+  if (entries.length === 0) return <span style={{ fontSize: 11, color: COLORS.mute }}>No activity yet</span>;
+  const max = Math.max(...entries.map(([, n]) => n), 1);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "flex-end", gap: 2, height: compact ? 16 : 22 }} title="Interaction count per hour worked (clicks/keys/scroll — never content)">
+      {entries.map(([h, n]) => (
+        <span
+          key={h}
+          title={`${h}:00 — ${n} interaction${n === 1 ? "" : "s"}`}
+          style={{ width: compact ? 3 : 4, height: `${Math.max(10, (n / max) * 100)}%`, background: n === 0 ? COLORS.line : "#6366f1", borderRadius: 1, opacity: n === 0 ? 0.4 : 1 }}
+        />
+      ))}
+    </span>
+  );
+}
+
+// "Work-produced evidence" — instead of watching *how* someone works,
+// show what they actually produced, in real time: tasks completed/moved,
+// comments, docs edited, forms submitted, across every Orbit Workspace at
+// once. Each workspace already keeps its own activity log (`data.activity`,
+// see logActivity() in OrbitApp.jsx) and the Owner's `orbitWorkspaces`
+// subscription already receives every workspace's full doc live — so this
+// is a pure client-side merge of data the Owner already has, not a new
+// Firestore read or a new privacy boundary. Chat/Communication content is
+// deliberately NOT included here: unlike Workspace activity, private
+// conversations aren't something the Owner has blanket read access to
+// (only participants do — see firestore.rules), and folding message
+// content into an "evidence" feed would quietly cross that line.
+function LiveActivityFeed({ orbitWorkspaces }) {
+  const feed = React.useMemo(() => {
+    return (orbitWorkspaces || [])
+      .flatMap((w) => (w.data?.activity || []).map((a) => ({ ...a, workspaceName: w.name })))
+      .filter((a) => a.actorName) // older entries logged before actor-attribution was added — skip rather than show "Someone" for every historical row
+      .sort((a, b) => b.ts - a.ts)
+      .slice(0, 30);
+  }, [orbitWorkspaces]);
+
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Live activity across Workspaces</div>
+      <div style={{ color: COLORS.mute, fontSize: 12, marginBottom: 12 }}>
+        What people actually produced, not just whether they were active — tasks moved, comments, docs edited, across every Orbit Workspace, updating live.
+      </div>
+      {feed.length === 0 ? (
+        <div style={{ color: COLORS.mute, fontSize: 13 }}>No Workspace activity yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 340, overflowY: "auto" }}>
+          {feed.map((a) => (
+            <div key={a.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12.5 }}>
+              <span style={{ color: COLORS.mute, fontSize: 11, whiteSpace: "nowrap", width: 56 }}>{timeAgo(a.ts)}</span>
+              <span style={{ fontWeight: 600 }}>{a.actorName}</span>
+              <span style={{ color: COLORS.text, flex: 1 }}>{a.text}</span>
+              <span style={{ color: COLORS.mute, fontSize: 11 }}>{a.workspaceName}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Owner-only. Groups today's captures by person, newest first, with a
+// click-to-enlarge lightbox. Read access itself is already Owner-only at
+// the firestore.rules level (see §9 item 7) — this component doesn't add
+// any restriction of its own, just presents what the subscription handed it.
+function ScreenshotGallery({ screenshotCheckins, users }) {
+  const [zoomed, setZoomed] = useState(null); // a screenshotCheckins entry, or null
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+  const today = (screenshotCheckins || []).filter((s) => s.capturedAt >= todayStart).sort((a, b) => b.capturedAt - a.capturedAt);
+  const byUser = {};
+  today.forEach((s) => { (byUser[s.userId] = byUser[s.userId] || []).push(s); });
+
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Screenshot check-ins — today</div>
+      <div style={{ color: COLORS.mute, fontSize: 12, marginBottom: 14 }}>Only from people who've turned this on for themselves after you enabled it for their account. Nothing here for anyone who hasn't.</div>
+      {Object.keys(byUser).length === 0 ? (
+        <div style={{ color: COLORS.mute, fontSize: 13 }}>No check-ins today.</div>
+      ) : (
+        Object.entries(byUser).map(([userId, shots]) => (
+          <div key={userId} style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{shots[0].userName} <span style={{ color: COLORS.mute, fontWeight: 400 }}>({shots.length})</span></div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {shots.map((s) => (
+                <button key={s.id} onClick={() => setZoomed(s)} className="cly-btn" style={{ padding: 0, border: `1px solid ${COLORS.line}`, borderRadius: 8, overflow: "hidden", position: "relative" }}>
+                  <img src={s.dataUrl} alt="" style={{ width: 110, height: 68, objectFit: "cover", display: "block" }} />
+                  <span style={{ position: "absolute", bottom: 2, right: 4, fontSize: 9.5, color: "#fff", textShadow: "0 0 3px rgba(0,0,0,0.8)" }}>{formatClockTime(s.capturedAt)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+      {zoomed && (
+        <div onClick={() => setZoomed(null)} style={{ position: "fixed", inset: 0, background: "rgba(15,15,20,0.85)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ maxWidth: "90vw", maxHeight: "90vh" }}>
+            <img src={zoomed.dataUrl} alt="" style={{ maxWidth: "100%", maxHeight: "80vh", borderRadius: 8 }} />
+            <div style={{ color: "#fff", fontSize: 12, marginTop: 8, textAlign: "center" }}>{zoomed.userName} · {new Date(zoomed.capturedAt).toLocaleString()}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Employee-side. Nothing here can capture anything without the person
+// actively clicking "Start sharing" AND then picking a screen/window/tab in
+// their browser's own native permission dialog — that's a hard browser-
+// level requirement, not something this code can request silently or
+// trigger automatically. Once granted, the browser itself shows a
+// persistent "you are sharing your screen" indicator for as long as it's
+// active (a colored border/tab icon depending on browser) that no page
+// script can hide or suppress — the in-app banner below is redundant with
+// that, not a substitute for it. Stopping is always one click away, either
+// here or from the browser's own sharing indicator, and simply pauses
+// capture — there's no fallback or covert continuation.
+function ScreenshotConsentCard({ user, myOpenEntry, submitScreenshotCheckin }) {
+  const [sharing, setSharing] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [error, setError] = useState("");
+  const streamRef = useRef(null);
+  const intervalRef = useRef(null);
+
+  useEffect(() => () => stop(), []); // stop sharing if this card unmounts (e.g. they clock out) — never keep capturing in the background
+  useEffect(() => { if (!myOpenEntry) stop(); }, [myOpenEntry]); // clocked out -> stop, no reason to keep sharing
+
+  function capture() {
+    const stream = streamRef.current;
+    if (!stream) return;
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    const settings = track.getSettings();
+    const video = document.createElement("video");
+    video.srcObject = stream;
+    video.play().then(() => {
+      const canvas = document.createElement("canvas");
+      const scale = Math.min(1, 960 / (settings.width || 1280));
+      canvas.width = Math.round((settings.width || video.videoWidth) * scale);
+      canvas.height = Math.round((settings.height || video.videoHeight) * scale);
+      canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+      submitScreenshotCheckin(canvas.toDataURL("image/jpeg", 0.5));
+      video.pause();
+    }).catch(() => {});
+  }
+
+  async function start() {
+    setError("");
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      streamRef.current = stream;
+      setSharing(true);
+      stream.getVideoTracks()[0].addEventListener("ended", stop); // they stopped it from the browser's own UI
+      setTimeout(capture, 500); // first capture shortly after sharing starts
+      intervalRef.current = setInterval(capture, 15 * 60 * 1000);
+    } catch (e) {
+      // Includes them just clicking "Cancel" on the browser's own picker —
+      // not an error worth alarming over, just didn't start.
+      setError("Screen sharing wasn't started.");
+    }
+  }
+  function stop() {
+    if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    setSharing(false);
+  }
+
+  if (sharing) {
+    return (
+      <div style={{ background: "#fef2f2", border: `1px solid ${COLORS.danger}`, borderRadius: 12, padding: "14px 18px", display: "flex", alignItems: "center", gap: 12 }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger, animation: "cly-pulse 1.6s ease-in-out infinite", flexShrink: 0 }} />
+        <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>Screenshot check-ins are ON — a periodic screenshot of what you're sharing is visible to your Owner.</span>
+        <button onClick={stop} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>Stop sharing</button>
+      </div>
+    );
+  }
+  if (!acknowledged) {
+    return (
+      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 18 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Your Owner has requested Screenshot check-ins</div>
+        <ul style={{ fontSize: 12.5, color: COLORS.mute, lineHeight: 1.6, margin: "0 0 12px", paddingLeft: 18 }}>
+          <li>You choose exactly what to share — your whole screen, one window, or one tab — through your browser's own picker.</li>
+          <li>While it's on, a screenshot of that is saved roughly every 15 minutes and visible to your Owner.</li>
+          <li>Your browser shows its own "sharing" indicator the entire time this is active — this app can't hide that or capture anything without it.</li>
+          <li>You can stop anytime, either here or from your browser's own sharing controls, with no separate approval needed.</li>
+        </ul>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => setAcknowledged(true)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700 }}>I understand — continue</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 18, display: "flex", alignItems: "center", gap: 14 }}>
+      <span style={{ fontSize: 13, flex: 1 }}>Ready to start. Pick a screen/window/tab to share when your browser asks.</span>
+      <button onClick={start} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700 }}>Start sharing</button>
+      {error && <span style={{ fontSize: 11.5, color: COLORS.danger }}>{error}</span>}
+    </div>
+  );
+}
+
+function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut, setUserTimeTrackingEnabled, saveUserAttendanceRules, orbitWorkspaces, setUserScreenshotCheckinsEnabled, screenshotCheckins, submitScreenshotCheckin }) {
   const isOwner = user.role === "OWNER";
   const enabled = isOwner || !!user.timeTrackingEnabled;
   const myOpenEntry = timeEntries.find(e => e.userId === user.id && !e.clockOut);
@@ -2087,6 +2329,13 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
               {myOpenEntry && (
                 <div className="cly-mono" style={{ fontSize: 13, color: COLORS.mute, marginTop: 4 }}>{formatWorkedDuration(elapsedMs)} elapsed</div>
               )}
+              {myOpenEntry && !isOwner && (
+                <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 12 }}>
+                  <LiveStatusDot entry={myOpenEntry} nowMs={Date.now()} />
+                  <ActivityBar activityByHour={myOpenEntry.activityByHour} compact />
+                  <span style={{ fontSize: 11, color: COLORS.mute }}>— this is what your Owner sees while you're clocked in</span>
+                </div>
+              )}
             </div>
             <button
               disabled={busy}
@@ -2103,7 +2352,12 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
       {isOwner && (
         <>
           <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Currently clocked in</div>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Currently clocked in</div>
+            </div>
+            <div style={{ color: COLORS.mute, fontSize: 12, marginBottom: 12 }}>
+              "Working now" means real activity (mouse/keyboard) in the last 3 minutes — not just the tab being open. "Idle" means the tab's open but nothing's happening; "Away" means we haven't heard from their browser in over 90 seconds (closed tab, lost connection, etc.), not a judgment call.
+            </div>
             {activeNow.length === 0 ? (
               <div style={{ color: COLORS.mute, fontSize: 13 }}>No one is clocked in right now.</div>
             ) : (
@@ -2116,12 +2370,18 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
                       </div>
                       <span style={{ fontWeight: 600 }}>{e.userName}</span>
                     </span>
-                    <span style={{ color: COLORS.mute }}>since {formatClockTime(e.clockIn)}</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                      <ActivityBar activityByHour={e.activityByHour} compact />
+                      <LiveStatusDot entry={e} nowMs={Date.now()} />
+                      <span style={{ color: COLORS.mute }}>since {formatClockTime(e.clockIn)}</span>
+                    </span>
                   </div>
                 ))}
               </div>
             )}
           </div>
+
+          <LiveActivityFeed orbitWorkspaces={orbitWorkspaces} />
 
           <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Who can use time tracking</div>
@@ -2170,7 +2430,33 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
               )}
             </div>
           </div>
+
+          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+              Screenshot check-ins
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.danger, background: COLORS.dangerSoft, padding: "2px 7px", borderRadius: 6 }}>Sensitive</span>
+            </div>
+            <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14, lineHeight: 1.5 }}>
+              Turning this on doesn't start capturing anything by itself — it just makes the request appear for that person. They still have to explicitly click "Start sharing" and pick a screen/window through their <em>browser's own</em> permission prompt each session; while it's active, the browser shows its own un-hideable "you're sharing your screen" indicator the whole time, on top of the in-app banner. There's no covert or forced version of this — before you turn it on for anyone, make sure you have a written monitoring policy in place and have checked what your local labor law requires for notice/consent, since that varies by location.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {teamMembers.map(u => (
+                <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${COLORS.line}` }}>
+                  <span style={{ fontWeight: 600, fontSize: 13.5 }}>{u.name}</span>
+                  <Toggle checked={!!u.screenshotCheckinsEnabled} onChange={(v) => setUserScreenshotCheckinsEnabled(u.id, v)} />
+                </div>
+              ))}
+              {teamMembers.length === 0 && (
+                <div style={{ color: COLORS.mute, fontSize: 13, padding: "10px 0" }}>No other team members yet.</div>
+              )}
+            </div>
+          </div>
+
+          <ScreenshotGallery screenshotCheckins={screenshotCheckins} users={users} />
         </>
+      )}
+      {!isOwner && !!user.screenshotCheckinsEnabled && enabled && (
+        <ScreenshotConsentCard user={user} myOpenEntry={myOpenEntry} submitScreenshotCheckin={submitScreenshotCheckin} />
       )}
     </div>
   );
@@ -3653,6 +3939,7 @@ function OrbitWorkspaceView({ user, users, workspace, onExit, saveOrbitWorkspace
         onDataChange={handleDataChange}
         onExit={onExit}
         workspaceName={workspace.name}
+        currentUserId={user.id}
       />
     </div>
   );
@@ -4397,6 +4684,9 @@ export default function App() {
   const [auth, setAuth] = useState(SEED_AUTH);
   const [notif, setNotif] = useState(SEED_NOTIF);
   const [restrictions, setRestrictions] = useState(SEED_RESTRICTIONS);
+  // Screenshot check-ins (Owner-only viewing, self-only writing — see
+  // firestore.rules and §7 Time Tracking in the history doc).
+  const [screenshotCheckins, setScreenshotCheckins] = useState([]);
 
   // --- Workspace (Orbit project-management workspaces) ---
   const [orbitWorkspaces, setOrbitWorkspaces] = useState([]);
@@ -4559,6 +4849,17 @@ export default function App() {
       unsubs.push(subscribeCollection("orbit-workspaces", vals => { setOrbitWorkspaces(vals); onOk("orbitWorkspaces"); }, onErr("orbitWorkspaces", [], setOrbitWorkspaces)));
     } else {
       setOrbitWorkspaces([]);
+    }
+
+    // Screenshot check-ins: Owner-only to read at all (see firestore.rules
+    // — even the person whose screenshots they are can't list everyone
+    // else's, only the Owner can). Everyone still writes their own via
+    // submitScreenshotCheckin(), which doesn't need a subscription.
+    if (user.role === "OWNER") {
+      pending.add("screenshotCheckins");
+      unsubs.push(subscribeCollection("screenshot-checkins", vals => { setScreenshotCheckins(vals); onOk("screenshotCheckins"); }, onErr("screenshotCheckins", [], setScreenshotCheckins)));
+    } else {
+      setScreenshotCheckins([]);
     }
 
     // Communication: Clients don't get this feature at all (enforced here,
@@ -4818,6 +5119,74 @@ export default function App() {
     setPeopleConfig(next);
     await sset("people-config", next);
   }
+  // Silent — no toast — since this fires automatically every ~20s and a
+  // notification per heartbeat would spam the person. `updateTimeEntry`
+  // above stays as the user-facing, toast-showing version for deliberate
+  // edits (Owner corrections, etc).
+  async function silentUpdateTimeEntry(entryId, patch) {
+    try {
+      await updateDocIn("time-entries", entryId, patch);
+      setTimeEntries((prev) => prev.map((e) => (e.id === entryId ? { ...e, ...patch } : e)));
+    } catch (e) {
+      // Heartbeats are best-effort — a dropped one just means the Owner's
+      // live view goes stale for a beat, not worth surfacing an error toast
+      // for something the person didn't take an action to trigger.
+      console.error("Heartbeat write failed:", e);
+    }
+  }
+
+  // ---- Real-time "are they actually working" presence ----
+  // While someone has an open (not-yet-clocked-out) time entry, this
+  // watches for genuine interaction — mouse movement, clicks, keystrokes,
+  // scrolling, touches — and writes a heartbeat to their own entry doc
+  // every 20s: `heartbeatAt` (this write happened), `lastInteractionAt`
+  // (the most recent real interaction), `recentActivityCount` (how many
+  // discrete interactions happened in that last 20s window), and
+  // `activityByHour` (a same-day running tally, `{ "9": 142, "10": 88 }`,
+  // hour-of-day -> total interaction count that hour). None of this
+  // records WHAT was clicked or typed, or any keystroke content — only
+  // that *something* happened and roughly how much. No keylogging, no
+  // screen capture. `recentActivityCount` counts discrete actions (clicks/
+  // keydowns/scroll notches/touches) — not raw `mousemove`, which fires
+  // continuously and would make "activity level" meaningless (it'd read
+  // "high" just from someone resting their hand near the mouse).
+  // TimeTrackingPage's "Currently clocked in" list (Owner view) turns the
+  // heartbeat into a live Working/Idle/Away status (LiveStatusDot) and the
+  // activity counts into a small per-hour bar (ActivityBar) — see both
+  // components below for exactly how each is derived.
+  const lastInteractionRef = useRef(Date.now());
+  const activityCountRef = useRef(0);
+  const timeEntriesRef = useRef(timeEntries);
+  useEffect(() => { timeEntriesRef.current = timeEntries; }, [timeEntries]);
+  useEffect(() => {
+    const bumpPresence = () => { lastInteractionRef.current = Date.now(); };
+    const bumpActivity = () => { lastInteractionRef.current = Date.now(); activityCountRef.current += 1; };
+    window.addEventListener("mousemove", bumpPresence, { passive: true });
+    ["mousedown", "keydown", "wheel", "touchstart"].forEach((ev) => window.addEventListener(ev, bumpActivity, { passive: true }));
+    return () => {
+      window.removeEventListener("mousemove", bumpPresence);
+      ["mousedown", "keydown", "wheel", "touchstart"].forEach((ev) => window.removeEventListener(ev, bumpActivity));
+    };
+  }, []);
+  useEffect(() => {
+    if (!user || user.role === "CLIENT") return;
+    const myOpenEntry = timeEntries.find((e) => e.userId === user.id && !e.clockOut);
+    if (!myOpenEntry) return;
+    const HEARTBEAT_MS = 20000;
+    const send = () => {
+      const count = activityCountRef.current;
+      activityCountRef.current = 0;
+      const current = timeEntriesRef.current.find((e) => e.id === myOpenEntry.id);
+      const hourKey = String(new Date().getHours());
+      const activityByHour = { ...(current?.activityByHour || {}), [hourKey]: (current?.activityByHour?.[hourKey] || 0) + count };
+      silentUpdateTimeEntry(myOpenEntry.id, { heartbeatAt: Date.now(), lastInteractionAt: lastInteractionRef.current, recentActivityCount: count, activityByHour });
+    };
+    send(); // immediately on clocking in / app load while already clocked in, not just after the first interval
+    const interval = setInterval(send, HEARTBEAT_MS);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, timeEntries.find((e) => e.userId === user?.id && !e.clockOut)?.id]);
+
   async function clockIn() {
     const now = Date.now();
     const entry = {
@@ -4944,6 +5313,36 @@ export default function App() {
       console.error("Failed to update time-tracking access:", e);
       notify("Couldn't update — check your connection or permissions and try again.", "error");
       throw e;
+    }
+  }
+  // Owner opts a person IN to screenshot check-ins — the person still has
+  // to explicitly grant screen-share permission themselves each session
+  // (a browser-level requirement no app code can bypass or make covert;
+  // see the consent card in TimeTrackingPage). Turning this on is a
+  // request the app can surface, not a switch that starts capturing
+  // anything by itself.
+  async function setUserScreenshotCheckinsEnabled(userId, enabled) {
+    try {
+      await updateDocIn("users", userId, { screenshotCheckinsEnabled: enabled });
+      setUsers(users.map(u => u.id === userId ? { ...u, screenshotCheckinsEnabled: enabled } : u));
+      notify(enabled ? "Screenshot check-ins requested for that user." : "Screenshot check-ins turned off for that user.");
+    } catch (e) {
+      console.error("Failed to update screenshot check-in access:", e);
+      notify("Couldn't update — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Downscaled, moderate-quality JPEG data URLs only (~80-150KB typical) —
+  // comfortably under Firestore's 1MiB document limit with room to spare.
+  // One document per capture, in their own collection (not appended onto
+  // the time-entries doc), so this never risks growing that doc unbounded.
+  async function submitScreenshotCheckin(dataUrl) {
+    try {
+      await addDocIn("screenshot-checkins", { userId: user.id, userName: user.name, capturedAt: Date.now(), dataUrl });
+    } catch (e) {
+      // Best-effort, same reasoning as heartbeat writes — a dropped capture
+      // isn't worth interrupting the person's work with an error toast.
+      console.error("Screenshot check-in failed to save:", e);
     }
   }
   async function saveUserAttendanceRules(userId, rules) {
@@ -5599,7 +5998,7 @@ export default function App() {
               {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
               {page === "people-info" && <PeopleInfoPage user={user} users={users} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
               {page === "org-chart" && <OrgChartPage user={user} people={people} updatePerson={updatePerson} />}
-              {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} />}
+              {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} orbitWorkspaces={orbitWorkspaces} setUserScreenshotCheckinsEnabled={setUserScreenshotCheckinsEnabled} screenshotCheckins={screenshotCheckins} submitScreenshotCheckin={submitScreenshotCheckin} />}
               {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
               {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
