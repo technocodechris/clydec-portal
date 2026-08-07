@@ -7,6 +7,12 @@ service cloud.firestore {
     function myRole() { return signedIn() ? myProfile().data.role : null; }
     function isOwner() { return myRole() == 'OWNER'; }
     function isAdminOrOwner() { return myRole() == 'ADMIN' || myRole() == 'OWNER'; }
+    // An Admin the Owner has explicitly opted in to see monitoring data
+    // (Activity-level signal, Work-produced evidence, Screenshot check-ins
+    // — see the new Monitoring report page in §7 Time Tracking). Owner
+    // always has full access regardless of this flag; it only ever WIDENS
+    // access beyond Owner, never narrows it, and only for signed-in Admins.
+    function hasMonitoringAccess() { return isOwner() || (myRole() == 'ADMIN' && myProfile().data.canViewMonitoring == true); }
 
     // Workspace-wide settings (auth config, notification config, restrictions)
     match /settings/{settingId} {
@@ -58,7 +64,7 @@ service cloud.firestore {
     // own; only the owner can read or edit anyone else's. Clients never use
     // this feature at all, enforced both here and in the UI.
     match /time-entries/{entryId} {
-      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isOwner());
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || hasMonitoringAccess());
       allow create: if signedIn() && myRole() != 'CLIENT' && (request.resource.data.userId == request.auth.uid || isOwner());
       allow update: if signedIn() && (resource.data.userId == request.auth.uid || isOwner());
       allow delete: if isOwner();
@@ -132,6 +138,23 @@ service cloud.firestore {
       allow create: if signedIn() && isAdminOrOwner();
       allow update: if signedIn() && myRole() != 'CLIENT';
       allow delete: if isAdminOrOwner();
+    }
+
+    // Screenshot check-ins: a person can only ever write their OWN capture
+    // (create only — captures are immutable once saved, no update rule at
+    // all means updates are denied by default). Reading is Owner-only, not
+    // even Admin — this is the most sensitive tier of the Time Tracking
+    // presence features (see §7 in the history doc), so it deliberately
+    // has the narrowest read access of anything in this file. The app
+    // itself additionally never captures anything without the person
+    // explicitly granting screen-share permission through their browser's
+    // own picker each session — this rule is the data-access boundary,
+    // not the consent mechanism, which lives in the client (see
+    // ScreenshotConsentCard in App.jsx).
+    match /screenshot-checkins/{checkinId} {
+      allow read: if hasMonitoringAccess();
+      allow create: if signedIn() && myRole() != 'CLIENT' && request.resource.data.userId == request.auth.uid;
+      allow delete: if isOwner();
     }
   }
 }
