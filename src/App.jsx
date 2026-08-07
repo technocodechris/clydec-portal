@@ -474,6 +474,7 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
     { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: user.role !== "CLIENT" },
     { key: "attendance", label: "Attendance", icon: CalendarCheck, show: user.role !== "CLIENT" },
     { key: "leave-requests", label: "Leave Requests", icon: FileText, show: user.role !== "CLIENT", badge: leavePendingCount || 0 },
+    { key: "monitoring", label: "Monitoring", icon: Eye, show: user.role === "OWNER" || (user.role === "ADMIN" && !!user.canViewMonitoring) },
   ];
   const communicationItems = [
     { key: "communication", label: "Messages", icon: MessageSquare, show: user.role !== "CLIENT", badge: unreadMessageCount || 0 },
@@ -2270,6 +2271,117 @@ function ScreenshotConsentCard({ user, myOpenEntry, submitScreenshotCheckin }) {
       <span style={{ fontSize: 13, flex: 1 }}>Ready to start. Pick a screen/window/tab to share when your browser asks.</span>
       <button onClick={start} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700 }}>Start sharing</button>
       {error && <span style={{ fontSize: 11.5, color: COLORS.danger }}>{error}</span>}
+    </div>
+  );
+}
+
+// The consolidated Monitoring report — Activity-level signal, Work-produced
+// evidence, and Screenshot check-ins for every employee at once, in one
+// live-updating place, instead of scattered across separate sections.
+// Visible to the Owner always, and to an Admin only once the Owner has
+// explicitly granted them `canViewMonitoring` (toggle at the bottom of
+// this page, Owner-only) — matches `hasMonitoringAccess()` in
+// firestore.rules exactly, which is the real enforcement; this page just
+// renders what the subscriptions were allowed to receive. Nothing here
+// polls — `timeEntries`, `orbitWorkspaces`, and `screenshotCheckins` are
+// all already realtime Firestore subscriptions at the App level, so every
+// row updates live as heartbeats/activity/captures come in.
+function MonitoringReportPage({ user, users, people, timeEntries, orbitWorkspaces, screenshotCheckins, setAdminMonitoringAccess }) {
+  const isOwner = user.role === "OWNER";
+  const [, forceTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => forceTick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
+  const now = Date.now();
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+
+  const employees = users.filter((u) => u.role !== "CLIENT");
+  const mergedActivity = React.useMemo(() => (
+    (orbitWorkspaces || []).flatMap((w) => (w.data?.activity || []).map((a) => ({ ...a, workspaceName: w.name }))).sort((a, b) => b.ts - a.ts)
+  ), [orbitWorkspaces]);
+
+  return (
+    <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ background: COLORS.dataSoft, color: COLORS.dataText, borderRadius: 10, padding: "10px 14px", fontSize: 12.5 }}>
+        Activity level and work-produced evidence reflect real usage of this portal. Screenshot check-ins only appear for people who've both been opted in <em>and</em> explicitly granted screen-share permission themselves — most rows below will simply have none, which is expected, not a gap.
+      </div>
+
+      {employees.map((u) => {
+        const openEntry = timeEntries.find((e) => e.userId === u.id && !e.clockOut);
+        const myActivity = mergedActivity.filter((a) => a.actorId === u.id).slice(0, 3);
+        const myShots = (screenshotCheckins || []).filter((s) => s.userId === u.id && s.capturedAt >= todayStart).sort((a, b) => b.capturedAt - a.capturedAt);
+        return (
+          <div key={u.id} style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 16, display: "grid", gridTemplateColumns: "180px 1fr 1fr 160px", gap: 16, alignItems: "start" }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ width: 26, height: 26, borderRadius: "50%", background: peopleColorFor(u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 700 }}>{peopleInitials(u.name)}</div>
+                <span style={{ fontWeight: 700, fontSize: 13.5 }}>{u.name}</span>
+              </div>
+              {openEntry ? (
+                <>
+                  <LiveStatusDot entry={openEntry} nowMs={now} />
+                  <div style={{ marginTop: 6 }}><ActivityBar activityByHour={openEntry.activityByHour} /></div>
+                </>
+              ) : (
+                <span style={{ fontSize: 12, color: COLORS.mute }}>Not clocked in</span>
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>Work-produced evidence</div>
+              {myActivity.length === 0 ? (
+                <span style={{ fontSize: 12, color: COLORS.mute }}>Nothing yet.</span>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {myActivity.map((a) => (
+                    <div key={a.id} style={{ fontSize: 12 }}>
+                      <span style={{ color: COLORS.mute, fontSize: 10.5, marginRight: 6 }}>{timeAgo(a.ts)}</span>
+                      {a.text} <span style={{ color: COLORS.mute }}>· {a.workspaceName}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>Screenshot check-ins today</div>
+              {myShots.length === 0 ? (
+                <span style={{ fontSize: 12, color: COLORS.mute }}>{u.screenshotCheckinsEnabled ? "Opted in, no captures yet." : "Not enabled."}</span>
+              ) : (
+                <div style={{ display: "flex", gap: 6 }}>
+                  {myShots.slice(0, 3).map((s) => (
+                    <img key={s.id} src={s.dataUrl} alt="" style={{ width: 56, height: 34, objectFit: "cover", borderRadius: 5, border: `1px solid ${COLORS.line}` }} title={formatClockTime(s.capturedAt)} />
+                  ))}
+                  {myShots.length > 3 && <span style={{ fontSize: 11, color: COLORS.mute, alignSelf: "center" }}>+{myShots.length - 3}</span>}
+                </div>
+              )}
+            </div>
+
+            <div style={{ fontSize: 11, color: COLORS.mute, textAlign: "right" }}>
+              {openEntry ? `Clocked in ${formatClockTime(openEntry.clockIn)}` : ""}
+            </div>
+          </div>
+        );
+      })}
+      {employees.length === 0 && <div style={{ color: COLORS.mute, fontSize: 13 }}>No team members yet.</div>}
+
+      {isOwner && (
+        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20, marginTop: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Grant this report to Admins</div>
+          <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14 }}>
+            Off by default for every Admin. Granting it here gives that Admin the same view you're looking at right now — it does not let them manage Screenshot check-ins, time tracking access, or grant this to anyone else; those stay Owner-only.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {users.filter((u) => u.role === "ADMIN").map((u) => (
+              <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${COLORS.line}` }}>
+                <span style={{ fontWeight: 600, fontSize: 13.5 }}>{u.name}</span>
+                <Toggle checked={!!u.canViewMonitoring} onChange={(v) => setAdminMonitoringAccess(u.id, v)} />
+              </div>
+            ))}
+            {users.filter((u) => u.role === "ADMIN").length === 0 && (
+              <div style={{ color: COLORS.mute, fontSize: 13, padding: "10px 0" }}>No Admins yet.</div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -4818,10 +4930,12 @@ export default function App() {
     pending.add("peopleConfig");
     unsubs.push(subscribeSetting("people-config", SEED_PEOPLE_CONFIG, val => { setPeopleConfig(val); onOk("peopleConfig"); }, onErr("peopleConfig", SEED_PEOPLE_CONFIG, setPeopleConfig)));
 
-    // Only the Owner can read every user's time entries (per firestore.rules);
-    // everyone else's query is scoped to their own uid so it isn't denied.
+    // Owner, or an Admin the Owner has granted Monitoring report access to,
+    // can read every user's time entries (per firestore.rules'
+    // hasMonitoringAccess()); everyone else's query is scoped to their own
+    // uid so it isn't denied.
     pending.add("timeEntries");
-    if (user.role === "OWNER") {
+    if (user.role === "OWNER" || (user.role === "ADMIN" && !!user.canViewMonitoring)) {
       unsubs.push(subscribeCollection("time-entries", vals => { setTimeEntries(vals); onOk("timeEntries"); }, onErr("timeEntries", [], setTimeEntries)));
     } else {
       unsubs.push(subscribeCollectionWhere("time-entries", "userId", user.id, vals => { setTimeEntries(vals); onOk("timeEntries"); }, onErr("timeEntries", [], setTimeEntries)));
@@ -4851,11 +4965,15 @@ export default function App() {
       setOrbitWorkspaces([]);
     }
 
-    // Screenshot check-ins: Owner-only to read at all (see firestore.rules
-    // — even the person whose screenshots they are can't list everyone
-    // else's, only the Owner can). Everyone still writes their own via
-    // submitScreenshotCheckin(), which doesn't need a subscription.
-    if (user.role === "OWNER") {
+    // Screenshot check-ins: Owner always sees this; an Admin only if the
+    // Owner has explicitly granted them Monitoring report access
+    // (`canViewMonitoring`) — matches `hasMonitoringAccess()` in
+    // firestore.rules exactly (not even the person whose screenshots they
+    // are can list everyone else's, only Owner/granted-Admin can). Everyone
+    // still writes their own via submitScreenshotCheckin(), which doesn't
+    // need a subscription.
+    const canViewMonitoring = user.role === "OWNER" || (user.role === "ADMIN" && !!user.canViewMonitoring);
+    if (canViewMonitoring) {
       pending.add("screenshotCheckins");
       unsubs.push(subscribeCollection("screenshot-checkins", vals => { setScreenshotCheckins(vals); onOk("screenshotCheckins"); }, onErr("screenshotCheckins", [], setScreenshotCheckins)));
     } else {
@@ -5328,6 +5446,26 @@ export default function App() {
       notify(enabled ? "Screenshot check-ins requested for that user." : "Screenshot check-ins turned off for that user.");
     } catch (e) {
       console.error("Failed to update screenshot check-in access:", e);
+      notify("Couldn't update — check your connection or permissions and try again.", "error");
+      throw e;
+    }
+  }
+  // Owner grants a specific Admin the ability to VIEW the Monitoring
+  // report (Activity-level signal, Work-produced evidence, Screenshot
+  // check-ins for everyone at once — see MonitoringReportPage). This only
+  // ever widens read access beyond Owner — matches `hasMonitoringAccess()`
+  // in firestore.rules exactly, which is the real enforcement; this
+  // function just sets the flag it checks. Deliberately does NOT grant an
+  // Admin the ability to manage any of it (enable/disable Screenshot
+  // check-ins for someone, or grant this to another Admin) — those stay
+  // Owner-only, same as before.
+  async function setAdminMonitoringAccess(userId, granted) {
+    try {
+      await updateDocIn("users", userId, { canViewMonitoring: granted });
+      setUsers(users.map(u => u.id === userId ? { ...u, canViewMonitoring: granted } : u));
+      notify(granted ? "Monitoring report access granted." : "Monitoring report access revoked.");
+    } catch (e) {
+      console.error("Failed to update monitoring access:", e);
       notify("Couldn't update — check your connection or permissions and try again.", "error");
       throw e;
     }
@@ -5978,6 +6116,7 @@ export default function App() {
               page === "people-info" ? "People Information" : page === "org-chart" ? "Organizational Chart" : page === "time-tracking" ? "Time Tracking" :
               page === "time-inout" ? "Time in/Time out information" :
               page === "attendance" ? "Attendance" : page === "leave-requests" ? "Leave Requests" : page === "communication" ? "Communication" :
+              page === "monitoring" ? "Monitoring" :
               page === "workspace" ? "Workspace" : "Admin settings"
             } subtitle={
               page === "dashboard" ? "Your workspace at a glance." :
@@ -5990,6 +6129,7 @@ export default function App() {
               page === "attendance" ? "Daily attendance summaries." :
               page === "leave-requests" ? "Request Sick or Voluntary Leave and track approvals." :
               page === "communication" ? "Chat and video call your team, built from People Information." :
+              page === "monitoring" ? "Everyone's activity level, work-produced evidence, and screenshot check-ins, live and side by side." :
               page === "workspace" ? "Orbit project-management workspaces, organized by Wing." : "Authentication, users, groups, and restrictions."
             } />
             <div style={{ flex: 1, overflow: "auto" }}>
@@ -6003,6 +6143,7 @@ export default function App() {
               {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
               {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
               {page === "communication" && <CommunicationPage user={user} users={users} people={people} conversations={conversations} activeConversationId={activeConversationId} setActiveConversationId={setActiveConversationId} messages={messages} sendMessage={sendMessage} getOrCreateDirectConversation={getOrCreateDirectConversation} createGroupConversation={createGroupConversation} markConversationRead={markConversationRead} startCall={startCall} activeCall={activeCall} callConnecting={callConnecting} editMessage={editMessage} deleteMessage={deleteMessage} sendFileMessage={sendFileMessage} hideConversationForMe={hideConversationForMe} addGroupMembers={addGroupMembers} removeGroupMember={removeGroupMember} leaveGroupConversation={leaveGroupConversation} setMyPresenceStatus={setMyPresenceStatus} />}
+              {page === "monitoring" && <MonitoringReportPage user={user} users={users} people={people} timeEntries={timeEntries} orbitWorkspaces={orbitWorkspaces} screenshotCheckins={screenshotCheckins} setAdminMonitoringAccess={setAdminMonitoringAccess} />}
               {page === "workspace" && <WorkspacePage user={user} orbitWorkspaces={orbitWorkspaces} addOrbitWorkspace={addOrbitWorkspace} deleteOrbitWorkspace={deleteOrbitWorkspace} onOpenWorkspace={setActiveOrbitWorkspaceId} />}
               {page === "admin" && (
                 <AdminSettings
