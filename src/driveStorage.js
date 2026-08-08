@@ -8,7 +8,7 @@ async function authHeader() {
 /* ------------------------------------------------------------------ */
 /* Persisting an in-progress upload so a page reload doesn't lose it   */
 /* ------------------------------------------------------------------ */
-const PENDING_KEY = "clydec-pending-upload";
+const PENDING_KEY = "tago-life-pending-upload";
 
 function savePendingUpload(record) {
   try { localStorage.setItem(PENDING_KEY, JSON.stringify(record)); } catch (e) { /* storage full/unavailable — non-fatal */ }

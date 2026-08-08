@@ -19,10 +19,7 @@ function initAdmin() {
 }
 
 // Confirms the request carries a valid Firebase ID token and returns the
-// caller's workspace role by looking up their Firestore profile. For an
-// EMPLOYEE, also resolves their Wing tag (Creative/Data/Hybrid) from their
-// linked People record, if any — needed by canAccessFolder() below to
-// enforce the per-person Wing restriction set in People Information.
+// caller's workspace role and allowed folders by looking up their Firestore profile.
 export async function verifyUser(req) {
   initAdmin();
   const header = req.headers.authorization || "";
@@ -31,13 +28,13 @@ export async function verifyUser(req) {
   const decoded = await admin.auth().verifyIdToken(token);
   const snap = await admin.firestore().collection("users").doc(decoded.uid).get();
   if (!snap.exists) throw Object.assign(new Error("No workspace profile"), { status: 403 });
-  const role = snap.data().role;
-  let wing = null;
-  if (role === "EMPLOYEE") {
-    const peopleSnap = await admin.firestore().collection("people").where("linkedUserId", "==", decoded.uid).limit(1).get();
-    if (!peopleSnap.empty) wing = peopleSnap.docs[0].data().wing || null;
-  }
-  return { uid: decoded.uid, role, wing };
+  
+  const data = snap.data();
+  return { 
+    uid: decoded.uid, 
+    role: data.role, 
+    allowedFolders: data.allowedFolders || [] 
+  };
 }
 
 // A lighter check for high-frequency endpoints (the per-chunk upload
@@ -68,6 +65,15 @@ export function getDriveClient() {
   return google.drive({ version: "v3", auth: oauth2Client });
 }
 
+export function getCalendarClient() {
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GDRIVE_CLIENT_ID,
+    process.env.GDRIVE_CLIENT_SECRET
+  );
+  oauth2Client.setCredentials({ refresh_token: process.env.GDRIVE_REFRESH_TOKEN });
+  return google.calendar({ version: "v3", auth: oauth2Client });
+}
+
 // A short-lived (~1hr) access token, minted fresh from the refresh token.
 // Used to let the browser talk to Google directly for large file transfers,
 // instead of routing bytes through our serverless function.
@@ -92,55 +98,40 @@ export async function getAccessToken() {
 export function friendlyDriveErrorMessage(err) {
   const raw = (err && err.message) || String(err);
   if (/invalid_grant|invalid_client|unauthorized_client/i.test(raw)) {
-    return "Google Drive's connection has expired or been revoked. The workspace owner needs to redo the one-time Google authorization and update GDRIVE_REFRESH_TOKEN in Vercel's environment variables.";
+    return "Google Drive's connection has expired or been revoked. The workspace Admin needs to redo the one-time Google authorization and update GDRIVE_REFRESH_TOKEN in Vercel's environment variables.";
   }
   return raw;
 }
 
-// Mirrors SEED_FOLDERS access in src/App.jsx — keep both in sync.
-export const FOLDER_ACCESS = {
-  creative: ["OWNER", "ADMIN", "EMPLOYEE"],
-  data: ["OWNER", "ADMIN", "EMPLOYEE"],
-  finance: ["OWNER", "ADMIN"],
-  "client-aurora": ["OWNER", "ADMIN", "CLIENT"],
-};
-
-// This is the check that actually matters for security — the client-side
-// canAccessFolder() in src/App.jsx is only a mirror of this, for the UI.
-// The role-based FOLDER_ACCESS list above is the baseline; an EMPLOYEE's
-// Wing tag (attached to `user` by verifyUser, from their linked People
-// record) can further narrow Creative/Data Wing access down to just one
-// of the two, or leave both if they're tagged Hybrid or not tagged at all.
+// This check governs security — the client-side canAccessFolder in App.jsx
+// must mirror this logic. Granular per-user folder access array is checked.
 export function canAccessFolder(user, rootKey) {
-  const allowed = FOLDER_ACCESS[rootKey];
-  if (!allowed || !allowed.includes(user.role)) return false;
-  if (user.role === "EMPLOYEE" && (rootKey === "creative" || rootKey === "data")) {
-    if (user.wing === "creative" || user.wing === "data") return user.wing === rootKey;
-  }
-  return true;
+  if (user.role === "ADMIN" || user.role === "OWNER") return true;
+  return user.allowedFolders && user.allowedFolders.includes(rootKey);
 }
 
 // Each value is the Drive folder ID for a folder you created in your own
 // Drive (see README "Google Drive setup") — no sharing step needed since
 // it's all in your account already.
 export const FOLDER_DRIVE_IDS = {
-  creative: process.env.GDRIVE_FOLDER_CREATIVE,
-  data: process.env.GDRIVE_FOLDER_DATA,
-  finance: process.env.GDRIVE_FOLDER_FINANCE,
-  "client-aurora": process.env.GDRIVE_FOLDER_CLIENT_AURORA,
+  operations: process.env.GDRIVE_FOLDER_OPERATIONS,
+  marketing: process.env.GDRIVE_FOLDER_MARKETING,
+  pr: process.env.GDRIVE_FOLDER_PR,
+  multimedia: process.env.GDRIVE_FOLDER_MULTIMEDIA,
+  sales: process.env.GDRIVE_FOLDER_SALES,
+  company_admin: process.env.GDRIVE_FOLDER_COMPANY_ADMIN,
 };
 
-// Accepts either one of the 4 fixed Wing keys ("creative") or a raw Drive
-// folder ID (a subfolder created inside a Wing), and resolves both the
-// actual Drive folder ID to operate on and which Wing's role list governs
-// it — by walking Drive's own parent chain rather than maintaining a
-// separate folder database that could drift out of sync. A subfolder's
-// access is always inherited from whichever Wing it's nested under,
+// Accepts either one of the 6 fixed root keys or a raw Drive
+// folder ID, and resolves both the actual Drive folder ID to operate on and
+// which Department's role list governs it — by walking Drive's own parent chain
+// rather than maintaining a separate folder database that could drift out of sync.
+// A subfolder's access is always inherited from whichever Department it's nested under,
 // however deep; there's no separate per-subfolder permission to manage.
 export async function resolveFolder(folderParam, drive) {
   if (!folderParam) return null;
-  if (Object.prototype.hasOwnProperty.call(FOLDER_ACCESS, folderParam)) {
-    // It's meant to be one of the 4 fixed Wings.
+  if (Object.prototype.hasOwnProperty.call(FOLDER_DRIVE_IDS, folderParam)) {
+    // It's meant to be one of the fixed root folders.
     const driveId = FOLDER_DRIVE_IDS[folderParam];
     if (!driveId) {
       throw Object.assign(
@@ -166,5 +157,5 @@ export async function resolveFolder(folderParam, drive) {
     }
     currentId = parentId;
   }
-  return null; // too deep, or not actually under any known Wing
+  return null; // too deep, or not actually under any known Department
 }

@@ -1,5 +1,5 @@
 // ------------------------------------------------------------------
-// Firebase setup for the Clydec Studio portal.
+// Firebase setup for the Tago Life portal.
 //
 // Fill in the values below from your Firebase project settings
 // (Project settings > General > Your apps > SDK setup and config),
@@ -11,7 +11,7 @@ import { initializeApp, getApps } from "firebase/app";
 import {
   getAuth, signInWithEmailAndPassword, signOut as fbSignOut,
   onAuthStateChanged, createUserWithEmailAndPassword,
-  sendPasswordResetEmail,
+  sendPasswordResetEmail, updatePassword as fbUpdatePassword
 } from "firebase/auth";
 import {
   getFirestore, doc, getDoc, setDoc, deleteDoc, collection,
@@ -50,6 +50,10 @@ export async function logout() {
 }
 export async function requestPasswordReset(email) {
   await sendPasswordResetEmail(auth, email);
+}
+export async function updateUserPassword(newPassword) {
+  if (!auth.currentUser) throw new Error("Not logged in");
+  await fbUpdatePassword(auth.currentUser, newPassword);
 }
 
 // Creating a new user must not sign the owner/admin out of their own

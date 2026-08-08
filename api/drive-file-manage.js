@@ -58,7 +58,7 @@ export default async function handler(req, res) {
     }
 
     if (action === "quota") {
-      if (user.role !== "OWNER") return res.status(403).json({ error: "Owner only" });
+      if (user.role !== "OWNER" && user.role !== "ADMIN") return res.status(403).json({ error: "Owner or Admin only" });
       const about = await drive.about.get({ fields: "storageQuota" });
       const q = about.data.storageQuota || {};
       return res.status(200).json({

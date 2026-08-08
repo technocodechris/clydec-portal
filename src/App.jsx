@@ -1,150 +1,69 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
+import html2canvas from "html2canvas";
 import {
   Lock, Mail, Eye, EyeOff, LayoutDashboard, FolderOpen, Users, Shield,
   Bell, LogOut, Upload, Download, Trash2, Plus, X, Check, Clock,
   ChevronDown, Search, FileText, Settings, UserPlus, AlertCircle,
   Loader2, Building2, KeyRound, Image as ImageIcon, File as FileIcon,
   ShieldCheck, Inbox, ChevronRight, CircleAlert, CheckCircle2, XCircle, RefreshCw,
-  Database, Smile, CalendarCheck, Timer, Network, LayoutGrid, Pencil,
-  MessageSquare, Send, Phone, PhoneOff, Video, VideoOff, Mic, MicOff, UsersRound, PhoneMissed, PhoneIncoming, Menu,
-  Briefcase,
+  Database, Smile, CalendarCheck, CalendarDays, Timer, Network, LayoutGrid, Pencil,
+  MessageSquare, Send, Phone, PhoneOff, Video, VideoOff, Mic, MicOff, UsersRound, PhoneMissed, PhoneIncoming, Menu, Activity, PlaySquare,
 } from "lucide-react";
-import OrbitApp from "./orbit/OrbitApp";
+import { motion, AnimatePresence } from "framer-motion";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from "recharts";
+import TrackingDashboard from "./components/TrackingDashboard.jsx";
 
 /* ---------------------------------------------------------------- */
 /* Design tokens                                                     */
 /* ---------------------------------------------------------------- */
-const CSS = `
-  .cly { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  .cly-serif { font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif; }
-  .cly-mono { font-family: "SF Mono", Menlo, Consolas, monospace; }
-  .cly *, .cly *::before, .cly *::after { box-sizing: border-box; }
-  .cly ::-webkit-scrollbar { width: 8px; height: 8px; }
-  .cly ::-webkit-scrollbar-thumb { background: #D8D4C8; border-radius: 4px; }
-  .cly-scan { background-image: repeating-linear-gradient(115deg, transparent 0 40px, rgba(255,255,255,0.035) 40px 41px); }
-  .cly-fade-in { animation: clyFade .35s ease both; }
-  @keyframes clyFade { from { opacity:0; transform: translateY(6px);} to {opacity:1; transform:none;} }
-  .cly-shake { animation: clyShake .4s ease; }
-  @keyframes clyShake { 10%,90%{transform:translateX(-1px);} 20%,80%{transform:translateX(2px);} 30%,50%,70%{transform:translateX(-4px);} 40%,60%{transform:translateX(4px);} }
-  .cly-btn { cursor:pointer; border:none; transition: background .15s, opacity .15s, transform .1s; }
-  .cly-btn:active { transform: scale(0.98); }
-  .cly-input:focus { outline: none; border-color: #14181C !important; box-shadow: 0 0 0 3px rgba(20,24,28,0.08); }
-  .cly-row:hover { background: #FAF9F6; }
-  .cly-navitem:hover { background: rgba(255,255,255,0.06); }
-  .cly-spin { animation: clySpin 0.9s linear infinite; }
-  @keyframes clySpin { to { transform: rotate(360deg); } }
-  @keyframes cly-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(1.3); } }
-  .cly-toggle { position:relative; width:38px; height:22px; border-radius:11px; cursor:pointer; transition: background .15s; border:none; flex-shrink:0; }
-  .cly-toggle::after { content:''; position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
-  .cly-toggle.on { background:#14181C; }
-  .cly-toggle.on::after { transform: translateX(16px); }
-  .cly-toggle.off { background:#DCD8CC; }
-  .cly-toggle:disabled { cursor:not-allowed; opacity:0.5; }
-
-  /* ---- Responsive: desktop / tablet / mobile ----
-     Breakpoint: 1024px. At/above it, the sidebar sits inline like a normal
-     desktop app. Below it (tablet and phone alike — tablets in portrait are
-     narrower than 1024px), the sidebar becomes an off-canvas drawer opened
-     by a hamburger button in the topbar, with a tap-to-close backdrop. */
-  .cly-sidebar { width: 216px; flex-shrink: 0; }
-  .cly-hamburger { display: none; }
-  .cly-mobile-only { display: none; }
-  .cly-sidebar-backdrop { display: none; }
-  @media (max-width: 1023px) {
-    .cly-mobile-only { display: inline-flex !important; }
-  }
-  @media (max-width: 1023px) {
-    .cly-sidebar {
-      position: fixed; top: 0; left: 0; bottom: 0; z-index: 50;
-      transform: translateX(-100%); transition: transform .2s ease;
-      box-shadow: 2px 0 24px rgba(0,0,0,0.25);
-    }
-    .cly-sidebar.cly-open { transform: translateX(0); }
-    .cly-hamburger { display: inline-flex !important; }
-    .cly-sidebar-backdrop.cly-open {
-      display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 45;
-    }
-    /* Chat: only one pane (the contacts/chat list, or the open
-       conversation) shows at a time instead of a permanent side-by-side
-       split — same idea as any mobile chat app. Whichever pane doesn't
-       apply right now gets .cly-hide-mobile from the component based on
-       whether a conversation is currently open. */
-    .cly-hide-mobile { display: none !important; }
-    .cly-chat-list, .cly-chat-view { width: 100% !important; }
-  }
-  /* Two/three-column forms collapse to fewer columns as the viewport
-     narrows — used for People/Project/Task/Leave-request forms and the
-     Time Tracking hours grid instead of a fixed inline gridTemplateColumns. */
-  .cly-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .cly-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-  @media (max-width: 860px) { .cly-grid-3 { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 600px) { .cly-grid-2, .cly-grid-3 { grid-template-columns: 1fr; } }
-  /* Wraps anything too wide to reflow on a phone (data tables, the Kanban
-     board, the org chart canvas) so it scrolls horizontally in place
-     rather than overflowing the page or crushing every column unreadably
-     thin — the standard, expected pattern for dense data on small screens. */
-  .cly-scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  @media (max-width: 640px) {
-    .cly-page-pad { padding: 16px !important; }
-    .cly-topbar { padding: 14px 16px !important; }
-    .cly-topbar-title { font-size: 17px !important; }
-    .cly-modal-card { width: 92vw !important; max-width: 92vw !important; }
-  }
-  /* Login screen: side-by-side brand panel + form on desktop, stacked on
-     phones/narrow tablets — the two panels use flex-basis percentages that
-     just shrink rather than wrap on their own, so this needs an explicit
-     direction switch rather than relying on flex-wrap. */
-  @media (max-width: 760px) {
-    .cly-login-shell { flex-direction: column !important; }
-    .cly-login-left { flex: none !important; padding: 28px 24px !important; }
-    .cly-login-right { flex: none !important; padding: 32px 24px !important; }
-  }
-`;
+import './App.css';
 
 const COLORS = {
-  ink: "#14181C",
-  ink2: "#1B2027",
-  inkBorder: "#2B323A",
-  cream: "#F7F5F0",
-  line: "#E7E3D8",
-  text: "#1A1A18",
-  mute: "#7A7A70",
-  creative: "#C2622D",
-  creativeSoft: "#F1DECD",
-  creativeText: "#8A3E17",
-  data: "#3B6EA5",
-  dataSoft: "#DCE6F0",
-  dataText: "#204A72",
-  success: "#3F8F5F",
-  successSoft: "#DCEEE1",
-  warning: "#B8862F",
-  warningSoft: "#F5E9D2",
-  danger: "#B4423A",
-  dangerSoft: "#F5DEDC",
-  gold: "#A67C3D",
-  goldSoft: "#EFE1C8",
+  ink: "rgba(10, 12, 16, 0.85)",
+  ink2: "rgba(18, 22, 31, 0.9)",
+  inkBorder: "rgba(212, 175, 55, 0.2)",
+  cream: "#090A0F",
+  line: "rgba(212, 175, 55, 0.18)",
+  text: "#FFFFFF",
+  mute: "rgba(255, 255, 255, 0.6)",
+  events: "#D4AF37",
+  eventsSoft: "rgba(212, 175, 55, 0.15)",
+  eventsText: "#F3E5AB",
+  products: "#C59B27",
+  productsSoft: "rgba(197, 155, 39, 0.15)",
+  productsText: "#F3E5AB",
+  media: "#D4AF37",
+  mediaSoft: "rgba(212, 175, 55, 0.15)",
+  mediaText: "#FFFFFF",
+  success: "#4ADE80",
+  successSoft: "rgba(74, 222, 128, 0.15)",
+  warning: "#FBBF24",
+  warningSoft: "rgba(251, 191, 36, 0.15)",
+  danger: "#F87171",
+  dangerSoft: "rgba(248, 113, 113, 0.15)",
+  gold: "#D4AF37",
+  goldSoft: "rgba(212, 175, 55, 0.18)",
 };
 
 const ROLE_META = {
-  OWNER: { label: "Owner", color: COLORS.gold, soft: COLORS.goldSoft, text: "#6B4A1A", desc: "Full control of the workspace" },
-  ADMIN: { label: "Admin", color: COLORS.data, soft: COLORS.dataSoft, text: COLORS.dataText, desc: "Manages users, can request access changes" },
-  EMPLOYEE: { label: "Employee", color: COLORS.creative, soft: COLORS.creativeSoft, text: COLORS.creativeText, desc: "Works inside assigned folders" },
+  ADMIN: { label: "Admin", color: 'var(--color-products)', soft: 'var(--color-productsSoft)', text: 'var(--color-productsText)', desc: "Full control of the workspace" },
+  EMPLOYEE: { label: "Employee", color: 'var(--color-events)', soft: 'var(--color-eventsSoft)', text: 'var(--color-eventsText)', desc: "Works inside assigned folders" },
   CLIENT: { label: "Client", color: "#4F8272", soft: "#DCEBE5", text: "#2E5347", desc: "Views their own project only" },
 };
 
 /* ---------------------------------------------------------------- */
 /* Storage / auth: real backend, via src/firebase.js                 */
 /* ---------------------------------------------------------------- */
-import {
+import { auth, 
   watchAuth, login as fbLogin, logout as fbLogout, createUserAccount,
-  requestPasswordReset as requestPasswordResetFor,
+  requestPasswordReset as requestPasswordResetFor, updateUserPassword,
   sset, setDocIn, addDocIn, updateDocIn, deleteDocIn, deleteDocFieldIn, setUserAttendanceOverridesBulk,
   subscribeCollection, subscribeCollectionWhere, subscribeCollectionArrayContains, subscribeSetting,
   subscribePath, subscribeDocPath, addDocPath, setDocPath, updateDocPath, deleteDocPath,
   uploadFile, deleteFileFromStorage, db,
 } from "./firebase";
-import { doc as fsDoc, getDoc } from "firebase/firestore";
+import { doc as fsDoc, getDoc, setDoc, increment } from "firebase/firestore";
 
 import { driveUpload, driveDownload, driveDelete, driveSyncFolder, getPendingUpload, clearPendingUpload, driveListFolders, driveCreateFolder, driveRenameFolder, driveDeleteFolder, driveGetStorageQuota, driveVerifyFiles } from "./driveStorage";
 
@@ -169,7 +88,7 @@ function downloadFromUrl(url, filename) {
   document.body.appendChild(a); a.click(); a.remove();
 }
 function formatDuration(sec) {
-  if (sec == null || !isFinite(sec)) return "calculating…";
+  if (sec == null || !isFinite(sec)) return "calculatingÃ¢â‚¬Â¦";
   const s = Math.round(sec);
   if (s < 60) return `${s}s left`;
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s left`;
@@ -179,20 +98,19 @@ function formatDuration(sec) {
 /* ---------------------------------------------------------------- */
 /* Seed data                                                          */
 /* ---------------------------------------------------------------- */
-// Fallback shape only — with Firebase connected, real users come from the
+// Fallback shape only â€” with Firebase connected, real users come from the
 // "users" Firestore collection (profile: name/role/status) paired with a
 // Firebase Auth account (email/password) that shares the same uid.
 // See README.md "First-run setup" for how to create your first owner.
 const SEED_USERS = [];
 
 const SEED_GROUPS = [
-  { id: "OWNER", name: "Owner", custom: false, description: "Full access to every workspace, file, and setting." },
-  { id: "ADMIN", name: "Admin", custom: false, description: "Manages users and day-to-day operations; sensitive changes need owner approval." },
-  { id: "EMPLOYEE", name: "Employee", custom: false, description: "Works inside the Creative and Data wings on assigned projects." },
+  { id: "ADMIN", name: "Admin", custom: false, description: "Full access to every workspace, file, and setting." },
+  { id: "EMPLOYEE", name: "Employee", custom: false, description: "Works on assigned projects and specific access areas." },
   { id: "CLIENT", name: "Client", custom: false, description: "Views and downloads files from their own project only." },
 ];
 
-// Public STUN only (no TURN server) — enough to connect most calls, but a
+// Public STUN only (no TURN server) â€” enough to connect most calls, but a
 // call between two people both behind restrictive/symmetric NATs or strict
 // corporate firewalls can fail to establish a peer-to-peer path. A TURN
 // server (self-hosted coturn, or a paid service like Twilio) would close
@@ -202,7 +120,7 @@ const ICE_SERVERS = { iceServers: [
   { urls: "stun:stun1.l.google.com:19302" },
 ] };
 
-// Browsers throw a specific error `name` for getUserMedia failures — the
+// Browsers throw a specific error `name` for getUserMedia failures â€” the
 // generic "check permissions" message wasn't telling people what was
 // actually wrong (blocked permission vs. no camera vs. camera in use by
 // another app vs. an insecure/non-HTTPS context).
@@ -220,12 +138,12 @@ function friendlyMediaError(e) {
   if (name === "SecurityError" || name === "InsecureContextError") {
     return "This page needs to be loaded over a secure (https://) connection to use the camera or microphone.";
   }
-  // Firestore write for the call doc failed — almost always means the
+  // Firestore write for the call doc failed â€” almost always means the
   // `calls`/`conversations` rules haven't been published to the Console
   // yet, not an actual camera/mic problem. Surfacing this distinctly
   // instead of the generic message below is what tells us which one it is.
   if (e?.code === "permission-denied" || /permission[- ]denied/i.test(e?.message || "")) {
-    return "Couldn't start the call — the server rejected it (permission-denied). This means the Communication Firestore rules haven't been published to the Console yet.";
+    return "Couldn't start the call â€” the server rejected it (permission-denied). This means the Communication Firestore rules haven't been published to the Console yet.";
   }
   // Fall back to showing the raw detail rather than a one-size-fits-all
   // message, so whatever this actually is can be diagnosed from the toast
@@ -249,7 +167,7 @@ async function acquireCallMedia(notify, wantVideo = true) {
   } catch (e) {
     if (["NotFoundError", "NotReadableError", "OverconstrainedError", "TrackStartError"].includes(e.name)) {
       const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
-      notify?.("Camera unavailable — joined with audio only.", "error");
+      notify?.("Camera unavailable â€” joined with audio only.", "error");
       return audioOnly;
     }
     throw e;
@@ -257,23 +175,18 @@ async function acquireCallMedia(notify, wantVideo = true) {
 }
 
 const SEED_FOLDERS = [
-  { id: "creative", name: "Creative Wing", wing: "creative", access: ["OWNER", "ADMIN", "EMPLOYEE"] },
-  { id: "data", name: "Data Wing", wing: "data", access: ["OWNER", "ADMIN", "EMPLOYEE"] },
-  { id: "finance", name: "Admin & Finance", wing: "data", access: ["OWNER", "ADMIN"] },
-  { id: "client-aurora", name: "Clients", wing: "creative", access: ["OWNER", "ADMIN", "CLIENT"] },
+  { id: "operations", name: "Operations & Admin", department: "operations", access: ["ADMIN", "EMPLOYEE"] },
+  { id: "marketing", name: "Marketing Growth", department: "marketing", access: ["ADMIN", "EMPLOYEE"] },
+  { id: "pr", name: "PR & Branding", department: "pr", access: ["ADMIN", "EMPLOYEE"] },
+  { id: "multimedia", name: "Multimedia & Content Studio", department: "multimedia", access: ["ADMIN", "EMPLOYEE"] },
+  { id: "sales", name: "Sales", department: "sales", access: ["ADMIN", "EMPLOYEE"] },
+  { id: "company_admin", name: "Company Admin", department: "company_admin", access: ["ADMIN", "EMPLOYEE"] },
 ];
 
-// The Workspace folder (Orbit project-management workspaces) groups by the
-// same four Wings Storage uses, for consistency — though these are a
-// separate list of ids/labels from SEED_FOLDERS above, since Workspace
-// doesn't map onto actual Drive folders. Every orbit-workspaces/{id} doc
-// carries one of these ids in its `wing` field.
-const WORKSPACE_WINGS = [
-  { id: "creative", name: "Creative Wing" },
-  { id: "data", name: "Data Wing" },
-  { id: "finance", name: "Admin & Finance" },
-  { id: "clients", name: "Clients" },
-];
+const DEPT_IDS = ["operations", "marketing", "pr", "multimedia", "sales", "company_admin"];
+const DEPT_LABELS = { operations: "Operations & Admin", marketing: "Marketing Growth", pr: "PR & Branding", multimedia: "Multimedia & Content Studio", sales: "Sales", company_admin: "Company Admin" };
+const DEPT_COLOR = { operations: 'var(--color-events)', marketing: 'var(--color-products)', pr: 'var(--color-media)', multimedia: 'var(--color-events)', sales: 'var(--color-products)', company_admin: 'var(--color-media)' };
+const DEPT_COLOR_SOFT = { operations: ['var(--color-eventsSoft)', 'var(--color-eventsText)'], marketing: ['var(--color-productsSoft)', 'var(--color-productsText)'], pr: ['var(--color-mediaSoft)', 'var(--color-mediaText)'], multimedia: ['var(--color-eventsSoft)', 'var(--color-eventsText)'], sales: ['var(--color-productsSoft)', 'var(--color-productsText)'], company_admin: ['var(--color-mediaSoft)', 'var(--color-mediaText)'] };
 
 const SEED_AUTH = {
   loginEnabled: true,
@@ -284,7 +197,7 @@ const SEED_AUTH = {
 };
 
 const SEED_NOTIF = {
-  sender: "PORTAL <notifications@clydecstudio.com>",
+  sender: "PORTAL <notifications@tago.life>",
   autoInvite: false,
   templates: [
     { id: "invite", name: "Invitation", desc: "Sent when a new user gets invited to the portal." },
@@ -298,14 +211,13 @@ const SEED_NOTIF = {
 const DATA_CATEGORIES = ["Files & projects", "Client records", "Financial data", "User management"];
 const LEVELS = ["No access", "View only", "Edit", "Full access"];
 const SEED_RESTRICTIONS = {
-  OWNER: [3, 3, 3, 3],
-  ADMIN: [3, 2, 1, 2],
+  ADMIN: [3, 3, 3, 3],
   EMPLOYEE: [2, 0, 0, 0],
   CLIENT: [1, 0, 0, 0],
 };
 const SEED_PEOPLE_CONFIG = {
-  departments: ["Engineering", "Design", "Creatives", "Data", "Product", "Marketing", "Sales", "Operations", "Finance", "HR"],
-  employmentStatuses: ["Full-time", "Part-time", "Project-Based"],
+  departments: ["Operations & Admin", "Marketing Growth", "PR & Branding", "Multimedia & Content Studio", "Sales", "Company Admin"],
+  employmentStatuses: ["Full-time", "Part-time", "Project-Based", "Intern"],
 };
 const SEED_TIME_SETTINGS = {
   workStartTime: "09:00",   // expected clock-in time (24h "HH:MM")
@@ -315,7 +227,7 @@ const SEED_TIME_SETTINGS = {
   halfDayHours: 4,          // hours worked to count as a "Half day"
 };
 // index 0 = Sunday ... 6 = Saturday. Weekdays are working days by default,
-// weekends are days off — the owner can edit this per team member.
+// weekends are days off â€” the owner can edit this per team member.
 const DEFAULT_WEEKLY_WORK_DAYS = [false, true, true, true, true, true, false];
 
 /* ---------------------------------------------------------------- */
@@ -341,9 +253,9 @@ function Toggle({ checked, onChange, disabled }) {
 
 function EmptyState({ icon: Icon, title, body }) {
   return (
-    <div style={{ textAlign: "center", padding: "56px 24px", color: COLORS.mute }}>
+    <div style={{ textAlign: "center", padding: "56px 24px", color: 'var(--color-mute)' }}>
       <Icon size={28} style={{ opacity: 0.4, marginBottom: 10 }} />
-      <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.text, marginBottom: 4 }}>{title}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text)', marginBottom: 4 }}>{title}</div>
       <div style={{ fontSize: 13 }}>{body}</div>
     </div>
   );
@@ -355,7 +267,7 @@ function Toast({ toast }) {
   return (
     <div className="cly-fade-in" style={{
       position: "absolute", top: 16, right: 16, zIndex: 50, display: "flex", alignItems: "center", gap: 8,
-      background: good ? COLORS.ink : COLORS.dangerSoft, color: good ? "#fff" : COLORS.danger,
+      background: good ? 'var(--color-ink)' : 'var(--color-dangerSoft)', color: good ? "#fff" : 'var(--color-danger)',
       padding: "10px 14px", borderRadius: 10, fontSize: 13, fontWeight: 600, boxShadow: "0 6px 20px rgba(0,0,0,0.15)",
     }}>
       {good ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}
@@ -375,72 +287,73 @@ function LoginScreen({ onLogin, loading, error, onForgot }) {
   return (
     <div className="cly cly-login-shell" style={{ display: "flex", minHeight: "100vh" }}>
       {/* left */}
-      <div className="cly-scan cly-login-left" style={{ flex: "1 1 46%", background: `linear-gradient(160deg, ${COLORS.ink} 0%, #0E2A33 100%)`, color: "#fff", padding: "40px 44px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+      <div className="cly-scan cly-login-left" style={{ flex: "1 1 46%", background: `linear-gradient(160deg, ${'var(--color-ink)'} 0%, #0B0A08 100%)`, color: "#fff", padding: "40px 44px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 26, height: 26, borderRadius: 6, background: `linear-gradient(135deg, ${COLORS.creative}, ${COLORS.data})` }} />
-          <span className="cly-serif" style={{ fontSize: 16, letterSpacing: 1 }}><b>CLYDEC</b> STUDIO</span>
+          <div style={{ width: 26, height: 26, borderRadius: 6, background: `linear-gradient(135deg, ${'var(--color-events)'}, ${'var(--color-products)'}, ${'var(--color-media)'})` }} />
+          <span className="cly-serif" style={{ fontSize: 16, letterSpacing: 1 }}><b>TAGO</b> LIFE</span>
         </div>
 
         <div>
-          <div style={{ display: "flex", gap: 14, marginBottom: 18, fontSize: 11, fontWeight: 700, letterSpacing: 1 }}>
-            <span style={{ color: COLORS.creative }}>● CREATIVE WING</span>
-            <span style={{ color: "#6FA3D6" }}>● DATA WING</span>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, fontSize: 11, fontWeight: 700, letterSpacing: 1, flexWrap: "wrap" }}>
+            <span style={{ color: 'var(--color-events)' }}>Ã¢â€”Â EVENTS</span>
+            <span style={{ color: "#C08B5C" }}>Ã¢â€”Â PRODUCTS</span>
+            <span style={{ color: "#9E9585" }}>Ã¢â€”Â MEDIA</span>
           </div>
           <h1 className="cly-serif" style={{ fontSize: 38, lineHeight: 1.15, margin: "0 0 14px" }}>
-            Two disciplines.<br /><span style={{ color: COLORS.creative, fontStyle: "italic" }}>One</span> workspace.
+            Three ventures.<br /><span style={{ color: 'var(--color-events)', fontStyle: "italic" }}>One</span> workspace.
           </h1>
           <p style={{ fontSize: 14, lineHeight: 1.6, color: "#C7CCD1", maxWidth: 340 }}>
-            The secure home for Clydec Studio's projects, files, and client conversations — animation, webtoons, dashboards, and automation, side by side.
+            The secure home for Tago Life's events, wellness products, and media â€” venue operations, Miracle Shakes, Tago Life Network, and admin, side by side.
           </p>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#8B9198" }}>
           <span style={{ width: 6, height: 6, borderRadius: 3, background: "#3FBF6F", display: "inline-block" }} />
-          <span className="cly-mono">portal.clydecstudio.com</span>
+          <span className="cly-mono">portal.tago.life</span>
         </div>
       </div>
 
       {/* right */}
-      <div className="cly-login-right" style={{ flex: "1 1 54%", background: COLORS.cream, padding: "44px 56px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+      <div className="cly-login-right" style={{ flex: "1 1 54%", background: 'var(--color-cream)', padding: "44px 56px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
         <div style={{ maxWidth: 360, width: "100%", margin: "0 auto" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: COLORS.mute, marginBottom: 22 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: 'var(--color-mute)', marginBottom: 22 }}>
             <Lock size={13} /> Encrypted session
           </div>
           <h2 className="cly-serif" style={{ fontSize: 26, margin: "0 0 4px" }}>Welcome back</h2>
-          <p style={{ fontSize: 13.5, color: COLORS.mute, margin: "0 0 26px" }}>Log in to your Clydec Studio workspace.</p>
+          <p style={{ fontSize: 13.5, color: 'var(--color-mute)', margin: "0 0 26px" }}>Log in to your Tago Life workspace.</p>
 
           <form onSubmit={(e) => { e.preventDefault(); onLogin(email.trim().toLowerCase(), password); }} className={error ? "cly-shake" : ""}>
             <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>Email</label>
             <div style={{ position: "relative", marginBottom: 16 }}>
-              <Mail size={15} style={{ position: "absolute", left: 12, top: 12, color: COLORS.mute }} />
-              <input className="cly-input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@clydecstudio.com" required
-                style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${COLORS.line}`, fontSize: 14, background: "#fff" }} />
+              <Mail size={15} style={{ position: "absolute", left: 12, top: 12, color: 'var(--color-mute)' }} />
+              <input className="cly-input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@tago.life" required
+                style={{ width: "100%", padding: "10px 12px 10px 34px", borderRadius: 9, border: `1px solid ${'var(--color-line)'}`, fontSize: 14, background: "#fff" }} />
             </div>
             <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>Password</label>
             <div style={{ position: "relative", marginBottom: 8 }}>
-              <KeyRound size={15} style={{ position: "absolute", left: 12, top: 12, color: COLORS.mute }} />
+              <KeyRound size={15} style={{ position: "absolute", left: 12, top: 12, color: 'var(--color-mute)' }} />
               <input className="cly-input" type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" required
-                style={{ width: "100%", padding: "10px 34px 10px 34px", borderRadius: 9, border: `1px solid ${COLORS.line}`, fontSize: 14, background: "#fff" }} />
-              <button type="button" onClick={() => setShowPw(!showPw)} style={{ position: "absolute", right: 10, top: 9, background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}>
+                style={{ width: "100%", padding: "10px 34px 10px 34px", borderRadius: 9, border: `1px solid ${'var(--color-line)'}`, fontSize: 14, background: "#fff" }} />
+              <button type="button" onClick={() => setShowPw(!showPw)} style={{ position: "absolute", right: 10, top: 9, background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)' }}>
                 {showPw ? <EyeOff size={15} /> : <Eye size={15} />}
               </button>
             </div>
-            {error && <div style={{ color: COLORS.danger, fontSize: 12.5, marginBottom: 10, display: "flex", gap: 5, alignItems: "center" }}><AlertCircle size={13} /> {error}</div>}
+            {error && <div style={{ color: 'var(--color-danger)', fontSize: 12.5, marginBottom: 10, display: "flex", gap: 5, alignItems: "center" }}><AlertCircle size={13} /> {error}</div>}
             <button type="submit" disabled={loading} className="cly-btn" style={{
-              width: "100%", padding: "11px 0", background: COLORS.ink, color: "#fff", borderRadius: 9, fontSize: 14, fontWeight: 700, marginTop: 6,
+              width: "100%", padding: "11px 0", background: 'var(--color-ink)', color: "#fff", borderRadius: 9, fontSize: 14, fontWeight: 700, marginTop: 6,
               display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: loading ? 0.7 : 1,
             }}>
               {loading ? <Loader2 size={15} className="cly-spin" /> : null}
-              {loading ? "Signing in…" : "Continue"}
+              {loading ? "Signing inÃ¢â‚¬Â¦" : "Continue"}
             </button>
           </form>
 
-          <div style={{ fontSize: 12, color: COLORS.mute, marginTop: 14, display: "flex", gap: 6, alignItems: "flex-start" }}>
+          <div style={{ fontSize: 12, color: 'var(--color-mute)', marginTop: 14, display: "flex", gap: 6, alignItems: "flex-start" }}>
             <AlertCircle size={13} style={{ marginTop: 1, flexShrink: 0 }} />
             Sign-ups are invite-only. Contact your owner or admin for access.
           </div>
 
-          <button onClick={() => onForgot(email)} style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12, textDecoration: "underline", cursor: "pointer", marginTop: 18, padding: 0 }}>
+          <button onClick={() => onForgot(email)} style={{ background: "none", border: "none", color: 'var(--color-mute)', fontSize: 12, textDecoration: "underline", cursor: "pointer", marginTop: 18, padding: 0 }}>
             Forgot password?
           </button>
         </div>
@@ -452,79 +365,91 @@ function LoginScreen({ onLogin, loading, error, onForgot }) {
 /* ---------------------------------------------------------------- */
 /* App shell: sidebar + topbar                                        */
 /* ---------------------------------------------------------------- */
-function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadMessageCount, open, onClose }) {
+function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadMessageCount, open, onClose, onProfileClick }) {
   const meta = ROLE_META[user.role];
   // Closes the mobile drawer after navigating, since it's an overlay there
-  // — on desktop (>=1024px) this is a no-op, the sidebar is always visible.
+  // â€” on desktop (>=1024px) this is a no-op, the sidebar is always visible.
   function go(key) { setPage(key); onClose && onClose(); }
+  const hasPanel = (key) => {
+    if (user.role === "ADMIN") return true;
+    if (user.role === "CLIENT") return false;
+    return user.allowedPanels ? user.allowedPanels.includes(key) : true;
+  };
   const storageItems = [
-    { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, show: true },
-    { key: "files", label: "Files", icon: FolderOpen, show: true },
+    { key: "files", label: "Files", icon: FolderOpen, show: hasPanel("files") },
   ];
   const portalItems = [
-    { key: "requests", label: "Access requests", icon: Inbox, show: user.role === "OWNER" || user.role === "ADMIN", badge: user.role === "OWNER" ? pendingCount : 0 },
-    { key: "admin", label: "Admin settings", icon: Settings, show: user.role === "OWNER" || user.role === "ADMIN" },
+    { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, show: hasPanel("dashboard") },
+    { key: "requests", label: "Access requests", icon: Inbox, show: user.role === "ADMIN", badge: pendingCount },
+    { key: "admin", label: "Admin settings", icon: Settings, show: user.role === "ADMIN" },
   ];
   const peopleItems = [
-    { key: "people-info", label: "People Information", icon: Smile, show: user.role !== "CLIENT" },
-    { key: "org-chart", label: "Organizational Chart", icon: Network, show: user.role !== "CLIENT" },
+    { key: "people-info", label: "People Information", icon: Smile, show: hasPanel("people-info") },
+    { key: "org-chart", label: "Organizational Chart", icon: Network, show: hasPanel("org-chart") },
   ];
   const timeAttendanceItems = [
-    { key: "time-tracking", label: "Time Tracking", icon: Timer, show: user.role !== "CLIENT" },
-    { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: user.role !== "CLIENT" },
-    { key: "attendance", label: "Attendance", icon: CalendarCheck, show: user.role !== "CLIENT" },
-    { key: "leave-requests", label: "Leave Requests", icon: FileText, show: user.role !== "CLIENT", badge: leavePendingCount || 0 },
-    { key: "monitoring", label: "Monitoring", icon: Eye, show: user.role === "OWNER" || (user.role === "ADMIN" && !!user.canViewMonitoring) },
+    { key: "time-tracking", label: "Time Tracking", icon: Timer, show: hasPanel("time-tracking") },
+    { key: "time-inout", label: "Time in/Time out information", icon: Clock, show: hasPanel("time-inout") },
+    { key: "attendance", label: "Attendance", icon: CalendarCheck, show: hasPanel("attendance") },
+    { key: "intern-tracking", label: "Intern Tracking", icon: Activity, show: hasPanel("intern-tracking") },
+    { key: "leave-requests", label: "Leave Requests", icon: FileText, show: hasPanel("leave-requests"), badge: leavePendingCount || 0 },
+    { key: "eod-reports", label: "EOD Reports", icon: FileText, show: hasPanel("eod-reports") },
   ];
   const communicationItems = [
-    { key: "communication", label: "Messages", icon: MessageSquare, show: user.role !== "CLIENT", badge: unreadMessageCount || 0 },
+    { key: "communication", label: "Messages", icon: MessageSquare, show: hasPanel("communication"), badge: unreadMessageCount || 0 },
   ];
-  const workspaceItems = [
-    { key: "workspace", label: "Orbit Workspaces", icon: Briefcase, show: user.role !== "CLIENT" },
+  const calendarItems = [
+    { key: "calendar", label: "Calendar", icon: CalendarDays, show: hasPanel("calendar") },
+    { key: "meet-recordings", label: "Meet Recordings", icon: Video, show: hasPanel("meet-recordings") },
   ];
   const [storageOpen, setStorageOpen] = useState(true);
   const [portalOpen, setPortalOpen] = useState(true);
   const [peopleOpen, setPeopleOpen] = useState(true);
   const [timeAttendanceOpen, setTimeAttendanceOpen] = useState(true);
   const [communicationOpen, setCommunicationOpen] = useState(true);
-  const [workspaceOpen, setWorkspaceOpen] = useState(true);
+  const [calendarOpen, setCalendarOpen] = useState(true);
+  const showStorageGroup = storageItems.some(i => i.show);
   const showPortalGroup = portalItems.some(i => i.show);
   const showPeopleGroup = peopleItems.some(i => i.show);
   const showTimeAttendanceGroup = timeAttendanceItems.some(i => i.show);
   const showCommunicationGroup = communicationItems.some(i => i.show);
-  const showWorkspaceGroup = workspaceItems.some(i => i.show);
+  const showCalendarGroup = calendarItems.some(i => i.show);
   return (
-    <div className={`cly-scan cly-sidebar${open ? " cly-open" : ""}`} style={{ background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px", overflowY: "auto" }}>
+    <div className={`cly-scan cly-sidebar${open ? " cly-open" : ""}`} style={{ background: 'var(--color-ink)', color: "#fff", display: "flex", flexDirection: "column", padding: "20px 14px", overflowY: "auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "0 8px 22px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 22, height: 22, borderRadius: 5, background: `linear-gradient(135deg, ${COLORS.creative}, ${COLORS.data})` }} />
-          <span className="cly-serif" style={{ fontSize: 13.5, letterSpacing: 0.5 }}><b>CLYDEC</b> STUDIO</span>
+          <div style={{ width: 22, height: 22, borderRadius: 5, background: `linear-gradient(135deg, ${'var(--color-events)'}, ${'var(--color-products)'}, ${'var(--color-media)'})` }} />
+          <span className="cly-serif" style={{ fontSize: 13.5, letterSpacing: 0.5 }}><b>TAGO</b> LIFE</span>
         </div>
         <button onClick={onClose} className="cly-hamburger cly-btn" style={{ background: "none", border: "none", color: "#fff", opacity: 0.8, padding: 4 }} aria-label="Close menu">
           <X size={18} />
         </button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <button onClick={() => setStorageOpen(o => !o)} className="cly-navitem cly-btn" style={{
-          display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
-          color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left",
-        }}>
-          <Database size={16} style={{ opacity: 0.85 }} />
-          <span style={{ flex: 1 }}>Storage Settings</span>
-          <ChevronDown size={14} style={{ opacity: 0.7, transform: storageOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
-        </button>
-        {storageOpen && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
-            {storageItems.filter(i => i.show).map(i => (
-              <button key={i.key} onClick={() => go(i.key)} className="cly-navitem cly-btn" style={{
-                display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
-                color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
-              }}>
-                <i.icon size={16} style={{ opacity: 0.85 }} />
-                <span style={{ flex: 1 }}>{i.label}</span>
-              </button>
-            ))}
-          </div>
+        {showStorageGroup && (
+          <>
+            <button onClick={() => setStorageOpen(o => !o)} className="cly-navitem cly-btn" style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
+              color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left",
+            }}>
+              <Database size={16} style={{ opacity: 0.85 }} />
+              <span style={{ flex: 1 }}>Storage</span>
+              <ChevronDown size={14} style={{ opacity: 0.7, transform: storageOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
+            </button>
+            {storageOpen && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
+                {storageItems.filter(i => i.show).map(i => (
+                  <button key={i.key} onClick={() => go(i.key)} className="cly-navitem cly-btn" style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
+                    color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
+                  }}>
+                    <i.icon size={16} style={{ opacity: 0.85 }} />
+                    <span style={{ flex: 1 }}>{i.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
         )}
         {showPortalGroup && (
           <>
@@ -545,7 +470,7 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
                   }}>
                     <i.icon size={16} style={{ opacity: 0.85 }} />
                     <span style={{ flex: 1 }}>{i.label}</span>
-                    {!!i.badge && <span style={{ background: COLORS.creative, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
+                    {!!i.badge && <span style={{ background: 'var(--color-events)', fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
                   </button>
                 ))}
               </div>
@@ -596,7 +521,7 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
                   }}>
                     <i.icon size={16} style={{ opacity: 0.85 }} />
                     <span style={{ flex: 1 }}>{i.label}</span>
-                    {!!i.badge && <span style={{ background: COLORS.creative, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
+                    {!!i.badge && <span style={{ background: 'var(--color-events)', fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
                   </button>
                 ))}
               </div>
@@ -622,26 +547,26 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
                   }}>
                     <i.icon size={16} style={{ opacity: 0.85 }} />
                     <span style={{ flex: 1 }}>{i.label}</span>
-                    {!!i.badge && <span style={{ background: COLORS.creative, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
+                    {!!i.badge && <span style={{ background: 'var(--color-events)', fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{i.badge}</span>}
                   </button>
                 ))}
               </div>
             )}
           </>
         )}
-        {showWorkspaceGroup && (
+        {showCalendarGroup && (
           <>
-            <button onClick={() => setWorkspaceOpen(o => !o)} className="cly-navitem cly-btn" style={{
+            <button onClick={() => setCalendarOpen(o => !o)} className="cly-navitem cly-btn" style={{
               display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: "transparent",
               color: "#fff", fontSize: 13.5, fontWeight: 600, textAlign: "left", marginTop: 6,
             }}>
-              <Briefcase size={16} style={{ opacity: 0.85 }} />
-              <span style={{ flex: 1 }}>Workspace</span>
-              <ChevronDown size={14} style={{ opacity: 0.7, transform: workspaceOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
+              <CalendarDays size={16} style={{ opacity: 0.85 }} />
+              <span style={{ flex: 1 }}>Calendar & Meetings</span>
+              <ChevronDown size={14} style={{ opacity: 0.7, transform: calendarOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.15s" }} />
             </button>
-            {workspaceOpen && (
+            {calendarOpen && (
               <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingLeft: 12, marginLeft: 12, borderLeft: "1px solid rgba(255,255,255,0.12)" }}>
-                {workspaceItems.filter(i => i.show).map(i => (
+                {calendarItems.filter(i => i.show).map(i => (
                   <button key={i.key} onClick={() => go(i.key)} className="cly-navitem cly-btn" style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8, background: page === i.key ? "rgba(255,255,255,0.1)" : "transparent",
                     color: "#fff", fontSize: 13.5, fontWeight: 500, textAlign: "left",
@@ -656,13 +581,21 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
         )}
       </div>
       <div style={{ flex: 1 }} />
-      <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 12, padding: "12px 8px 0" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-          <div style={{ width: 28, height: 28, borderRadius: "50%", background: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#1A1A18" }}>
-            {user.name.split(" ").map(w => w[0]).slice(0, 2).join("")}
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user.name}</div>
+      <div 
+        className="cly-navitem cly-btn" 
+        style={{ borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 12, padding: "12px 8px", cursor: "pointer", borderRadius: 8, margin: "0 -8px" }}
+        onClick={onProfileClick}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {user.avatar ? (
+            <img src={user.avatar} alt="Avatar" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
+          ) : (
+            <div style={{ width: 28, height: 28, borderRadius: "50%", background: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#1A1A18" }}>
+              {user.name.split(" ").map(w => w[0]).slice(0, 2).join("")}
+            </div>
+          )}
+          <div style={{ minWidth: 0, textAlign: "left" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "#fff" }}>{user.name}</div>
             <div style={{ fontSize: 10.5, color: meta.color, fontWeight: 700 }}>{meta.label}</div>
           </div>
         </div>
@@ -671,19 +604,19 @@ function Sidebar({ user, page, setPage, pendingCount, leavePendingCount, unreadM
   );
 }
 
-function Topbar({ user, onLogout, onMenuClick, title, subtitle }) {
+function Topbar({ user, onLogout, onMenuClick, title, subtitle, theme, setTheme }) {
   return (
-    <div className="cly-topbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "18px 28px", borderBottom: `1px solid ${COLORS.line}`, flexWrap: "wrap" }}>
+    <div className="cly-topbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "18px 28px", borderBottom: `1px solid ${'var(--color-line)'}`, flexWrap: "wrap" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-        <button onClick={onMenuClick} className="cly-hamburger cly-btn" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 8, color: COLORS.text, padding: 7, flexShrink: 0 }} aria-label="Open menu">
+        <button onClick={onMenuClick} className="cly-hamburger cly-btn" style={{ background: "none", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, color: 'var(--color-text)', padding: 7, flexShrink: 0 }} aria-label="Open menu">
           <Menu size={17} />
         </button>
         <div style={{ minWidth: 0 }}>
           <h2 className="cly-serif cly-topbar-title" style={{ fontSize: 21, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</h2>
-          {subtitle && <p style={{ fontSize: 12.5, color: COLORS.mute, margin: "3px 0 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{subtitle}</p>}
+          {subtitle && <p style={{ fontSize: 12.5, color: 'var(--color-mute)', margin: "3px 0 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{subtitle}</p>}
         </div>
       </div>
-      <button onClick={onLogout} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, padding: "7px 12px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: COLORS.text }}>
+      <button onClick={onLogout} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${'var(--color-line)'}`, padding: "7px 12px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: 'var(--color-text)' }}>
         <LogOut size={13} /> Log out
       </button>
     </div>
@@ -701,7 +634,7 @@ function DashboardPage({ user, users, files, requests, folders, people, syncAllV
     const visible = folders.filter(f => canAccessFolder(f, user, people));
     syncAllVisibleFolders(visible);
     verifyAllFiles();
-    if (user.role === "OWNER" && STORAGE_PROVIDER === "drive") {
+    if (user.role === "ADMIN" && STORAGE_PROVIDER === "drive") {
       driveGetStorageQuota().then(setQuota).catch(e => setQuotaError(e.message));
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -710,43 +643,46 @@ function DashboardPage({ user, users, files, requests, folders, people, syncAllV
   const stats = [
     { label: "Total files", value: files.length },
     { label: "Storage used", value: formatBytes(files.reduce((a, f) => a + f.size, 0)) },
-    user.role === "OWNER" ? { label: "Workspace users", value: users.length } : null,
-    user.role === "OWNER" ? { label: "Pending requests", value: requests.filter(r => r.status === "pending").length } : null,
+    user.role === "ADMIN" ? { label: "Workspace users", value: users.length } : null,
+    user.role === "ADMIN" ? { label: "Pending requests", value: requests.filter(r => r.status === "pending").length } : null,
   ].filter(Boolean);
 
   return (
     <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
-      <div style={{ background: `linear-gradient(120deg, ${COLORS.ink} 0%, #12262C 100%)`, borderRadius: 14, padding: "26px 28px", color: "#fff", marginBottom: 22 }}>
+      <div style={{ background: `linear-gradient(120deg, ${'var(--color-ink)'} 0%, #12262C 100%)`, borderRadius: 14, padding: "26px 28px", color: "#fff", marginBottom: 22 }}>
         <Badge color={meta.color} soft="rgba(255,255,255,0.12)" text="#fff">{meta.label}</Badge>
         <h3 className="cly-serif" style={{ fontSize: 22, margin: "10px 0 4px" }}>Welcome back, {user.name.split(" ")[0]}.</h3>
         <p style={{ fontSize: 13, color: "#C7CCD1", margin: 0, maxWidth: 460 }}>{meta.desc}.</p>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14 }}>
+      
+      <TrackingDashboard />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginTop: 22 }}>
         {stats.map((s, i) => (
-          <div key={i} style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: "16px 18px" }}>
-            <div style={{ fontSize: 12, color: COLORS.mute, marginBottom: 6 }}>{s.label}</div>
+          <div key={i} style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, padding: "16px 18px" }}>
+            <div style={{ fontSize: 12, color: 'var(--color-mute)', marginBottom: 6 }}>{s.label}</div>
             <div className="cly-serif" style={{ fontSize: 24 }}>{s.value}</div>
           </div>
         ))}
       </div>
 
-      {user.role === "OWNER" && STORAGE_PROVIDER === "drive" && (
-        <div style={{ marginTop: 22, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: "16px 18px" }}>
+      {user.role === "ADMIN" && STORAGE_PROVIDER === "drive" && (
+        <div style={{ marginTop: 22, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, padding: "16px 18px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Google Drive storage</div>
           {quotaError ? (
-            <div style={{ fontSize: 12.5, color: COLORS.mute }}>Could not load storage info: {quotaError}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--color-mute)' }}>Could not load storage info: {quotaError}</div>
           ) : !quota ? (
-            <div style={{ fontSize: 12.5, color: COLORS.mute, display: "flex", alignItems: "center", gap: 6 }}><Loader2 size={13} className="cly-spin" /> Loading…</div>
+            <div style={{ fontSize: 12.5, color: 'var(--color-mute)', display: "flex", alignItems: "center", gap: 6 }}><Loader2 size={13} className="cly-spin" /> LoadingÃ¢â‚¬Â¦</div>
           ) : quota.limit == null ? (
-            <div style={{ fontSize: 13 }}>{formatBytes(quota.usage)} used <span style={{ color: COLORS.mute }}>(unlimited plan)</span></div>
+            <div style={{ fontSize: 13 }}>{formatBytes(quota.usage)} used <span style={{ color: 'var(--color-mute)' }}>(unlimited plan)</span></div>
           ) : (
             <>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 8 }}>
                 <span>{formatBytes(quota.usage)} used of {formatBytes(quota.limit)}</span>
-                <span style={{ color: COLORS.mute }}>{formatBytes(Math.max(0, quota.limit - quota.usage))} left</span>
+                <span style={{ color: 'var(--color-mute)' }}>{formatBytes(Math.max(0, quota.limit - quota.usage))} left</span>
               </div>
-              <div style={{ height: 8, borderRadius: 4, background: COLORS.cream, overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${Math.min(100, (quota.usage / quota.limit) * 100)}%`, background: (quota.usage / quota.limit) > 0.9 ? COLORS.danger : COLORS.ink }} />
+              <div style={{ height: 8, borderRadius: 4, background: 'var(--color-cream)', overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${Math.min(100, (quota.usage / quota.limit) * 100)}%`, background: (quota.usage / quota.limit) > 0.9 ? 'var(--color-danger)' : 'var(--color-ink)' }} />
               </div>
             </>
           )}
@@ -754,14 +690,14 @@ function DashboardPage({ user, users, files, requests, folders, people, syncAllV
       )}
       <div style={{ marginTop: 22 }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Recent files</div>
-        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
           {files.length === 0 ? <EmptyState icon={FolderOpen} title="No files yet" body="Uploaded files will show up here." /> :
             files.slice(0, 5).map((f, i) => (
-              <div key={f.id} className="cly-row" style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 16px", borderTop: i ? `1px solid ${COLORS.line}` : "none" }}>
-                <FileIcon size={15} color={COLORS.mute} />
+              <div key={f.id} className="cly-row" style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 16px", borderTop: i ? `1px solid ${'var(--color-line)'}` : "none" }}>
+                <FileIcon size={15} color={'var(--color-mute)'} />
                 <span style={{ fontSize: 13, flex: 1 }}>{f.name}</span>
-                <span style={{ fontSize: 11.5, color: COLORS.mute }}>{formatBytes(f.size)}</span>
-                <span style={{ fontSize: 11.5, color: COLORS.mute, width: 70, textAlign: "right" }}>{timeAgo(f.uploadedAt)}</span>
+                <span style={{ fontSize: 11.5, color: 'var(--color-mute)' }}>{formatBytes(f.size)}</span>
+                <span style={{ fontSize: 11.5, color: 'var(--color-mute)', width: 70, textAlign: "right" }}>{timeAgo(f.uploadedAt)}</span>
               </div>
             ))}
         </div>
@@ -774,9 +710,9 @@ function DashboardPage({ user, users, files, requests, folders, people, syncAllV
 /* Files page                                                         */
 /* ---------------------------------------------------------------- */
 function FilesPage({ user, folders, files, people, addFile, deleteFile, downloadFile, syncDriveFolder, notify }) {
-  const visibleFolders = folders.filter(f => canAccessFolder(f, user, people));
+  const visibleFolders = folders.filter(f => canAccessFolder(f, user));
   const [activeFolder, setActiveFolder] = useState(visibleFolders[0]?.id);
-  const [path, setPath] = useState([]); // [{id, name}] — subfolder trail within the active Wing
+  const [path, setPath] = useState([]); // [{id, name}] â€” subfolder trail within the active Department
   const [subfolders, setSubfolders] = useState([]);
   const [loadingFolders, setLoadingFolders] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
@@ -794,10 +730,10 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
   const canWrite = user.role !== "CLIENT";
 
   const currentFolderId = path.length ? path[path.length - 1].id : activeFolder;
-  const currentWingName = visibleFolders.find(f => f.id === activeFolder)?.name;
+  const currentDepartmentName = visibleFolders.find(f => f.id === activeFolder)?.name;
 
-  function goToWing(wingId) {
-    setActiveFolder(wingId);
+  function goToDepartment(deptId) {
+    setActiveFolder(deptId);
     setPath([]);
   }
   function goToPathIndex(i) {
@@ -805,7 +741,7 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
   }
   function goIntoFolder(sf) {
     setPath(prev => {
-      if (prev.length && prev[prev.length - 1].id === sf.id) return prev; // a double-click fires two click events — don't push the same folder twice
+      if (prev.length && prev[prev.length - 1].id === sf.id) return prev; // a double-click fires two click events â€” don't push the same folder twice
       return [...prev, { id: sf.id, name: sf.name }];
     });
   }
@@ -879,7 +815,7 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
   async function handleResumeFileSelect(file) {
     if (!pendingUpload) return;
     if (file.name !== pendingUpload.fileName || file.size !== pendingUpload.fileSize) {
-      notify(`That doesn't match "${pendingUpload.fileName}" — select the exact same file to resume.`, "error");
+      notify(`That doesn't match "${pendingUpload.fileName}" â€” select the exact same file to resume.`, "error");
       return;
     }
     setUploading(true);
@@ -916,7 +852,7 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
     for (const file of Array.from(fileList)) {
       if (cancelled) break;
       if (file.size > 10 * 1024 * 1024 * 1024) {
-        notify(`${file.name} is over the 10 GB limit — skipped.`, "error");
+        notify(`${file.name} is over the 10 GB limit â€” skipped.`, "error");
         continue;
       }
       const id = uid();
@@ -951,30 +887,30 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
   return (
     <div className="cly-fade-in cly-page-pad" style={{ padding: 28, display: "flex", gap: 22 }}>
       <div style={{ width: 200, flexShrink: 0 }}>
-        <div style={{ fontSize: 11.5, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Folders</div>
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--color-mute)', textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Folders</div>
         {visibleFolders.map(f => (
-          <button key={f.id} onClick={() => goToWing(f.id)} className="cly-btn" style={{
+          <button key={f.id} onClick={() => goToDepartment(f.id)} className="cly-btn" style={{
             display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "9px 10px", borderRadius: 8, marginBottom: 3,
-            background: activeFolder === f.id ? COLORS.cream : "transparent", fontSize: 13, fontWeight: 500, color: COLORS.text,
+            background: activeFolder === f.id ? 'var(--color-cream)' : "transparent", fontSize: 13, fontWeight: 500, color: 'var(--color-text)',
           }}>
-            <span style={{ width: 7, height: 7, borderRadius: 4, background: f.wing === "creative" ? COLORS.creative : COLORS.data, flexShrink: 0 }} />
+            <span style={{ width: 7, height: 7, borderRadius: 4, background: DEPT_COLOR[f.department] || 'var(--color-mute)', flexShrink: 0 }} />
             {f.name}
           </button>
         ))}
-        <div style={{ marginTop: 18, fontSize: 11.5, color: COLORS.mute, lineHeight: 1.5, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 10 }}>
+        <div style={{ marginTop: 18, fontSize: 11.5, color: 'var(--color-mute)', lineHeight: 1.5, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 10, padding: 10 }}>
           Files here are stored securely in {STORAGE_PROVIDER === "drive" ? "your connected Google Drive" : "Firebase Cloud Storage"}. Limit: 10 GB per file.
         </div>
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, fontSize: 13, color: COLORS.mute, flexWrap: "wrap" }}>
-          <button onClick={() => goToWing(activeFolder)} className="cly-btn" style={{ background: "none", border: "none", padding: 0, fontWeight: path.length === 0 ? 700 : 500, color: path.length === 0 ? COLORS.text : COLORS.mute, cursor: "pointer" }}>
-            {currentWingName}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, fontSize: 13, color: 'var(--color-mute)', flexWrap: "wrap" }}>
+          <button onClick={() => goToDepartment(activeFolder)} className="cly-btn" style={{ background: "none", border: "none", padding: 0, fontWeight: path.length === 0 ? 700 : 500, color: path.length === 0 ? 'var(--color-text)' : 'var(--color-mute)', cursor: "pointer" }}>
+            {currentDepartmentName}
           </button>
           {path.map((p, i) => (
             <span key={p.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <ChevronRight size={13} />
-              <button onClick={() => goToPathIndex(i)} className="cly-btn" style={{ background: "none", border: "none", padding: 0, fontWeight: i === path.length - 1 ? 700 : 500, color: i === path.length - 1 ? COLORS.text : COLORS.mute, cursor: "pointer" }}>
+              <button onClick={() => goToPathIndex(i)} className="cly-btn" style={{ background: "none", border: "none", padding: 0, fontWeight: i === path.length - 1 ? 700 : 500, color: i === path.length - 1 ? 'var(--color-text)' : 'var(--color-mute)', cursor: "pointer" }}>
                 {p.name}
               </button>
             </span>
@@ -983,27 +919,27 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
           <div style={{ position: "relative", flex: 1 }}>
-            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: COLORS.mute }} />
-            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search files…"
-              style={{ width: "100%", padding: "8px 10px 8px 30px", borderRadius: 8, border: `1px solid ${COLORS.line}`, fontSize: 13 }} />
+            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: 'var(--color-mute)' }} />
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search filesÃ¢â‚¬Â¦"
+              style={{ width: "100%", padding: "8px 10px 8px 30px", borderRadius: 8, border: `1px solid ${'var(--color-line)'}`, fontSize: 13 }} />
           </div>
           {canWrite && (
             <>
               <button onClick={() => setNewFolderOpen(!newFolderOpen)} className="cly-btn" style={{
-                display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, color: COLORS.text, padding: "9px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600,
+                display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${'var(--color-line)'}`, color: 'var(--color-text)', padding: "9px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600,
               }}>
                 <Plus size={14} /> Folder
               </button>
               <input ref={fileInput} type="file" multiple hidden onChange={e => e.target.files.length && handleFiles(e.target.files)} />
               <button onClick={() => fileInput.current.click()} disabled={uploading} className="cly-btn" style={{
-                display: "flex", alignItems: "center", gap: 6, background: COLORS.ink, color: "#fff", padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
+                display: "flex", alignItems: "center", gap: 6, background: 'var(--color-ink)', color: "#fff", padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
               }}>
                 {uploading ? <Loader2 size={14} className="cly-spin" /> : <Upload size={14} />} Upload
               </button>
             </>
           )}
           <button onClick={handleRefresh} disabled={syncing} title="Check for changes made directly in Drive" className="cly-btn" style={{
-            display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, color: COLORS.text, padding: "9px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600,
+            display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${'var(--color-line)'}`, color: 'var(--color-text)', padding: "9px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600,
           }}>
             {syncing ? <Loader2 size={14} className="cly-spin" /> : <RefreshCw size={14} />}
           </button>
@@ -1013,10 +949,10 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
           <div className="cly-fade-in" style={{ display: "flex", gap: 8, marginBottom: 14 }}>
             <input autoFocus value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handleCreateFolder()}
-              placeholder="New folder name…"
-              style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: `1px solid ${COLORS.line}`, fontSize: 13 }} />
-            <button onClick={handleCreateFolder} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Create</button>
-            <button onClick={() => { setNewFolderOpen(false); setNewFolderName(""); }} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
+              placeholder="New folder nameÃ¢â‚¬Â¦"
+              style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: `1px solid ${'var(--color-line)'}`, fontSize: 13 }} />
+            <button onClick={handleCreateFolder} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Create</button>
+            <button onClick={() => { setNewFolderOpen(false); setNewFolderName(""); }} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
           </div>
         )}
 
@@ -1024,14 +960,14 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
           <div className="cly-fade-in" style={{ marginBottom: 14, background: "#FFF8E8", border: `1px solid #E8D9A8`, borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
             <div style={{ fontSize: 12.5 }}>
               <span style={{ fontWeight: 600 }}>Unfinished upload: {pendingUpload.fileName}</span>
-              <span style={{ color: COLORS.mute }}> ({formatBytes(pendingUpload.fileSize)}) — reload interrupted it. Select the same file again to pick up where it left off.</span>
+              <span style={{ color: 'var(--color-mute)' }}> ({formatBytes(pendingUpload.fileSize)}) â€” reload interrupted it. Select the same file again to pick up where it left off.</span>
             </div>
             <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
               <input ref={resumeFileInput} type="file" hidden onChange={e => e.target.files.length && handleResumeFileSelect(e.target.files[0])} />
-              <button onClick={() => resumeFileInput.current.click()} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "7px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600 }}>
+              <button onClick={() => resumeFileInput.current.click()} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", padding: "7px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600 }}>
                 Select file to resume
               </button>
-              <button onClick={handleDiscardPending} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "7px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600 }}>
+              <button onClick={handleDiscardPending} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, padding: "7px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600 }}>
                 Discard
               </button>
             </div>
@@ -1039,42 +975,42 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
         )}
 
         {progress && (
-          <div className="cly-fade-in" style={{ marginBottom: 14, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: "10px 12px" }}>
+          <div className="cly-fade-in" style={{ marginBottom: 14, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, marginBottom: 6 }}>
               <span style={{ fontWeight: 600 }}>{progress.name}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ color: COLORS.mute }}>
-                  {formatBytes(progress.uploaded)} / {formatBytes(progress.total)} • {formatBytes(progress.speedBps)}/s • {formatDuration(progress.etaSec)}
+                <span style={{ color: 'var(--color-mute)' }}>
+                  {formatBytes(progress.uploaded)} / {formatBytes(progress.total)} Ã¢â‚¬Â¢ {formatBytes(progress.speedBps)}/s Ã¢â‚¬Â¢ {formatDuration(progress.etaSec)}
                 </span>
-                <button onClick={handleCancelUpload} title="Cancel upload" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, display: "flex" }}>
+                <button onClick={handleCancelUpload} title="Cancel upload" style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-danger)', display: "flex" }}>
                   <X size={15} />
                 </button>
               </div>
             </div>
-            <div style={{ height: 6, borderRadius: 4, background: COLORS.cream, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: `${progress.percent}%`, background: COLORS.ink, transition: "width 0.2s" }} />
+            <div style={{ height: 6, borderRadius: 4, background: 'var(--color-cream)', overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${progress.percent}%`, background: 'var(--color-ink)', transition: "width 0.2s" }} />
             </div>
           </div>
         )}
 
-        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
-          <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
+        <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: 'var(--color-mute)', textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${'var(--color-line)'}` }}>
             <span style={{ flex: 1 }}>Name</span><span style={{ width: 90 }}>Size</span><span style={{ width: 110 }}>Uploaded</span><span style={{ width: 70 }}></span>
           </div>
 
           {subfolders.map(sf => (
-            <div key={sf.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+            <div key={sf.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${'var(--color-line)'}`, fontSize: 13 }}>
               {renamingId === sf.id ? (
                 <span style={{ flex: 1, display: "flex", gap: 6 }}>
                   <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && submitRename(sf)}
-                    style={{ flex: 1, padding: "4px 8px", borderRadius: 6, border: `1px solid ${COLORS.line}`, fontSize: 13 }} />
-                  <button onClick={() => submitRename(sf)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Save</button>
-                  <button onClick={() => setRenamingId(null)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Cancel</button>
+                    style={{ flex: 1, padding: "4px 8px", borderRadius: 6, border: `1px solid ${'var(--color-line)'}`, fontSize: 13 }} />
+                  <button onClick={() => submitRename(sf)} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Save</button>
+                  <button onClick={() => setRenamingId(null)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Cancel</button>
                 </span>
               ) : (
-                <button onClick={() => goIntoFolder(sf)} className="cly-btn" style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0, background: "none", border: "none", textAlign: "left", cursor: "pointer", fontSize: 13, color: COLORS.text }}>
-                  <FolderOpen size={15} color={COLORS.data} />
+                <button onClick={() => goIntoFolder(sf)} className="cly-btn" style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0, background: "none", border: "none", textAlign: "left", cursor: "pointer", fontSize: 13, color: 'var(--color-text)' }}>
+                  <FolderOpen size={15} color={'var(--color-products)'} />
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sf.name}</span>
                 </button>
               )}
@@ -1083,8 +1019,8 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
               <span style={{ width: 70, display: "flex", gap: 8 }}>
                 {canWrite && renamingId !== sf.id && (
                   <>
-                    <button title="Rename" onClick={() => startRename(sf)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><Settings size={14} /></button>
-                    <button title="Delete" onClick={() => handleDeleteFolder(sf)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger }}><Trash2 size={15} /></button>
+                    <button title="Rename" onClick={() => startRename(sf)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)' }}><Settings size={14} /></button>
+                    <button title="Delete" onClick={() => handleDeleteFolder(sf)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-danger)' }}><Trash2 size={15} /></button>
                   </>
                 )}
               </span>
@@ -1093,16 +1029,16 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
 
           {subfolders.length === 0 && folderFiles.length === 0 ? <EmptyState icon={FolderOpen} title="Nothing here yet" body={canWrite ? "Upload a file or create a folder to get started." : "Files shared with you will appear here."} /> :
             folderFiles.map(f => (
-              <div key={f.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+              <div key={f.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${'var(--color-line)'}`, fontSize: 13 }}>
                 <span style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                  {f.mime.startsWith("image/") ? <ImageIcon size={15} color={COLORS.data} /> : <FileText size={15} color={COLORS.mute} />}
+                  {f.mime.startsWith("image/") ? <ImageIcon size={15} color={'var(--color-products)'} /> : <FileText size={15} color={'var(--color-mute)'} />}
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
                 </span>
-                <span style={{ width: 90, color: COLORS.mute, fontSize: 12 }}>{formatBytes(f.size)}</span>
-                <span style={{ width: 110, color: COLORS.mute, fontSize: 12 }}>{timeAgo(f.uploadedAt)}</span>
+                <span style={{ width: 90, color: 'var(--color-mute)', fontSize: 12 }}>{formatBytes(f.size)}</span>
+                <span style={{ width: 110, color: 'var(--color-mute)', fontSize: 12 }}>{timeAgo(f.uploadedAt)}</span>
                 <span style={{ width: 70, display: "flex", gap: 8 }}>
-                  <button title="Download" onClick={() => downloadFile(f)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><Download size={15} /></button>
-                  {canWrite && <button title="Delete" onClick={() => deleteFile(f.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger }}><Trash2 size={15} /></button>}
+                  <button title="Download" onClick={() => downloadFile(f)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)' }}><Download size={15} /></button>
+                  {canWrite && <button title="Delete" onClick={() => deleteFile(f.id)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-danger)' }}><Trash2 size={15} /></button>}
                 </span>
               </div>
             ))}
@@ -1118,30 +1054,30 @@ function FilesPage({ user, folders, files, people, addFile, deleteFile, download
 function RequestsPage({ user, requests, resolveRequest }) {
   const mine = user.role === "ADMIN" ? requests.filter(r => r.requestedBy === user.id) : requests;
   const statusStyle = {
-    pending: { soft: COLORS.warningSoft, text: COLORS.warning, icon: Clock },
-    approved: { soft: COLORS.successSoft, text: COLORS.success, icon: CheckCircle2 },
-    denied: { soft: COLORS.dangerSoft, text: COLORS.danger, icon: XCircle },
+    pending: { soft: 'var(--color-warningSoft)', text: 'var(--color-warning)', icon: Clock },
+    approved: { soft: 'var(--color-successSoft)', text: 'var(--color-success)', icon: CheckCircle2 },
+    denied: { soft: 'var(--color-dangerSoft)', text: 'var(--color-danger)', icon: XCircle },
   };
   return (
     <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
-      <p style={{ fontSize: 13, color: COLORS.mute, maxWidth: 560, marginTop: 0 }}>
-        {user.role === "OWNER" ? "New users and access changes requested by admins wait here until you approve them." : "Track the status of the access changes you've requested from the owner."}
+      <p style={{ fontSize: 13, color: 'var(--color-mute)', maxWidth: 560, marginTop: 0 }}>
+        {user.role === "ADMIN" ? "New users and access changes requested by admins wait here until you approve them." : "Track the status of the access changes you've requested from the owner."}
       </p>
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
         {mine.length === 0 ? <EmptyState icon={Inbox} title="No requests" body="You're all caught up." /> :
           mine.map((r, i) => {
             const s = statusStyle[r.status];
             return (
-              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", borderTop: i ? `1px solid ${COLORS.line}` : "none" }}>
+              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", borderTop: i ? `1px solid ${'var(--color-line)'}` : "none" }}>
                 <s.icon size={16} color={s.text} style={{ flexShrink: 0 }} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13.5, fontWeight: 600 }}>{r.title}</div>
-                  <div style={{ fontSize: 12, color: COLORS.mute }}>{r.detail} · requested by {r.requestedByName} · {timeAgo(r.createdAt)}</div>
+                  <div style={{ fontSize: 12, color: 'var(--color-mute)' }}>{r.detail} Â· requested by {r.requestedByName} Â· {timeAgo(r.createdAt)}</div>
                 </div>
-                {user.role === "OWNER" && r.status === "pending" ? (
+                {user.role === "ADMIN" && r.status === "pending" ? (
                   <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => resolveRequest(r.id, "denied")} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600 }}>Deny</button>
-                    <button onClick={() => resolveRequest(r.id, "approved")} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600 }}>Approve</button>
+                    <button onClick={() => resolveRequest(r.id, "denied")} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600 }}>Deny</button>
+                    <button onClick={() => resolveRequest(r.id, "approved")} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600 }}>Approve</button>
                   </div>
                 ) : (
                   <Badge color={s.text} soft={s.soft} text={s.text}>{r.status}</Badge>
@@ -1158,7 +1094,7 @@ function RequestsPage({ user, requests, resolveRequest }) {
 /* People Management pages                                           */
 /* ---------------------------------------------------------------- */
 function peopleColorFor(name) {
-  const palette = [COLORS.creative, COLORS.data, COLORS.warning, COLORS.success, "#6B4A6D", "#3B5C7A"];
+  const palette = ['var(--color-events)', 'var(--color-products)', 'var(--color-media)', 'var(--color-warning)', 'var(--color-success)', "#6B4A6D"];
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
   return palette[Math.abs(hash) % palette.length];
@@ -1168,17 +1104,17 @@ function peopleInitials(name) {
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase();
 }
 function formatPeopleDate(iso) {
-  if (!iso) return "—";
+  if (!iso) return "â€”";
   const d = new Date(iso + "T00:00:00");
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 function peopleStatusMeta(status) {
-  if (status === "Active") return { soft: COLORS.successSoft, text: COLORS.success };
-  if (status === "On leave") return { soft: COLORS.warningSoft, text: COLORS.warning };
-  return { soft: COLORS.line, text: COLORS.mute };
+  if (status === "Active") return { soft: 'var(--color-successSoft)', text: 'var(--color-success)' };
+  if (status === "On leave") return { soft: 'var(--color-warningSoft)', text: 'var(--color-warning)' };
+  return { soft: 'var(--color-line)', text: 'var(--color-mute)' };
 }
 // People Information (HR records) and Users (portal logins) are separate
-// collections — this is the link between them. A Person can optionally be
+// collections â€” this is the link between them. A Person can optionally be
 // linked to a portal account, which is how Time Tracking/Attendance (which
 // only know about logged-in Users) can show that person's department/title.
 function personForUser(people, userId) {
@@ -1187,33 +1123,25 @@ function personForUser(people, userId) {
 function userForPerson(users, person) {
   return person?.linkedUserId ? users.find(u => u.id === person.linkedUserId) || null : null;
 }
-// A person's Wing tag (Creative / Data / Hybrid, set in People Information)
-// further narrows Creative Wing / Data Wing folder access beyond the
-// existing role-based ACL — it only ever restricts, never grants access
-// the role-based list wouldn't already allow. No tag (or a non-EMPLOYEE
-// role, or a folder that isn't one of the two Wings) means no extra
-// restriction — this mirrors the server-side check in api/_driveClient.js,
-// which is what actually enforces it; this client-side copy just keeps the
-// UI from showing folders someone can't use.
-function canAccessFolder(folder, user, people) {
-  if (!folder.access.includes(user.role)) return false;
-  if (user.role === "EMPLOYEE" && (folder.id === "creative" || folder.id === "data")) {
-    const person = personForUser(people, user.id);
-    const wing = person?.wing;
-    if (wing === "creative" || wing === "data") return wing === folder.id;
-    // wing === "hybrid" or unset: no extra restriction beyond the role ACL.
+function canAccessFolder(folder, user) {
+  if (folder.access && !folder.access.includes(user.role)) return false;
+  if (user.role === "EMPLOYEE") {
+    // If folder is a root department folder, check allowedFolders
+    if (DEPT_IDS.includes(folder.id)) {
+      return (user.allowedFolders || []).includes(folder.id);
+    }
   }
   return true;
 }
-const errorTextStyle = { color: COLORS.danger, fontSize: 11.5, marginTop: 4 };
-const manageLinkStyle = { background: "none", border: "none", color: COLORS.data, fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0 };
+const errorTextStyle = { color: 'var(--color-danger)', fontSize: 11.5, marginTop: 4 };
+const manageLinkStyle = { background: "none", border: "none", color: 'var(--color-products)', fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0 };
 
-const PEOPLE_EMPTY_FORM = { name: "", role: "", department: "", employmentStatus: "", email: "", phone: "", startDate: "", status: "Active", linkedUserId: "", wing: "" };
+const PEOPLE_EMPTY_FORM = { name: "", role: "", department: "", employmentStatus: "", email: "", phone: "", startDate: "", status: "Active", linkedUserId: "", allowedFolders: [], allowedPanels: [] };
 const PEOPLE_STATUSES = ["Active", "On leave", "Inactive"];
 
 function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePerson, removePerson, savePeopleConfig }) {
-  const canManage = user.role === "OWNER" || user.role === "ADMIN";
-  const canManageLists = user.role === "OWNER"; // list config lives in "settings", which is owner-only elsewhere too
+  const canManage = user.role === "ADMIN" || user.role === "ADMIN";
+  const canManageLists = user.role === "ADMIN"; // list config lives in "settings", which is owner-only elsewhere too
   const departments = peopleConfig.departments || [];
   const employmentStatuses = peopleConfig.employmentStatuses || [];
 
@@ -1294,7 +1222,7 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 10, flex: 1, minWidth: 280 }}>
           <div style={{ position: "relative", flex: 1, maxWidth: 340 }}>
-            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: COLORS.mute }} />
+            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: 'var(--color-mute)' }} />
             <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by name, role, or email"
               style={{ ...inputStyle, padding: "8px 10px 8px 30px" }} />
           </div>
@@ -1304,13 +1232,13 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
           </select>
         </div>
         {canManage && (
-          <button onClick={openAddModal} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.ink, color: "#fff", padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
+          <button onClick={openAddModal} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: 'var(--color-ink)', color: "#fff", padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
             <Plus size={14} /> Add person
           </button>
         )}
       </div>
 
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
         {filtered.length === 0 ? (
           <EmptyState icon={Smile}
             title={people.length === 0 ? "No people records yet" : "No matches found"}
@@ -1319,11 +1247,10 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
               : "Try adjusting your search or department filter."} />
         ) : (
           <>
-            <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
+            <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: 'var(--color-mute)', textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${'var(--color-line)'}` }}>
               <span style={{ flex: 2, minWidth: 160 }}>Name</span>
               <span style={{ width: 120 }}>Department</span>
               <span style={{ width: 120 }}>Employment</span>
-              <span style={{ width: 90 }}>Wing</span>
               <span style={{ flex: 1.5, minWidth: 160 }}>Email</span>
               <span style={{ width: 130 }}>Phone</span>
               <span style={{ width: 100 }}>Start date</span>
@@ -1333,38 +1260,37 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
             {filtered.map(p => {
               const sm = peopleStatusMeta(p.status);
               return (
-                <div key={p.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+                <div key={p.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${'var(--color-line)'}`, fontSize: 13 }}>
                   <span style={{ flex: 2, minWidth: 160, display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ width: 32, height: 32, borderRadius: "50%", background: peopleColorFor(p.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>
                       {peopleInitials(p.name)}
                     </div>
                     <span style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                      <div style={{ fontSize: 11.5, color: COLORS.mute }}>{p.role}</div>
+                      <div style={{ fontSize: 11.5, color: 'var(--color-mute)' }}>{p.role}</div>
                     </span>
                   </span>
                   <span style={{ width: 120 }}>
                     {p.department}
-                    <div style={{ fontSize: 10.5, color: COLORS.mute, marginTop: 2 }}>
-                      {p.linkedUserId ? "🔗 Portal access" : "No portal account"}
+                    <div style={{ fontSize: 10.5, color: 'var(--color-mute)', marginTop: 2 }}>
+                      {p.linkedUserId ? "ðŸ”— Portal access" : "No portal account"}
                     </div>
                   </span>
-                  <span style={{ width: 120 }}>{p.employmentStatus || "—"}</span>
-                  <span style={{ width: 90 }}>{p.wing ? <Badge soft={COLORS.dataSoft} text={COLORS.dataText}>{p.wing === "hybrid" ? "Hybrid" : p.wing === "creative" ? "Creative" : "Data"}</Badge> : <span style={{ color: COLORS.mute }}>—</span>}</span>
+                  <span style={{ width: 120 }}>{p.employmentStatus || "â€”"}</span>
                   <span style={{ flex: 1.5, minWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.email}</span>
-                  <span style={{ width: 130 }}>{p.phone || "—"}</span>
+                  <span style={{ width: 130 }}>{p.phone || "â€”"}</span>
                   <span style={{ width: 100 }}>{formatPeopleDate(p.startDate)}</span>
                   <span style={{ width: 90 }}><Badge soft={sm.soft} text={sm.text}>{p.status}</Badge></span>
                   {canManage && (
                     <span style={{ width: 90, display: "flex", gap: 8, alignItems: "center" }}>
-                      <button title="Edit" onClick={() => openEditModal(p)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><Settings size={14} /></button>
+                      <button title="Edit" onClick={() => openEditModal(p)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)' }}><Settings size={14} /></button>
                       {confirmDeleteId === p.id ? (
                         <>
-                          <button title="Confirm" onClick={() => { removePerson(p.id); setConfirmDeleteId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 11, fontWeight: 700 }}>Confirm</button>
-                          <button title="Cancel" onClick={() => setConfirmDeleteId(null)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><X size={14} /></button>
+                          <button title="Confirm" onClick={() => { removePerson(p.id); setConfirmDeleteId(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-danger)', fontSize: 11, fontWeight: 700 }}>Confirm</button>
+                          <button title="Cancel" onClick={() => setConfirmDeleteId(null)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)' }}><X size={14} /></button>
                         </>
                       ) : (
-                        <button title="Remove" onClick={() => setConfirmDeleteId(p.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger }}><Trash2 size={15} /></button>
+                        <button title="Remove" onClick={() => setConfirmDeleteId(p.id)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-danger)' }}><Trash2 size={15} /></button>
                       )}
                     </span>
                   )}
@@ -1413,28 +1339,47 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
                 {PEOPLE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </Field>
-            <Field label="Wing (Storage access)">
-              <select value={form.wing} onChange={e => updateField("wing", e.target.value)} style={inputStyle}>
-                <option value="">— Not set (default role access) —</option>
-                <option value="creative">Creative Wing</option>
-                <option value="data">Data Wing</option>
-                <option value="hybrid">Hybrid Wing (both)</option>
-              </select>
-            </Field>
-            <div style={{ gridColumn: "1 / -1", fontSize: 11, color: COLORS.mute, marginTop: -6 }}>
-              Only matters for someone whose role would otherwise see both Creative and Data Wing folders. Tag them Creative or Data to limit them to just that one, or Hybrid to keep both. Leave unset for the default role-based access (no extra restriction).
-            </div>
+
             <div style={{ gridColumn: "1 / -1" }}>
               <Field label="Linked portal account (optional)">
                 <select value={form.linkedUserId} onChange={e => updateField("linkedUserId", e.target.value)} style={inputStyle}>
-                  <option value="">— No linked account —</option>
-                  {linkableUsers.map(u => <option key={u.id} value={u.id}>{u.name} ({ROLE_META[u.role].label}) — {u.email}</option>)}
+                  <option value="">â€” No linked account â€”</option>
+                  {linkableUsers.map(u => <option key={u.id} value={u.id}>{u.name} ({ROLE_META[u.role].label}) â€” {u.email}</option>)}
                 </select>
               </Field>
-              <div style={{ fontSize: 11, color: COLORS.mute, marginTop: 4 }}>Connects this person to their portal login, so Time Tracking and Attendance can show their department and job title.</div>
+              <div style={{ fontSize: 11, color: 'var(--color-mute)', marginTop: 4 }}>Connects this person to their portal login, so Time Tracking and Attendance can show their department and job title.</div>
             </div>
+            {form.linkedUserId && (
+              <div style={{ gridColumn: "1 / -1", marginTop: 10, background: 'var(--color-cream)', padding: 15, borderRadius: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Portal Access (For linked user only)</div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginTop: 10, marginBottom: 5 }}>Allowed Panels</div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 13 }}>
+                  {["dashboard", "files", "time-tracking", "time-inout", "attendance", "intern-tracking", "leave-requests", "eod-reports", "communication", "calendar", "meet-recordings"].map(panel => (
+                    <label key={panel} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      <input type="checkbox" checked={(form.allowedPanels || []).includes(panel)} onChange={e => {
+                        const s = new Set(form.allowedPanels || []);
+                        e.target.checked ? s.add(panel) : s.delete(panel);
+                        updateField("allowedPanels", [...s]);
+                      }} /> {panel}
+                    </label>
+                  ))}
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginTop: 10, marginBottom: 5 }}>Storage Folders (Employees Only)</div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 13 }}>
+                  {DEPT_IDS.map(dept => (
+                    <label key={dept} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      <input type="checkbox" checked={(form.allowedFolders || []).includes(dept)} onChange={e => {
+                        const s = new Set(form.allowedFolders || []);
+                        e.target.checked ? s.add(dept) : s.delete(dept);
+                        updateField("allowedFolders", [...s]);
+                      }} /> {DEPT_LABELS[dept] || dept}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
             <div>
-              <Field label="Email"><input value={form.email} onChange={e => updateField("email", e.target.value)} placeholder="name@clydecstudio.com" style={inputStyle} /></Field>
+              <Field label="Email"><input value={form.email} onChange={e => updateField("email", e.target.value)} placeholder="name@tago.life" style={inputStyle} /></Field>
               {errors.email && <div style={errorTextStyle}>{errors.email}</div>}
             </div>
             <Field label="Phone"><input value={form.phone} onChange={e => updateField("phone", e.target.value)} placeholder="+63 917 000 0000" style={inputStyle} /></Field>
@@ -1442,9 +1387,9 @@ function PeopleInfoPage({ user, users, people, peopleConfig, addPerson, updatePe
               <Field label="Start date"><input type="date" value={form.startDate} onChange={e => updateField("startDate", e.target.value)} style={inputStyle} /></Field>
               {errors.startDate && <div style={errorTextStyle}>{errors.startDate}</div>}
             </div>
-            <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8, borderTop: `1px solid ${COLORS.line}`, paddingTop: 16 }}>
-              <button type="button" onClick={closeModal} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
-              <button type="submit" className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
+            <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8, borderTop: `1px solid ${'var(--color-line)'}`, paddingTop: 16 }}>
+              <button type="button" onClick={closeModal} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
+              <button type="submit" className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
                 {editingId ? "Save changes" : "Add person"}
               </button>
             </div>
@@ -1480,37 +1425,37 @@ function ManagePeopleListModal({ title, items, placeholder, onAdd, onRemove, onC
     <Modal title={title} onClose={onClose} width={420}>
       <form onSubmit={submit} style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         <input style={{ ...inputStyle, flex: 1 }} placeholder={placeholder} value={value} onChange={e => setValue(e.target.value)} />
-        <button type="submit" className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Add</button>
+        <button type="submit" className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Add</button>
       </form>
-      <div style={{ border: `1px solid ${COLORS.line}`, borderRadius: 10, maxHeight: 240, overflowY: "auto" }}>
-        {items.length === 0 && <p style={{ fontSize: 12.5, color: COLORS.mute, padding: "12px 14px", margin: 0 }}>No options yet. Add one above.</p>}
+      <div style={{ border: `1px solid ${'var(--color-line)'}`, borderRadius: 10, maxHeight: 240, overflowY: "auto" }}>
+        {items.length === 0 && <p style={{ fontSize: 12.5, color: 'var(--color-mute)', padding: "12px 14px", margin: 0 }}>No options yet. Add one above.</p>}
         {items.map(item => (
-          <div key={item} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+          <div key={item} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: `1px solid ${'var(--color-line)'}`, fontSize: 13 }}>
             <span>{item}</span>
             {pendingRemove === item ? (
               <span style={{ display: "flex", gap: 8 }}>
-                <button type="button" onClick={() => { onRemove(item); setPendingRemove(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 12, fontWeight: 700 }}>Confirm</button>
-                <button type="button" onClick={() => setPendingRemove(null)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute, fontSize: 12 }}>Cancel</button>
+                <button type="button" onClick={() => { onRemove(item); setPendingRemove(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-danger)', fontSize: 12, fontWeight: 700 }}>Confirm</button>
+                <button type="button" onClick={() => setPendingRemove(null)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)', fontSize: 12 }}>Cancel</button>
               </span>
             ) : (
-              <button type="button" onClick={() => setPendingRemove(item)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, fontSize: 12, fontWeight: 600 }}>Remove</button>
+              <button type="button" onClick={() => setPendingRemove(item)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-danger)', fontSize: 12, fontWeight: 600 }}>Remove</button>
             )}
           </div>
         ))}
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
-        <button onClick={onClose} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>Done</button>
+        <button onClick={onClose} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>Done</button>
       </div>
     </Modal>
   );
 }
 
 /* ---------------------------------------------------------------- */
-/* Organizational Chart — built from People Information, hierarchy   */
+/* Organizational Chart â€” built from People Information, hierarchy   */
 /* comes from each person's `reportsTo`, layout comes from each        */
 /* person's `chartX`/`chartY` (falls back to an auto tree layout       */
 /* until someone drags a card, at which point that person's spot is  */
-/* pinned). All of it lives on the existing `people` docs — no new    */
+/* pinned). All of it lives on the existing `people` docs â€” no new    */
 /* collection, no rules changes.                                     */
 /* ---------------------------------------------------------------- */
 const ORG_NODE_W = 208;
@@ -1519,14 +1464,14 @@ const ORG_GAP_X = 32;
 const ORG_GAP_Y = 64;
 const ORG_PADDING = 40;
 const ORG_DEPT_PALETTE = [
-  { soft: COLORS.creativeSoft, text: COLORS.creativeText },
-  { soft: COLORS.dataSoft, text: COLORS.dataText },
-  { soft: COLORS.goldSoft, text: "#6B4A1A" },
-  { soft: COLORS.successSoft, text: COLORS.success },
-  { soft: COLORS.warningSoft, text: COLORS.warning },
+  { soft: 'var(--color-eventsSoft)', text: 'var(--color-eventsText)' },
+  { soft: 'var(--color-productsSoft)', text: 'var(--color-productsText)' },
+  { soft: 'var(--color-goldSoft)', text: "#6B4A1A" },
+  { soft: 'var(--color-successSoft)', text: 'var(--color-success)' },
+  { soft: 'var(--color-warningSoft)', text: 'var(--color-warning)' },
 ];
 function orgDeptColor(dept) {
-  if (!dept) return { soft: COLORS.line, text: COLORS.mute };
+  if (!dept) return { soft: 'var(--color-line)', text: 'var(--color-mute)' };
   let hash = 0;
   for (let i = 0; i < dept.length; i++) hash = (hash * 31 + dept.charCodeAt(i)) >>> 0;
   return ORG_DEPT_PALETTE[hash % ORG_DEPT_PALETTE.length];
@@ -1552,7 +1497,7 @@ function buildOrgHierarchy(people) {
   roots.sort((a, b) => a.name.localeCompare(b.name));
   return { byId, childrenOf, roots };
 }
-// All of a person's reports, and their reports, recursively — used to stop
+// All of a person's reports, and their reports, recursively â€” used to stop
 // someone from being set as their own (grand)manager, which would create a loop.
 function orgDescendantIds(personId, childrenOf) {
   const result = new Set();
@@ -1592,7 +1537,7 @@ function orgElbowPath(x1, y1, x2, y2) {
 }
 
 function OrgChartPage({ user, people, updatePerson }) {
-  const canEdit = user.role === "OWNER" || user.role === "ADMIN";
+  const canEdit = user.role === "ADMIN" || user.role === "ADMIN";
   const { childrenOf, roots } = buildOrgHierarchy(people);
   const autoPositions = orgAutoLayout(roots, childrenOf);
   const [dragState, setDragState] = useState(null); // { id, startClientX, startClientY, origX, origY, curX, curY }
@@ -1668,26 +1613,26 @@ function OrgChartPage({ user, people, updatePerson }) {
   return (
     <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
       {people.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "60px 20px", color: COLORS.mute }}>
+        <div style={{ textAlign: "center", padding: "60px 20px", color: 'var(--color-mute)' }}>
           <Network size={28} style={{ opacity: 0.4, marginBottom: 10 }} />
-          <div style={{ fontSize: 13.5 }}>Add people in People Information first — the chart builds itself from that list.</div>
+          <div style={{ fontSize: 13.5 }}>Add people in People Information first â€” the chart builds itself from that list.</div>
         </div>
       ) : (
         <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12 }}>
-            <div style={{ fontSize: 12.5, color: COLORS.mute }}>
+            <div style={{ fontSize: 12.5, color: 'var(--color-mute)' }}>
               {canEdit
                 ? "Drag any card to arrange the chart. Use \u201CSet manager\u201D to change who someone reports to."
-                : "View only — ask an Owner or Admin to update the hierarchy."}
+                : "View only â€” ask an Owner or Admin to update the hierarchy."}
             </div>
             {canEdit && (
-              <button type="button" onClick={resetLayout} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, padding: "8px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, flexShrink: 0 }}>
+              <button type="button" onClick={resetLayout} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${'var(--color-line)'}`, padding: "8px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, flexShrink: 0 }}>
                 <LayoutGrid size={14} /> Reset layout
               </button>
             )}
           </div>
           <div
-            style={{ position: "relative", overflow: "auto", border: `1px solid ${COLORS.line}`, borderRadius: 12, background: COLORS.cream, maxHeight: "calc(100vh - 230px)" }}
+            style={{ position: "relative", overflow: "auto", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, background: 'var(--color-cream)', maxHeight: "calc(100vh - 230px)" }}
             onPointerMove={onCanvasPointerMove}
             onPointerUp={onCanvasPointerUp}
             onPointerLeave={onCanvasPointerUp}
@@ -1695,7 +1640,7 @@ function OrgChartPage({ user, people, updatePerson }) {
             <div style={{ position: "relative", width: canvasW, height: canvasH }}>
               <svg width={canvasW} height={canvasH} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
                 {edges.map(e => (
-                  <path key={e.id} d={orgElbowPath(e.x1, e.y1, e.x2, e.y2)} stroke={COLORS.line} strokeWidth={2} fill="none" />
+                  <path key={e.id} d={orgElbowPath(e.x1, e.y1, e.x2, e.y2)} stroke={'var(--color-line)'} strokeWidth={2} fill="none" />
                 ))}
               </svg>
               {people.map(p => {
@@ -1710,7 +1655,7 @@ function OrgChartPage({ user, people, updatePerson }) {
                     className="cly-fade-in"
                     style={{
                       position: "absolute", left: pos.x, top: pos.y, width: ORG_NODE_W, minHeight: ORG_NODE_H,
-                      background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: "10px 12px",
+                      background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 10, padding: "10px 12px",
                       boxShadow: dragging ? "0 10px 24px rgba(0,0,0,0.18)" : "0 1px 3px rgba(0,0,0,0.06)",
                       cursor: canEdit ? (dragging ? "grabbing" : "grab") : "default",
                       userSelect: "none", touchAction: "none", zIndex: dragging ? 5 : 1,
@@ -1722,11 +1667,11 @@ function OrgChartPage({ user, people, updatePerson }) {
                       </div>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
-                        <div style={{ fontSize: 11.5, color: COLORS.mute, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.role || "—"}</div>
+                        <div style={{ fontSize: 11.5, color: 'var(--color-mute)', whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.role || "â€”"}</div>
                       </div>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8, gap: 6 }}>
-                      <span style={{ fontSize: 10.5, color: COLORS.mute, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.department || "—"}</span>
+                      <span style={{ fontSize: 10.5, color: 'var(--color-mute)', whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.department || "â€”"}</span>
                       {sm && <Badge soft={sm.soft} text={sm.text}>{p.status}</Badge>}
                     </div>
                     {canEdit && (
@@ -1745,13 +1690,13 @@ function OrgChartPage({ user, people, updatePerson }) {
         <Modal title={`Set manager for ${editingPerson.name}`} onClose={() => setEditingId(null)} width={420}>
           <Field label="Reports to">
             <select value={reportsToDraft} onChange={e => setReportsToDraft(e.target.value)} style={inputStyle}>
-              <option value="">— No manager (top-level) —</option>
-              {editOptions.map(p => <option key={p.id} value={p.id}>{p.name}{p.role ? ` — ${p.role}` : ""}</option>)}
+              <option value="">â€” No manager (top-level) â€”</option>
+              {editOptions.map(p => <option key={p.id} value={p.id}>{p.name}{p.role ? ` â€” ${p.role}` : ""}</option>)}
             </select>
           </Field>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
-            <button type="button" onClick={() => setEditingId(null)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
-            <button type="button" onClick={saveReportsTo} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>Save</button>
+            <button type="button" onClick={() => setEditingId(null)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>Cancel</button>
+            <button type="button" onClick={saveReportsTo} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>Save</button>
           </div>
         </Modal>
       )}
@@ -1760,28 +1705,28 @@ function OrgChartPage({ user, people, updatePerson }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Time Tracking / Time in-out / Attendance — shared helpers          */
+/* Time Tracking / Time in-out / Attendance â€” shared helpers          */
 /* ---------------------------------------------------------------- */
 function formatClockTime(ms) {
-  if (!ms) return "—";
+  if (!ms) return "â€”";
   return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
-// Communication's "Active now" indicator — anyone whose heartbeat (see the
+// Communication's "Active now" indicator â€” anyone whose heartbeat (see the
 // presence effect in App()) landed within the last 90s counts as online.
 function isOnline(u) {
   return !!u?.lastActiveAt && (Date.now() - u.lastActiveAt) < 90000;
 }
 // A person's manually-picked status (Online/Offline/Do Not Disturb/Custom
-// text, set from Communication — see setMyPresenceStatus) overrides the
+// text, set from Communication â€” see setMyPresenceStatus) overrides the
 // automatic heartbeat-based indicator above. No manual status (or "auto")
 // falls back to the heartbeat.
 function getPresenceDisplay(u) {
   const manual = u?.presenceStatus;
-  if (manual === "online") return { label: "Online", color: COLORS.success, dot: true };
-  if (manual === "dnd") return { label: "Do Not Disturb", color: COLORS.danger, dot: true };
-  if (manual === "offline") return { label: "Offline", color: COLORS.mute, dot: false };
-  if (manual === "custom" && u?.statusText) return { label: u.statusText, color: COLORS.data, dot: isOnline(u) };
-  return isOnline(u) ? { label: "Active now", color: COLORS.success, dot: true } : { label: "Offline", color: COLORS.mute, dot: false };
+  if (manual === "online") return { label: "Online", color: 'var(--color-success)', dot: true };
+  if (manual === "dnd") return { label: "Do Not Disturb", color: 'var(--color-danger)', dot: true };
+  if (manual === "offline") return { label: "Offline", color: 'var(--color-mute)', dot: false };
+  if (manual === "custom" && u?.statusText) return { label: u.statusText, color: 'var(--color-products)', dot: isOnline(u) };
+  return isOnline(u) ? { label: "Active now", color: 'var(--color-success)', dot: true } : { label: "Offline", color: 'var(--color-mute)', dot: false };
 }
 // datetime-local inputs work in the browser's local time, so we shift by the
 // timezone offset before/after going to/from an epoch-ms timestamp.
@@ -1797,7 +1742,7 @@ function localInputValueToTs(v) {
   return isNaN(t) ? null : t;
 }
 function formatWorkedDuration(ms) {
-  if (ms == null || ms < 0) return "—";
+  if (ms == null || ms < 0) return "â€”";
   const totalMinutes = Math.round(ms / 60000);
   const h = Math.floor(totalMinutes / 60);
   const m = totalMinutes % 60;
@@ -1805,15 +1750,15 @@ function formatWorkedDuration(ms) {
   return `${h}h ${m}m`;
 }
 function attendanceStatusMeta(status) {
-  if (status === "Present") return { soft: COLORS.successSoft, text: COLORS.success };
-  if (status === "Late") return { soft: COLORS.warningSoft, text: COLORS.warning };
-  if (status === "Left early") return { soft: COLORS.warningSoft, text: COLORS.warning };
-  if (status === "Half day") return { soft: COLORS.dataSoft, text: COLORS.dataText };
-  if (status === "In progress") return { soft: COLORS.goldSoft, text: "#6B4A1A" };
-  if (status === "Absent") return { soft: COLORS.dangerSoft, text: COLORS.danger };
-  if (status === "Sick Leave") return { soft: COLORS.dataSoft, text: COLORS.dataText };
-  if (status === "Voluntary Leave") return { soft: COLORS.creativeSoft, text: COLORS.creativeText };
-  return { soft: COLORS.line, text: COLORS.mute }; // "Incomplete"
+  if (status === "Present") return { soft: 'var(--color-successSoft)', text: 'var(--color-success)' };
+  if (status === "Late") return { soft: 'var(--color-warningSoft)', text: 'var(--color-warning)' };
+  if (status === "Left early") return { soft: 'var(--color-warningSoft)', text: 'var(--color-warning)' };
+  if (status === "Half day") return { soft: 'var(--color-productsSoft)', text: 'var(--color-productsText)' };
+  if (status === "In progress") return { soft: 'var(--color-goldSoft)', text: "#6B4A1A" };
+  if (status === "Absent") return { soft: 'var(--color-dangerSoft)', text: 'var(--color-danger)' };
+  if (status === "Sick Leave") return { soft: 'var(--color-productsSoft)', text: 'var(--color-productsText)' };
+  if (status === "Voluntary Leave") return { soft: 'var(--color-eventsSoft)', text: 'var(--color-eventsText)' };
+  return { soft: 'var(--color-line)', text: 'var(--color-mute)' }; // "Incomplete"
 }
 // Merge a user's saved attendance rules with sensible defaults, so users
 // created before this feature (or with partial data) still work.
@@ -1845,7 +1790,7 @@ function normalizeDateOverride(raw) {
 // Whether a given date is a working day for someone, honoring their weekly
 // pattern (weekdays on / weekends off by default) plus any specific-date
 // overrides (holidays marked off, an off-day flipped to a working day, or a
-// Sick/Voluntary Leave day — both are non-working days).
+// Sick/Voluntary Leave day â€” both are non-working days).
 function isWorkingDay(dateStr, rules) {
   const o = normalizeDateOverride(rules.dateOverrides?.[dateStr]);
   if (o?.dayType === "off" || o?.dayType === "sick" || o?.dayType === "voluntary") return false;
@@ -1854,7 +1799,7 @@ function isWorkingDay(dateStr, rules) {
   return !!rules.weeklyWorkDays[dow];
 }
 // A human-readable label for a non-working day set via the Work calendar
-// (Time Tracking) — "Sick Leave" / "Voluntary Leave", or null for a plain
+// (Time Tracking) â€” "Sick Leave" / "Voluntary Leave", or null for a plain
 // day off/weekend with nothing special to call out.
 function dateOverrideLeaveLabel(dateStr, rules) {
   const o = normalizeDateOverride(rules.dateOverrides?.[dateStr]);
@@ -1862,12 +1807,12 @@ function dateOverrideLeaveLabel(dateStr, rules) {
   if (o?.dayType === "voluntary") return "Voluntary Leave";
   return null;
 }
-// The work start/end time that actually applies on a given date — a
+// The work start/end time that actually applies on a given date â€” a
 // per-date schedule correction if one is set there, otherwise the person's
 // normal hours. This is what every late/early/overtime calculation should
 // read from (never rules.workStartTime/workEndTime directly), so a one-off
 // schedule change on a specific date is reflected everywhere consistently.
-// Returns null for a Sick/Voluntary Leave date — there's no schedule to
+// Returns null for a Sick/Voluntary Leave date â€” there's no schedule to
 // speak of on a day someone isn't expected to work at all.
 function effectiveHoursForDate(dateStr, rules) {
   const o = normalizeDateOverride(rules.dateOverrides?.[dateStr]);
@@ -1881,7 +1826,7 @@ function effectiveHoursForDate(dateStr, rules) {
 // to the calendar day of anchorMs. Rolls the end time to the next calendar
 // day whenever it's not strictly after the start time, so overnight shifts
 // (e.g. 6:00 PM - 3:00 AM) get a scheduled *end* that's actually after the
-// scheduled *start* — without this, a 6:23 PM clock-in on that shift would
+// scheduled *start* â€” without this, a 6:23 PM clock-in on that shift would
 // compare against a 3:00 AM "end" earlier the same day and look like it
 // happened many hours past end-of-shift (this was the cause of an "Overtime
 // 15h 25m" bug on a same-day 2-minute session).
@@ -1896,7 +1841,7 @@ function scheduledWindow(anchorMs, workStartTime, workEndTime) {
 function toDateStr(y, m, d) {
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
-// Inclusive array of "YYYY-MM-DD" strings between two date strings — used to
+// Inclusive array of "YYYY-MM-DD" strings between two date strings â€” used to
 // turn an approved leave request's date range into individual calendar
 // overrides.
 function dateRangeArray(startStr, endStr) {
@@ -1932,7 +1877,7 @@ const WEEKDAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
 // personal calendar (no absence/day-off concept for them); everyone else's
 // working days come from their own attendanceRules calendar.
 function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
-  const isOwner = u.role === "OWNER";
+  const isOwner = u.role === "ADMIN";
   const rules = getAttendanceRules(u);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const byDate = {};
@@ -1972,7 +1917,7 @@ function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
   }
   // Owner-set manual overrides (from the Attendance calendar's "Day type"
   // picker) win over whatever the raw entries computed above. "Present" is
-  // never stored as an override — picking it just clears any override so
+  // never stored as an override â€” picking it just clears any override so
   // the day goes back to following its recorded sessions, which keeps this
   // calendar and the Time in/out table always in sync.
   const overrides = u.attendanceOverrides || {};
@@ -1990,24 +1935,24 @@ function computeMonthCalendarForUser(entries, u, year, month, todayStr) {
 }
 // Early-in / late / undertime / overtime for a single Time in/out row,
 // measured against the work start/end time that actually applied on that
-// entry's date (effectiveHoursForDate — a per-date schedule correction if
+// entry's date (effectiveHoursForDate â€” a per-date schedule correction if
 // one is set, otherwise the person's normal hours), with scheduledWindow()
 // correctly rolling an overnight shift's end time into the next day. Early
-// arrival isn't credited as extra work time — it's purely informational —
+// arrival isn't credited as extra work time â€” it's purely informational â€”
 // so none of this touches the Duration column, it just adds context
 // alongside it.
 //
 // Late is how far the clock-in landed past the (grace-period-adjusted)
-// scheduled start — 0 whenever the clock-in is within the grace period.
+// scheduled start â€” 0 whenever the clock-in is within the grace period.
 //
 // Undertime is the shortfall against the *full scheduled shift* (schedEnd -
-// schedStart), not just "clocked out before schedEnd" — a late arrival
+// schedStart), not just "clocked out before schedEnd" â€” a late arrival
 // eats into that shift the same way an early departure does, so both ends
 // of the actual session are weighed against both ends of the schedule.
 // Overtime is purely extra time worked past the scheduled end, and can
 // occur alongside undertime (e.g. arrived late, then also stayed late).
 function computeEntryTimingFlags(entry, ruleUser) {
-  if (!ruleUser) return { earlyMs: 0, lateMs: 0, undertimeMs: 0, overtimeMs: 0 };
+  if (!ruleUser || ruleUser.timeTrackingMode === "presence") return { earlyMs: 0, lateMs: 0, undertimeMs: 0, overtimeMs: 0 };
   const rules = getAttendanceRules(ruleUser);
   const { workStartTime, workEndTime } = effectiveHoursForDate(entry.date, rules) || { workStartTime: rules.workStartTime, workEndTime: rules.workEndTime };
   const { startMs: schedStartMs, endMs: schedEndMs } = scheduledWindow(entry.clockIn, workStartTime, workEndTime);
@@ -2027,368 +1972,286 @@ function computeEntryTimingFlags(entry, ruleUser) {
 }
 // "18:00" -> "6:00 PM", for displaying a person's schedule read-only.
 function formatTimeStrTo12h(hhmm) {
-  if (!hhmm) return "—";
+  if (!hhmm) return "â€”";
   const [h, m] = hhmm.split(":").map(Number);
   const d = new Date(); d.setHours(h || 0, m || 0, 0, 0);
   return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
+function InternTrackingPage({ user, users, people, activityLogs }) {
+  const [now, setNow] = useState(Date.now());
+  const [reportModalUser, setReportModalUser] = useState(null);
 
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 10000);
+    return () => clearInterval(t);
+  }, []);
 
-// Turns an open time entry's heartbeat fields into a live status.
-// - No heartbeat yet at all (older entry from before this feature, or the
-//   first ~20s after clocking in before the first beat lands): "Unknown".
-// - Heartbeat itself is stale (>90s — roughly 4 missed 20s beats): "Away".
-//   Most likely they closed the tab/lost their connection without
-//   remembering to clock out, not that they're deliberately hiding.
-// - Heartbeat is fresh but no real interaction in the last 3 minutes:
-//   "Idle" — the tab's open but nothing's actually happening.
-// - Otherwise: "Working now".
-const IDLE_AFTER_MS = 3 * 60 * 1000;
-const AWAY_AFTER_MS = 90 * 1000;
-function liveWorkStatus(entry, nowMs) {
-  if (!entry.heartbeatAt) return { label: "Status pending", color: COLORS.mute, dot: "#94a3b8" };
-  const sinceHeartbeat = nowMs - entry.heartbeatAt;
-  if (sinceHeartbeat > AWAY_AFTER_MS) {
-    return { label: `Away · last seen ${timeAgo(entry.heartbeatAt)}`, color: COLORS.mute, dot: "#94a3b8" };
+  const isAdmin = user.role === "ADMIN";
+  if (!isAdmin) {
+    return <div style={{ padding: 28, color: 'var(--color-mute)' }}>Only admins can view intern tracking.</div>;
   }
-  const sinceInteraction = nowMs - (entry.lastInteractionAt || entry.heartbeatAt);
-  if (sinceInteraction > IDLE_AFTER_MS) {
-    return { label: `Idle ${Math.round(sinceInteraction / 60000)}m`, color: "#b45309", dot: "#f59e0b" };
-  }
-  return { label: "Working now", color: "#15803d", dot: "#22c55e" };
-}
-function LiveStatusDot({ entry, nowMs }) {
-  const s = liveWorkStatus(entry, nowMs);
-  const pulsing = s.label === "Working now";
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: s.color }}>
-      <span style={{ width: 7, height: 7, borderRadius: "50%", background: s.dot, animation: pulsing ? "cly-pulse 1.6s ease-in-out infinite" : "none" }} />
-      {s.label}
-    </span>
-  );
-}
 
-// Renders today's `activityByHour` (hour-of-day -> interaction count, see
-// the heartbeat effect in App() for exactly what counts as "an
-// interaction" — never content, just discrete clicks/keydowns/scroll/
-// touch) as a small bar per hour worked so far. Bar height is relative to
-// that person's own busiest hour today, not an absolute scale — the point
-// is "were they consistently doing something," not a productivity score.
-function ActivityBar({ activityByHour, compact }) {
-  const entries = Object.entries(activityByHour || {}).map(([h, n]) => [Number(h), n]).sort((a, b) => a[0] - b[0]);
-  if (entries.length === 0) return <span style={{ fontSize: 11, color: COLORS.mute }}>No activity yet</span>;
-  const max = Math.max(...entries.map(([, n]) => n), 1);
-  return (
-    <span style={{ display: "inline-flex", alignItems: "flex-end", gap: 2, height: compact ? 16 : 22 }} title="Interaction count per hour worked (clicks/keys/scroll — never content)">
-      {entries.map(([h, n]) => (
-        <span
-          key={h}
-          title={`${h}:00 — ${n} interaction${n === 1 ? "" : "s"}`}
-          style={{ width: compact ? 3 : 4, height: `${Math.max(10, (n / max) * 100)}%`, background: n === 0 ? COLORS.line : "#6366f1", borderRadius: 1, opacity: n === 0 ? 0.4 : 1 }}
-        />
-      ))}
-    </span>
-  );
-}
-
-// "Work-produced evidence" — instead of watching *how* someone works,
-// show what they actually produced, in real time: tasks completed/moved,
-// comments, docs edited, forms submitted, across every Orbit Workspace at
-// once. Each workspace already keeps its own activity log (`data.activity`,
-// see logActivity() in OrbitApp.jsx) and the Owner's `orbitWorkspaces`
-// subscription already receives every workspace's full doc live — so this
-// is a pure client-side merge of data the Owner already has, not a new
-// Firestore read or a new privacy boundary. Chat/Communication content is
-// deliberately NOT included here: unlike Workspace activity, private
-// conversations aren't something the Owner has blanket read access to
-// (only participants do — see firestore.rules), and folding message
-// content into an "evidence" feed would quietly cross that line.
-function LiveActivityFeed({ orbitWorkspaces }) {
-  const feed = React.useMemo(() => {
-    return (orbitWorkspaces || [])
-      .flatMap((w) => (w.data?.activity || []).map((a) => ({ ...a, workspaceName: w.name })))
-      .filter((a) => a.actorName) // older entries logged before actor-attribution was added — skip rather than show "Someone" for every historical row
-      .sort((a, b) => b.ts - a.ts)
-      .slice(0, 30);
-  }, [orbitWorkspaces]);
+  const activeUsers = users.filter(u => u.role !== "CLIENT" && u.status === "ACTIVE");
 
   return (
-    <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
-      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Live activity across Workspaces</div>
-      <div style={{ color: COLORS.mute, fontSize: 12, marginBottom: 12 }}>
-        What people actually produced, not just whether they were active — tasks moved, comments, docs edited, across every Orbit Workspace, updating live.
+    <div className="cly-fade-in cly-page-pad" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 24, maxWidth: 1200, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Live Presence & Activity</h2>
+        <span style={{ fontSize: 12.5, color: 'var(--color-mute)' }}>Heartbeat sync every 30s</span>
       </div>
-      {feed.length === 0 ? (
-        <div style={{ color: COLORS.mute, fontSize: 13 }}>No Workspace activity yet.</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 340, overflowY: "auto" }}>
-          {feed.map((a) => (
-            <div key={a.id} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12.5 }}>
-              <span style={{ color: COLORS.mute, fontSize: 11, whiteSpace: "nowrap", width: 56 }}>{timeAgo(a.ts)}</span>
-              <span style={{ fontWeight: 600 }}>{a.actorName}</span>
-              <span style={{ color: COLORS.text, flex: 1 }}>{a.text}</span>
-              <span style={{ color: COLORS.mute, fontSize: 11 }}>{a.workspaceName}</span>
-            </div>
-          ))}
+      
+      <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
+        <div style={{ display: "flex", padding: "12px 16px", fontSize: 11, fontWeight: 700, color: 'var(--color-mute)', textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${'var(--color-line)'}` }}>
+          <span style={{ flex: 1.5, minWidth: 200 }}>Team Member</span>
+          <span style={{ width: 140 }}>Current Status</span>
+          <span style={{ flex: 1, minWidth: 200 }}>Recent Activity (Interactions/Hr)</span>
+          <span style={{ width: 120, textAlign: "right" }}>Actions</span>
         </div>
-      )}
-    </div>
-  );
-}
+        
+        {activeUsers.map(u => {
+          const log = activityLogs.find(l => l.id === u.id);
+          const p = people.find(x => x.id === u.id) || {};
+          const msSinceActive = log ? now - log.lastActiveAt : Infinity;
+          
+          let statusText = "Offline";
+          let statusColor = 'var(--color-mute)';
+          let statusBg = 'var(--color-line)';
+          let statusDot = "#9ca3af";
+          
+          if (log) {
+            if (msSinceActive < 90000) { 
+              statusText = "Working now";
+              statusColor = 'var(--color-primary)';
+              statusBg = 'var(--color-primarySoft)';
+              statusDot = 'var(--color-primary)';
+            } else if (msSinceActive < 10 * 60000) {
+              const min = Math.floor(msSinceActive / 60000);
+              statusText = `Idle ${min} min`;
+              statusColor = 'var(--color-warning)';
+              statusBg = 'var(--color-warningSoft)';
+              statusDot = 'var(--color-warning)';
+            } else {
+              const min = Math.floor(msSinceActive / 60000);
+              const hr = Math.floor(min / 60);
+              if (hr > 0) statusText = `Offline (${hr}h ago)`;
+              else statusText = `Offline (${min}m ago)`;
+            }
+          }
 
-// Owner-only. Groups today's captures by person, newest first, with a
-// click-to-enlarge lightbox. Read access itself is already Owner-only at
-// the firestore.rules level (see §9 item 7) — this component doesn't add
-// any restriction of its own, just presents what the subscription handed it.
-function ScreenshotGallery({ screenshotCheckins, users }) {
-  const [zoomed, setZoomed] = useState(null); // a screenshotCheckins entry, or null
-  const todayStart = new Date().setHours(0, 0, 0, 0);
-  const today = (screenshotCheckins || []).filter((s) => s.capturedAt >= todayStart).sort((a, b) => b.capturedAt - a.capturedAt);
-  const byUser = {};
-  today.forEach((s) => { (byUser[s.userId] = byUser[s.userId] || []).push(s); });
+          const today = new Date();
+          const blocks = [];
+          for (let i = 4; i >= 0; i--) {
+            const d = new Date(today.getTime() - i * 3600000);
+            const hrKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}_${String(d.getHours()).padStart(2,'0')}`;
+            const count = log?.hourlyInteractions?.[hrKey] || 0;
+            const keys = log?.hourlyKeys?.[hrKey] || 0;
+            const clicks = log?.hourlyClicks?.[hrKey] || 0;
+            
+            let barBg = 'var(--color-line)';
+            let barHeight = "20%";
+            if (count > 500) { barBg = 'var(--color-primary)'; barHeight = "100%"; }
+            else if (count > 200) { barBg = 'var(--color-primarySoft)'; barHeight = "75%"; }
+            else if (count > 50) { barBg = 'var(--color-line)'; barHeight = "50%"; }
+            else if (count > 0) { barBg = 'var(--color-line)'; barHeight = "25%"; }
 
-  return (
-    <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
-      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Screenshot check-ins — today</div>
-      <div style={{ color: COLORS.mute, fontSize: 12, marginBottom: 14 }}>Only from people who've turned this on for themselves after you enabled it for their account. Nothing here for anyone who hasn't.</div>
-      {Object.keys(byUser).length === 0 ? (
-        <div style={{ color: COLORS.mute, fontSize: 13 }}>No check-ins today.</div>
-      ) : (
-        Object.entries(byUser).map(([userId, shots]) => (
-          <div key={userId} style={{ marginBottom: 16 }}>
-            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{shots[0].userName} <span style={{ color: COLORS.mute, fontWeight: 400 }}>({shots.length})</span></div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {shots.map((s) => (
-                <button key={s.id} onClick={() => setZoomed(s)} className="cly-btn" style={{ padding: 0, border: `1px solid ${COLORS.line}`, borderRadius: 8, overflow: "hidden", position: "relative" }}>
-                  <img src={s.dataUrl} alt="" style={{ width: 110, height: 68, objectFit: "cover", display: "block" }} />
-                  <span style={{ position: "absolute", bottom: 2, right: 4, fontSize: 9.5, color: "#fff", textShadow: "0 0 3px rgba(0,0,0,0.8)" }}>{formatClockTime(s.capturedAt)}</span>
+            blocks.push(
+              <div key={i} title={`${count} interactions (${keys} keys, ${clicks} clicks) at ${d.getHours()}:00`} style={{ width: 8, height: 24, background: "#f3f4f6", borderRadius: 2, position: "relative", overflow: "hidden" }}>
+                <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: barHeight, background: barBg, transition: "height 0.3s" }} />
+              </div>
+            );
+          }
+          
+          return (
+            <div key={u.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderTop: `1px solid ${'var(--color-line)'}`, fontSize: 13 }}>
+              <span style={{ flex: 1.5, minWidth: 200, display: "flex", alignItems: "center", gap: 12 }}>
+                {p.avatar ? (
+                  <img src={p.avatar} alt="" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover" }} />
+                ) : (
+                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: peopleColorFor(u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
+                    {peopleInitials(u.name)}
+                  </div>
+                )}
+                <span>
+                  <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--color-mute)' }}>{ROLE_META[u.role]?.label || u.role}</div>
+                </span>
+              </span>
+              <span style={{ width: 140 }}>
+                <Badge soft={statusBg} text={statusColor}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: statusDot }} />
+                    {statusText}
+                  </div>
+                </Badge>
+              </span>
+              <span style={{ flex: 1, minWidth: 200, display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", gap: 4, alignItems: "flex-end", height: 24 }}>
+                  {blocks}
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--color-mute)', marginLeft: 4 }}>(Last 5h)</span>
+              </span>
+              <span style={{ width: 120, textAlign: "right" }}>
+                <button className="cly-btn" style={{ background: 'var(--color-line)', padding: "6px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, color: 'var(--color-text)' }} onClick={() => setReportModalUser(u)}>
+                  Daily Report
                 </button>
-              ))}
+              </span>
             </div>
-          </div>
-        ))
-      )}
-      {zoomed && (
-        <div onClick={() => setZoomed(null)} style={{ position: "fixed", inset: 0, background: "rgba(15,15,20,0.85)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-          <div style={{ maxWidth: "90vw", maxHeight: "90vh" }}>
-            <img src={zoomed.dataUrl} alt="" style={{ maxWidth: "100%", maxHeight: "80vh", borderRadius: 8 }} />
-            <div style={{ color: "#fff", fontSize: 12, marginTop: 8, textAlign: "center" }}>{zoomed.userName} · {new Date(zoomed.capturedAt).toLocaleString()}</div>
-          </div>
-        </div>
+          );
+        })}
+        {activeUsers.length === 0 && (
+          <div style={{ padding: 24, textAlign: "center", color: 'var(--color-mute)', fontSize: 13 }}>No active team members found.</div>
+        )}
+      </div>
+      
+      {reportModalUser && (
+        <DailyReportModal 
+          currentUser={user}
+          user={reportModalUser} 
+          log={activityLogs.find(l => l.id === reportModalUser.id)} 
+          onClose={() => setReportModalUser(null)} 
+        />
       )}
     </div>
   );
 }
 
-// Employee-side. Nothing here can capture anything without the person
-// actively clicking "Start sharing" AND then picking a screen/window/tab in
-// their browser's own native permission dialog — that's a hard browser-
-// level requirement, not something this code can request silently or
-// trigger automatically. Once granted, the browser itself shows a
-// persistent "you are sharing your screen" indicator for as long as it's
-// active (a colored border/tab icon depending on browser) that no page
-// script can hide or suppress — the in-app banner below is redundant with
-// that, not a substitute for it. Stopping is always one click away, either
-// here or from the browser's own sharing indicator, and simply pauses
-// capture — there's no fallback or covert continuation.
-function ScreenshotConsentCard({ user, myOpenEntry, submitScreenshotCheckin }) {
-  const [sharing, setSharing] = useState(false);
-  const [acknowledged, setAcknowledged] = useState(false);
-  const [error, setError] = useState("");
-  const streamRef = useRef(null);
-  const intervalRef = useRef(null);
+function DailyReportModal({ currentUser, user, log, onClose }) {
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [screenshots, setScreenshots] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => () => stop(), []); // stop sharing if this card unmounts (e.g. they clock out) — never keep capturing in the background
-  useEffect(() => { if (!myOpenEntry) stop(); }, [myOpenEntry]); // clocked out -> stop, no reason to keep sharing
+  const dayKey = `${currentDate.getFullYear()}-${String(currentDate.getMonth()+1).padStart(2,'0')}-${String(currentDate.getDate()).padStart(2,'0')}`;
 
-  function capture() {
-    const stream = streamRef.current;
-    if (!stream) return;
-    const track = stream.getVideoTracks()[0];
-    if (!track) return;
-    const settings = track.getSettings();
-    const video = document.createElement("video");
-    video.srcObject = stream;
-    video.play().then(() => {
-      const canvas = document.createElement("canvas");
-      const scale = Math.min(1, 960 / (settings.width || 1280));
-      canvas.width = Math.round((settings.width || video.videoWidth) * scale);
-      canvas.height = Math.round((settings.height || video.videoHeight) * scale);
-      canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-      submitScreenshotCheckin(canvas.toDataURL("image/jpeg", 0.5));
-      video.pause();
-    }).catch(() => {});
-  }
+  useEffect(() => {
+    setLoading(true);
+    const unsub = subscribePath(["activity-logs", user.id, "screenshots"], (data) => {
+      const dayData = data.filter(d => d.dateKey === dayKey).sort((a, b) => b.timestamp - a.timestamp);
+      setScreenshots(dayData);
+      setLoading(false);
+    }, (err) => {
+      console.error(err);
+      setScreenshots([]);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [user.id, dayKey]);
 
-  async function start() {
-    setError("");
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-      streamRef.current = stream;
-      setSharing(true);
-      stream.getVideoTracks()[0].addEventListener("ended", stop); // they stopped it from the browser's own UI
-      setTimeout(capture, 500); // first capture shortly after sharing starts
-      intervalRef.current = setInterval(capture, 15 * 60 * 1000);
-    } catch (e) {
-      // Includes them just clicking "Cancel" on the browser's own picker —
-      // not an error worth alarming over, just didn't start.
-      setError("Screen sharing wasn't started.");
+  // Use the main document's logged daily total, fallback to summing the screenshots if missing
+  const dailyKeys = log?.dailyKeys?.[dayKey] || screenshots.reduce((acc, s) => acc + (s.keys || 0), 0);
+  const dailyClicks = log?.dailyClicks?.[dayKey] || screenshots.reduce((acc, s) => acc + (s.clicks || 0), 0);
+  
+  const idleMinutes = screenshots.filter(s => s.isIdle).length * 2;
+  const idleHours = Math.floor(idleMinutes / 60);
+  const idleMins = idleMinutes % 60;
+  const idleText = idleHours > 0 ? `${idleHours}h ${idleMins}m` : `${idleMinutes}m`;
+
+  const prevDay = () => {
+    const d = new Date(currentDate);
+    d.setDate(d.getDate() - 1);
+    setCurrentDate(d);
+  };
+  const nextDay = () => {
+    const d = new Date(currentDate);
+    d.setDate(d.getDate() + 1);
+    setCurrentDate(d);
+  };
+  
+  const handleClearHistory = async () => {
+    if (!window.confirm(`Are you sure you want to delete all screenshots for ${user.name} on ${currentDate.toDateString()}?`)) return;
+    for (const s of screenshots) {
+      await deleteDocPath(["activity-logs", user.id, "screenshots", s.id]).catch(() => {});
     }
-  }
-  function stop() {
-    if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
-    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-    setSharing(false);
-  }
+  };
 
-  if (sharing) {
-    return (
-      <div style={{ background: "#fef2f2", border: `1px solid ${COLORS.danger}`, borderRadius: 12, padding: "14px 18px", display: "flex", alignItems: "center", gap: 12 }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger, animation: "cly-pulse 1.6s ease-in-out infinite", flexShrink: 0 }} />
-        <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>Screenshot check-ins are ON — a periodic screenshot of what you're sharing is visible to your Owner.</span>
-        <button onClick={stop} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.danger}`, color: COLORS.danger, borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>Stop sharing</button>
-      </div>
-    );
-  }
-  if (!acknowledged) {
-    return (
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 18 }}>
-        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Your Owner has requested Screenshot check-ins</div>
-        <ul style={{ fontSize: 12.5, color: COLORS.mute, lineHeight: 1.6, margin: "0 0 12px", paddingLeft: 18 }}>
-          <li>You choose exactly what to share — your whole screen, one window, or one tab — through your browser's own picker.</li>
-          <li>While it's on, a screenshot of that is saved roughly every 15 minutes and visible to your Owner.</li>
-          <li>Your browser shows its own "sharing" indicator the entire time this is active — this app can't hide that or capture anything without it.</li>
-          <li>You can stop anytime, either here or from your browser's own sharing controls, with no separate approval needed.</li>
-        </ul>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={() => setAcknowledged(true)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700 }}>I understand — continue</button>
+  return createPortal(
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100000, padding: 20 }}>
+      <div className="cly-fade-in" style={{ background: "#fff", borderRadius: 12, width: "100%", maxWidth: 840, overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: "90vh" }}>
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${'var(--color-line)'}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Activity Report: {user.name}</h3>
+          <button className="cly-btn" onClick={onClose} style={{ background: "transparent", color: 'var(--color-mute)' }}><X size={20} /></button>
         </div>
-      </div>
-    );
-  }
-  return (
-    <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 18, display: "flex", alignItems: "center", gap: 14 }}>
-      <span style={{ fontSize: 13, flex: 1 }}>Ready to start. Pick a screen/window/tab to share when your browser asks.</span>
-      <button onClick={start} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, fontWeight: 700 }}>Start sharing</button>
-      {error && <span style={{ fontSize: 11.5, color: COLORS.danger }}>{error}</span>}
-    </div>
-  );
-}
-
-// The consolidated Monitoring report — Activity-level signal, Work-produced
-// evidence, and Screenshot check-ins for every employee at once, in one
-// live-updating place, instead of scattered across separate sections.
-// Visible to the Owner always, and to an Admin only once the Owner has
-// explicitly granted them `canViewMonitoring` (toggle at the bottom of
-// this page, Owner-only) — matches `hasMonitoringAccess()` in
-// firestore.rules exactly, which is the real enforcement; this page just
-// renders what the subscriptions were allowed to receive. Nothing here
-// polls — `timeEntries`, `orbitWorkspaces`, and `screenshotCheckins` are
-// all already realtime Firestore subscriptions at the App level, so every
-// row updates live as heartbeats/activity/captures come in.
-function MonitoringReportPage({ user, users, people, timeEntries, orbitWorkspaces, screenshotCheckins, setAdminMonitoringAccess }) {
-  const isOwner = user.role === "OWNER";
-  const [, forceTick] = useState(0);
-  useEffect(() => { const t = setInterval(() => forceTick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
-  const now = Date.now();
-  const todayStart = new Date().setHours(0, 0, 0, 0);
-
-  const employees = users.filter((u) => u.role !== "CLIENT");
-  const mergedActivity = React.useMemo(() => (
-    (orbitWorkspaces || []).flatMap((w) => (w.data?.activity || []).map((a) => ({ ...a, workspaceName: w.name }))).sort((a, b) => b.ts - a.ts)
-  ), [orbitWorkspaces]);
-
-  return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ background: COLORS.dataSoft, color: COLORS.dataText, borderRadius: 10, padding: "10px 14px", fontSize: 12.5 }}>
-        Activity level and work-produced evidence reflect real usage of this portal. Screenshot check-ins only appear for people who've both been opted in <em>and</em> explicitly granted screen-share permission themselves — most rows below will simply have none, which is expected, not a gap.
-      </div>
-
-      {employees.map((u) => {
-        const openEntry = timeEntries.find((e) => e.userId === u.id && !e.clockOut);
-        const myActivity = mergedActivity.filter((a) => a.actorId === u.id).slice(0, 3);
-        const myShots = (screenshotCheckins || []).filter((s) => s.userId === u.id && s.capturedAt >= todayStart).sort((a, b) => b.capturedAt - a.capturedAt);
-        return (
-          <div key={u.id} style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 16, display: "grid", gridTemplateColumns: "180px 1fr 1fr 160px", gap: 16, alignItems: "start" }}>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                <div style={{ width: 26, height: 26, borderRadius: "50%", background: peopleColorFor(u.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 700 }}>{peopleInitials(u.name)}</div>
-                <span style={{ fontWeight: 700, fontSize: 13.5 }}>{u.name}</span>
-              </div>
-              {openEntry ? (
-                <>
-                  <LiveStatusDot entry={openEntry} nowMs={now} />
-                  <div style={{ marginTop: 6 }}><ActivityBar activityByHour={openEntry.activityByHour} /></div>
-                </>
-              ) : (
-                <span style={{ fontSize: 12, color: COLORS.mute }}>Not clocked in</span>
-              )}
+        
+        <div style={{ padding: "12px 20px", borderBottom: `1px solid ${'var(--color-line)'}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: 'var(--color-cream)', flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button onClick={prevDay} className="cly-btn" style={{ padding: "4px 10px", borderRadius: 6, background: "#fff", border: `1px solid ${'var(--color-line)'}`, fontSize: 13, fontWeight: 600 }}>&larr; Prev</button>
+            <div style={{ fontSize: 14, fontWeight: 700, minWidth: 140, textAlign: "center" }}>{currentDate.toDateString()}</div>
+            <button onClick={nextDay} disabled={dayKey === `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}-${String(new Date().getDate()).padStart(2,'0')}`} className="cly-btn" style={{ padding: "4px 10px", borderRadius: 6, background: "#fff", border: `1px solid ${'var(--color-line)'}`, fontSize: 13, fontWeight: 600, opacity: dayKey === `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}-${String(new Date().getDate()).padStart(2,'0')}` ? 0.4 : 1 }}>Next &rarr;</button>
+          </div>
+          {currentUser?.role === "ADMIN" && screenshots.length > 0 && (
+            <button onClick={handleClearHistory} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 6, background: 'var(--color-danger)', color: "#fff", fontSize: 12, fontWeight: 600 }}>
+              <Trash2 size={14} /> Clear Day's History
+            </button>
+          )}
+        </div>
+        
+        <div style={{ padding: 20, overflowY: "auto", display: "flex", flexDirection: "column", gap: 24, flex: 1 }}>
+          <div style={{ display: "flex", gap: 16 }}>
+            <div style={{ flex: 1, padding: 16, background: 'var(--color-bg)', borderRadius: 8, border: `1px solid ${'var(--color-line)'}` }}>
+              <div style={{ fontSize: 12, color: 'var(--color-mute)', fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>Total Keystrokes</div>
+              <div style={{ fontSize: 24, fontWeight: 700 }}>{dailyKeys.toLocaleString()}</div>
             </div>
-
-            <div>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>Work-produced evidence</div>
-              {myActivity.length === 0 ? (
-                <span style={{ fontSize: 12, color: COLORS.mute }}>Nothing yet.</span>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {myActivity.map((a) => (
-                    <div key={a.id} style={{ fontSize: 12 }}>
-                      <span style={{ color: COLORS.mute, fontSize: 10.5, marginRight: 6 }}>{timeAgo(a.ts)}</span>
-                      {a.text} <span style={{ color: COLORS.mute }}>· {a.workspaceName}</span>
+            <div style={{ flex: 1, padding: 16, background: 'var(--color-bg)', borderRadius: 8, border: `1px solid ${'var(--color-line)'}` }}>
+              <div style={{ fontSize: 12, color: 'var(--color-mute)', fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>Total Clicks</div>
+              <div style={{ fontSize: 24, fontWeight: 700 }}>{dailyClicks.toLocaleString()}</div>
+            </div>
+            <div style={{ flex: 1, padding: 16, background: 'var(--color-bg)', borderRadius: 8, border: `1px solid ${'var(--color-line)'}` }}>
+              <div style={{ fontSize: 12, color: 'var(--color-mute)', fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>Computed Idle Time</div>
+              <div style={{ fontSize: 24, fontWeight: 700 }}>{idleText}</div>
+            </div>
+          </div>
+          
+          <div>
+            <h4 style={{ margin: "0 0 12px 0", fontSize: 14, fontWeight: 600 }}>Screenshot Timeline</h4>
+            {loading ? (
+              <div style={{ padding: 40, textAlign: "center", color: 'var(--color-mute)', fontSize: 13 }}><Loader2 size={24} className="cly-spin" style={{ margin: "0 auto 12px" }} /> Loading timeline...</div>
+            ) : screenshots.length > 0 ? (
+              <div style={{ display: "grid", gap: 20 }}>
+                {screenshots.map(s => (
+                  <div key={s.id} style={{ display: "flex", gap: 16, paddingBottom: 20, borderBottom: `1px solid ${'var(--color-line)'}` }}>
+                    <div style={{ flex: 1 }}>
+                      {s.image ? (
+                        <img src={s.image} alt="Screenshot" style={{ width: "100%", borderRadius: 8, border: `1px solid ${'var(--color-line)'}`, opacity: s.isIdle ? 0.6 : 1 }} />
+                      ) : (
+                        <div style={{ width: "100%", height: 160, background: 'var(--color-cream)', borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: 'var(--color-mute)', fontSize: 13, border: `1px dashed ${'var(--color-line)'}` }}>
+                          No image data
+                        </div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>Screenshot check-ins today</div>
-              {myShots.length === 0 ? (
-                <span style={{ fontSize: 12, color: COLORS.mute }}>{u.screenshotCheckinsEnabled ? "Opted in, no captures yet." : "Not enabled."}</span>
-              ) : (
-                <div style={{ display: "flex", gap: 6 }}>
-                  {myShots.slice(0, 3).map((s) => (
-                    <img key={s.id} src={s.dataUrl} alt="" style={{ width: 56, height: 34, objectFit: "cover", borderRadius: 5, border: `1px solid ${COLORS.line}` }} title={formatClockTime(s.capturedAt)} />
-                  ))}
-                  {myShots.length > 3 && <span style={{ fontSize: 11, color: COLORS.mute, alignSelf: "center" }}>+{myShots.length - 3}</span>}
-                </div>
-              )}
-            </div>
-
-            <div style={{ fontSize: 11, color: COLORS.mute, textAlign: "right" }}>
-              {openEntry ? `Clocked in ${formatClockTime(openEntry.clockIn)}` : ""}
-            </div>
-          </div>
-        );
-      })}
-      {employees.length === 0 && <div style={{ color: COLORS.mute, fontSize: 13 }}>No team members yet.</div>}
-
-      {isOwner && (
-        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20, marginTop: 8 }}>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Grant this report to Admins</div>
-          <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14 }}>
-            Off by default for every Admin. Granting it here gives that Admin the same view you're looking at right now — it does not let them manage Screenshot check-ins, time tracking access, or grant this to anyone else; those stay Owner-only.
-          </div>
-          <div style={{ display: "flex", flexDirection: "column" }}>
-            {users.filter((u) => u.role === "ADMIN").map((u) => (
-              <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${COLORS.line}` }}>
-                <span style={{ fontWeight: 600, fontSize: 13.5 }}>{u.name}</span>
-                <Toggle checked={!!u.canViewMonitoring} onChange={(v) => setAdminMonitoringAccess(u.id, v)} />
+                    <div style={{ width: 180, flexShrink: 0, fontSize: 13 }}>
+                      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>{new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                      {s.isIdle ? (
+                        <div style={{ display: "inline-block", background: 'var(--color-goldSoft)', color: "#6B4A1A", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11, marginBottom: 8 }}>Idle Period (2m)</div>
+                      ) : (
+                        <div style={{ display: "inline-block", background: 'var(--color-greenSoft)', color: 'var(--color-green)', padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11, marginBottom: 8 }}>Active</div>
+                      )}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, color: 'var(--color-mute)' }}>
+                        <div>Keys: <span style={{ color: 'var(--color-text)', fontWeight: 600 }}>{s.keys || 0}</span></div>
+                        <div>Clicks: <span style={{ color: 'var(--color-text)', fontWeight: 600 }}>{s.clicks || 0}</span></div>
+                        <div>Moves: <span style={{ color: 'var(--color-text)', fontWeight: 600 }}>{s.moves || 0}</span></div>
+                        <div>Scrolls: <span style={{ color: 'var(--color-text)', fontWeight: 600 }}>{s.scrolls || 0}</span></div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-            {users.filter((u) => u.role === "ADMIN").length === 0 && (
-              <div style={{ color: COLORS.mute, fontSize: 13, padding: "10px 0" }}>No Admins yet.</div>
+            ) : (
+              <div style={{ padding: 40, background: 'var(--color-bg)', borderRadius: 8, textAlign: "center", color: 'var(--color-mute)', fontSize: 13, border: `1px dashed ${'var(--color-line)'}` }}>
+                No tracking data found for this date.
+              </div>
             )}
           </div>
         </div>
-      )}
-    </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
-function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut, setUserTimeTrackingEnabled, saveUserAttendanceRules, orbitWorkspaces, setUserScreenshotCheckinsEnabled, screenshotCheckins, submitScreenshotCheckin }) {
-  const isOwner = user.role === "OWNER";
-  const enabled = isOwner || !!user.timeTrackingEnabled;
+
+function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut, setUserTimeTrackingMode, saveUserAttendanceRules }) {
+  const isOwner = user.role === "ADMIN";
+  const mode = isOwner ? "hourly" : (user.timeTrackingMode || (user.timeTrackingEnabled ? "hourly" : "none"));
+  const enabled = mode !== "none";
   const myOpenEntry = timeEntries.find(e => e.userId === user.id && !e.clockOut);
   const [busy, setBusy] = useState(false);
   const [, forceTick] = useState(0);
@@ -2410,17 +2273,17 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
   }
 
   const elapsedMs = myOpenEntry ? Date.now() - myOpenEntry.clockIn : 0;
-  // Team members whose schedule the owner can configure — everyone except
+  // Team members whose schedule the owner can configure â€” everyone except
   // the owner (always on, no personal calendar needed) and clients (who
   // never get this feature at all).
-  const teamMembers = users.filter(u => u.role !== "CLIENT" && u.role !== "OWNER");
+  const teamMembers = users.filter(u => u.role !== "CLIENT" && u.role !== "ADMIN");
   const activeNow = isOwner ? timeEntries.filter(e => !e.clockOut).sort((a, b) => a.clockIn - b.clockIn) : [];
 
   return (
     <div className="cly-fade-in cly-page-pad" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 24 }}>
+      <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, padding: 24 }}>
         <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "baseline", gap: 6, marginBottom: 14 }}>
-          <span style={{ fontSize: 12, color: COLORS.mute }}>
+          <span style={{ fontSize: 12, color: 'var(--color-mute)' }}>
             {new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
           </span>
           <span className="cly-mono" style={{ fontSize: 15, fontWeight: 700 }}>
@@ -2428,34 +2291,27 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
           </span>
         </div>
         {!enabled ? (
-          <EmptyState icon={Timer} title="Time tracking isn't enabled for your account" body="Ask your workspace owner to turn this on for you from this page." />
+          <EmptyState icon={Timer} title="Time tracking isn't enabled for your account" body="Ask your workspace admin to turn this on for you from this page." />
         ) : (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
             <div>
-              <div style={{ fontSize: 12.5, color: COLORS.mute, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }}>
-                {myOpenEntry ? "Clocked in since" : "Status"}
+              <div style={{ fontSize: 12.5, color: 'var(--color-mute)', fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }}>
+                {myOpenEntry ? (mode === "presence" ? "Present since" : "Clocked in since") : "Status"}
               </div>
               <div className="cly-serif" style={{ fontSize: 24, marginTop: 4 }}>
-                {myOpenEntry ? formatClockTime(myOpenEntry.clockIn) : "Not clocked in"}
+                {myOpenEntry ? formatClockTime(myOpenEntry.clockIn) : (mode === "presence" ? "Not present" : "Not clocked in")}
               </div>
-              {myOpenEntry && (
-                <div className="cly-mono" style={{ fontSize: 13, color: COLORS.mute, marginTop: 4 }}>{formatWorkedDuration(elapsedMs)} elapsed</div>
-              )}
-              {myOpenEntry && !isOwner && (
-                <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 12 }}>
-                  <LiveStatusDot entry={myOpenEntry} nowMs={Date.now()} />
-                  <ActivityBar activityByHour={myOpenEntry.activityByHour} compact />
-                  <span style={{ fontSize: 11, color: COLORS.mute }}>— this is what your Owner sees while you're clocked in</span>
-                </div>
+              {myOpenEntry && mode === "hourly" && (
+                <div className="cly-mono" style={{ fontSize: 13, color: 'var(--color-mute)', marginTop: 4 }}>{formatWorkedDuration(elapsedMs)} elapsed</div>
               )}
             </div>
             <button
               disabled={busy}
               onClick={myOpenEntry ? handleClockOut : handleClockIn}
               className="cly-btn"
-              style={{ padding: "12px 26px", borderRadius: 10, fontWeight: 700, fontSize: 14, background: myOpenEntry ? COLORS.dangerSoft : COLORS.ink, color: myOpenEntry ? COLORS.danger : "#fff", opacity: busy ? 0.7 : 1 }}
+              style={{ padding: "12px 26px", borderRadius: 10, fontWeight: 700, fontSize: 14, background: myOpenEntry ? 'var(--color-dangerSoft)' : 'var(--color-ink)', color: myOpenEntry ? 'var(--color-danger)' : "#fff", opacity: busy ? 0.7 : 1 }}
             >
-              {busy ? "…" : myOpenEntry ? "Clock out" : "Clock in"}
+              {busy ? "â€¦" : myOpenEntry ? (mode === "presence" ? "I'm done for today" : "Clock out") : (mode === "presence" ? "Hey, I'm here" : "Clock in")}
             </button>
           </div>
         )}
@@ -2463,15 +2319,10 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
 
       {isOwner && (
         <>
-          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>Currently clocked in</div>
-            </div>
-            <div style={{ color: COLORS.mute, fontSize: 12, marginBottom: 12 }}>
-              "Working now" means real activity (mouse/keyboard) in the last 3 minutes — not just the tab being open. "Idle" means the tab's open but nothing's happening; "Away" means we haven't heard from their browser in over 90 seconds (closed tab, lost connection, etc.), not a judgment call.
-            </div>
+          <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, padding: 20 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Currently clocked in</div>
             {activeNow.length === 0 ? (
-              <div style={{ color: COLORS.mute, fontSize: 13 }}>No one is clocked in right now.</div>
+              <div style={{ color: 'var(--color-mute)', fontSize: 13 }}>No one is clocked in right now.</div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {activeNow.map(e => (
@@ -2482,93 +2333,69 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
                       </div>
                       <span style={{ fontWeight: 600 }}>{e.userName}</span>
                     </span>
-                    <span style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                      <ActivityBar activityByHour={e.activityByHour} compact />
-                      <LiveStatusDot entry={e} nowMs={Date.now()} />
-                      <span style={{ color: COLORS.mute }}>since {formatClockTime(e.clockIn)}</span>
-                    </span>
+                    <span style={{ color: 'var(--color-mute)' }}>since {formatClockTime(e.clockIn)}</span>
                   </div>
                 ))}
               </div>
             )}
           </div>
 
-          <LiveActivityFeed orbitWorkspaces={orbitWorkspaces} />
-
-          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+          <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, padding: 20 }}>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Who can use time tracking</div>
-            <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14 }}>Clients never get this feature. Turn it on for anyone else who needs to clock in/out, and set their hours and work calendar.</div>
+            <div style={{ color: 'var(--color-mute)', fontSize: 12.5, marginBottom: 14 }}>Clients never get this feature. Turn it on for anyone else who needs to clock in/out, and set their hours and work calendar.</div>
             <div style={{ display: "flex", flexDirection: "column" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${COLORS.line}` }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${'var(--color-line)'}` }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ fontWeight: 600, fontSize: 13.5 }}>{user.name}</span>
-                  <Badge color={ROLE_META.OWNER.color} soft={ROLE_META.OWNER.soft} text={ROLE_META.OWNER.text}>Owner</Badge>
+                  <Badge color={ROLE_META.ADMIN.color} soft={ROLE_META.ADMIN.soft} text={ROLE_META.ADMIN.text}>Admin</Badge>
                 </div>
-                <span style={{ fontSize: 12, color: COLORS.mute }}>Always on</span>
+                <span style={{ fontSize: 12, color: 'var(--color-mute)' }}>Always on</span>
               </div>
               {teamMembers.map(u => {
                 const meta = ROLE_META[u.role];
                 const person = personForUser(people, u.id);
                 const isExpanded = expandedId === u.id;
                 return (
-                  <div key={u.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                  <div key={u.id} style={{ borderBottom: `1px solid ${'var(--color-line)'}` }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <span style={{ fontWeight: 600, fontSize: 13.5 }}>{u.name}</span>
                         <Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge>
-                        {person && <span style={{ fontSize: 11.5, color: COLORS.mute }}>{person.department} · {person.role}</span>}
+                        {person && <span style={{ fontSize: 11.5, color: 'var(--color-mute)' }}>{person.department} Ã‚Â· {person.role}</span>}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                         <button onClick={() => {
                           if (isExpanded && editorDirty && !window.confirm("You have unsaved changes to this person's hours/calendar. Close without saving?")) return;
                           setEditorDirty(false);
                           setExpandedId(isExpanded ? null : u.id);
-                        }} className="cly-btn" style={{ background: "none", color: COLORS.data, fontSize: 12, fontWeight: 700 }}>
+                        }} className="cly-btn" style={{ background: "none", color: 'var(--color-products)', fontSize: 12, fontWeight: 700 }}>
                           {isExpanded ? "Close" : "Edit hours & calendar"}
                         </button>
-                        <Toggle checked={!!u.timeTrackingEnabled} onChange={(v) => setUserTimeTrackingEnabled(u.id, v)} />
+                        <select
+                          value={u.timeTrackingMode || (u.timeTrackingEnabled ? "hourly" : "none")}
+                          onChange={(e) => setUserTimeTrackingMode(u.id, e.target.value)}
+                          style={{ padding: "6px 10px", fontSize: 12.5, borderRadius: 6, border: `1px solid ${'var(--color-line)'}`, background: "#fff", cursor: "pointer", fontWeight: 600, color: 'var(--color-ink)' }}
+                        >
+                          <option value="none">Disabled</option>
+                          <option value="hourly">Hourly (Clock in)</option>
+                          <option value="presence">Presence (I'm here)</option>
+                        </select>
                       </div>
                     </div>
                     {isExpanded && (
                       <div style={{ paddingBottom: 18 }}>
-                        <AttendanceRulesEditor user={u} onSave={(rules) => { saveUserAttendanceRules(u.id, rules); setEditorDirty(false); }} onDirtyChange={setEditorDirty} />
+                        <AttendanceRulesEditor user={u} mode={u.timeTrackingMode || (u.timeTrackingEnabled ? "hourly" : "none")} onSave={(rules) => { saveUserAttendanceRules(u.id, rules); setEditorDirty(false); }} onDirtyChange={setEditorDirty} />
                       </div>
                     )}
                   </div>
                 );
               })}
               {teamMembers.length === 0 && (
-                <div style={{ color: COLORS.mute, fontSize: 13, padding: "10px 0" }}>No other team members yet — add people from Admin settings → Users.</div>
+                <div style={{ color: 'var(--color-mute)', fontSize: 13, padding: "10px 0" }}>No other team members yet â€” add people from Admin settings Ã¢â€ â€™ Users.</div>
               )}
             </div>
           </div>
-
-          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
-              Screenshot check-ins
-              <span style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.danger, background: COLORS.dangerSoft, padding: "2px 7px", borderRadius: 6 }}>Sensitive</span>
-            </div>
-            <div style={{ color: COLORS.mute, fontSize: 12.5, marginBottom: 14, lineHeight: 1.5 }}>
-              Turning this on doesn't start capturing anything by itself — it just makes the request appear for that person. They still have to explicitly click "Start sharing" and pick a screen/window through their <em>browser's own</em> permission prompt each session; while it's active, the browser shows its own un-hideable "you're sharing your screen" indicator the whole time, on top of the in-app banner. There's no covert or forced version of this — before you turn it on for anyone, make sure you have a written monitoring policy in place and have checked what your local labor law requires for notice/consent, since that varies by location.
-            </div>
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              {teamMembers.map(u => (
-                <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${COLORS.line}` }}>
-                  <span style={{ fontWeight: 600, fontSize: 13.5 }}>{u.name}</span>
-                  <Toggle checked={!!u.screenshotCheckinsEnabled} onChange={(v) => setUserScreenshotCheckinsEnabled(u.id, v)} />
-                </div>
-              ))}
-              {teamMembers.length === 0 && (
-                <div style={{ color: COLORS.mute, fontSize: 13, padding: "10px 0" }}>No other team members yet.</div>
-              )}
-            </div>
-          </div>
-
-          <ScreenshotGallery screenshotCheckins={screenshotCheckins} users={users} />
         </>
-      )}
-      {!isOwner && !!user.screenshotCheckinsEnabled && enabled && (
-        <ScreenshotConsentCard user={user} myOpenEntry={myOpenEntry} submitScreenshotCheckin={submitScreenshotCheckin} />
       )}
     </div>
   );
@@ -2579,13 +2406,13 @@ function TimeTrackingPage({ user, users, people, timeEntries, clockIn, clockOut,
 // holidays/leave/Sick/Voluntary Leave, and per-date schedule corrections).
 // Used inside each team member's expanded row above.
 //
-// Calendar interaction is a single, unambiguous flow: click any date(s) —
-// they get a selection ring — and a panel appears below with a Day type
+// Calendar interaction is a single, unambiguous flow: click any date(s) â€”
+// they get a selection ring â€” and a panel appears below with a Day type
 // and, for working days, Start/End time, plus an Apply button. There is no
 // separate "bulk mode" toggle or silent click-to-cycle; one date selected
 // behaves exactly like several, just with the panel pre-filled from that
 // date's current setting.
-function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
+function AttendanceRulesEditor({ user, mode, onSave, onDirtyChange }) {
   const initial = getAttendanceRules(user);
   const [rules, setRules] = useState(initial);
   const [today] = useState(new Date());
@@ -2598,7 +2425,7 @@ function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
   const [panelDayType, setPanelDayType] = useState("default"); // "default" | "work" | "off" | "sick" | "voluntary"
   const [panelStart, setPanelStart] = useState("");
   const [panelEnd, setPanelEnd] = useState("");
-  const hoursApply = panelDayType === "default" || panelDayType === "work";
+  const hoursApply = (panelDayType === "default" || panelDayType === "work") && mode !== "presence";
 
   // Selecting exactly one date pre-fills the panel from what's already set
   // on it, so clicking a date behaves like "open its settings." Adding a
@@ -2641,7 +2468,7 @@ function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
     setSelectedDates([]);
   }
   // Resets every selected date back to this person's normal weekly
-  // pattern/hours — removes the override entirely rather than setting it to
+  // pattern/hours â€” removes the override entirely rather than setting it to
   // something.
   function clearSelection() {
     const next = { ...rules.dateOverrides };
@@ -2654,38 +2481,44 @@ function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
   const overrideCount = Object.keys(rules.dateOverrides).length;
 
   return (
-    <div style={{ background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", gap: 18 }}>
+    <div style={{ background: 'var(--color-cream)', border: `1px solid ${'var(--color-line)'}`, borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", gap: 18 }}>
       <div>
         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Hours</div>
-        <div className="cly-grid-2" style={{ maxWidth: 460 }}>
-          <label style={{ fontSize: 12, fontWeight: 600 }}>Work start time
-            <input type="time" className="cly-input" value={rules.workStartTime} onChange={e => patch("workStartTime", e.target.value)} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
-          </label>
-          <label style={{ fontSize: 12, fontWeight: 600 }}>Work end time
-            <input type="time" className="cly-input" value={rules.workEndTime} onChange={e => patch("workEndTime", e.target.value)} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
-          </label>
-          <label style={{ fontSize: 12, fontWeight: 600 }}>Grace period (minutes)
-            <input type="number" min={0} className="cly-input" value={rules.lateThresholdMinutes} onChange={e => patch("lateThresholdMinutes", Number(e.target.value))} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
-          </label>
-          <label style={{ fontSize: 12, fontWeight: 600 }}>Full day hours
-            <input type="number" min={0} step={0.5} className="cly-input" value={rules.fullDayHours} onChange={e => patch("fullDayHours", Number(e.target.value))} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
-          </label>
-          <label style={{ fontSize: 12, fontWeight: 600 }}>Half day hours
-            <input type="number" min={0} step={0.5} className="cly-input" value={rules.halfDayHours} onChange={e => patch("halfDayHours", Number(e.target.value))} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
-          </label>
-        </div>
+        {mode === "presence" ? (
+          <div style={{ padding: 12, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, fontSize: 13, color: 'var(--color-mute)', fontStyle: "italic" }}>
+            Open Schedule Hours (Presence Mode)
+          </div>
+        ) : (
+          <div className="cly-grid-2" style={{ maxWidth: 460 }}>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Work start time
+              <input type="time" className="cly-input" value={rules.workStartTime} onChange={e => patch("workStartTime", e.target.value)} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Work end time
+              <input type="time" className="cly-input" value={rules.workEndTime} onChange={e => patch("workEndTime", e.target.value)} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Grace period (minutes)
+              <input type="number" min={0} className="cly-input" value={rules.lateThresholdMinutes} onChange={e => patch("lateThresholdMinutes", Number(e.target.value))} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Full day hours
+              <input type="number" min={0} step={0.5} className="cly-input" value={rules.fullDayHours} onChange={e => patch("fullDayHours", Number(e.target.value))} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Half day hours
+              <input type="number" min={0} step={0.5} className="cly-input" value={rules.halfDayHours} onChange={e => patch("halfDayHours", Number(e.target.value))} style={{ ...inputStyle, marginTop: 5, background: "#fff" }} />
+            </label>
+          </div>
+        )}
       </div>
 
       <div>
         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Weekly pattern</div>
-        <div style={{ color: COLORS.mute, fontSize: 11.5, marginBottom: 8 }}>Default working days for this person. Specific dates can still be overridden below.</div>
+        <div style={{ color: 'var(--color-mute)', fontSize: 11.5, marginBottom: 8 }}>Default working days for this person. Specific dates can still be overridden below.</div>
         <div style={{ display: "flex", gap: 6 }}>
           {WEEKDAY_LETTERS.map((letter, i) => (
             <button key={i} onClick={() => toggleWeekday(i)} className="cly-btn" style={{
               width: 32, height: 32, borderRadius: 8, fontSize: 12, fontWeight: 700,
-              background: rules.weeklyWorkDays[i] ? COLORS.ink : "#fff",
-              color: rules.weeklyWorkDays[i] ? "#fff" : COLORS.mute,
-              border: `1px solid ${rules.weeklyWorkDays[i] ? COLORS.ink : COLORS.line}`,
+              background: rules.weeklyWorkDays[i] ? 'var(--color-ink)' : "#fff",
+              color: rules.weeklyWorkDays[i] ? "#fff" : 'var(--color-mute)',
+              border: `1px solid ${rules.weeklyWorkDays[i] ? 'var(--color-ink)' : 'var(--color-line)'}`,
             }}>{letter}</button>
           ))}
         </div>
@@ -2695,19 +2528,19 @@ function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
           <div>
             <div style={{ fontWeight: 700, fontSize: 13 }}>Work calendar</div>
-            <div style={{ color: COLORS.mute, fontSize: 11.5 }}>
+            <div style={{ color: 'var(--color-mute)', fontSize: 11.5 }}>
               Click one or more dates below, then set what applies to them in the panel that appears.
               {" "}{overrideCount > 0 && `${overrideCount} custom date${overrideCount === 1 ? "" : "s"} set.`}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 26, height: 26 }}>‹</button>
+            <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 6, width: 26, height: 26 }}>Ã¢â‚¬Â¹</button>
             <span style={{ fontSize: 12.5, fontWeight: 700, minWidth: 110, textAlign: "center" }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
-            <button onClick={() => setViewMonth(m => { if (m === 11) { setViewYear(y => y + 1); return 0; } return m + 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 26, height: 26 }}>›</button>
+            <button onClick={() => setViewMonth(m => { if (m === 11) { setViewYear(y => y + 1); return 0; } return m + 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 6, width: 26, height: 26 }}>Ã¢â‚¬Âº</button>
           </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, maxWidth: 380 }}>
-          {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
+          {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: 'var(--color-mute)', fontWeight: 700 }}>{l}</div>)}
           {weeks.flat().map((d, i) => {
             if (d === null) return <div key={i} />;
             const dateStr = toDateStr(viewYear, viewMonth, d);
@@ -2719,37 +2552,37 @@ function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
             const isSelected = selectedDates.includes(dateStr);
             const eff = effectiveHoursForDate(dateStr, rules);
             const leaveLabel = override?.dayType === "sick" ? "SL" : override?.dayType === "voluntary" ? "VL" : null;
-            const title = `${leaveLabel ? (override.dayType === "sick" ? "Sick Leave" : "Voluntary Leave") : working ? "Working day" : "Day off"}${eff && hasSchedule ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""} — click to select`;
-            let cellBg = working ? COLORS.successSoft : "#fff";
-            let cellFg = working ? COLORS.success : COLORS.mute;
-            if (leaveLabel === "SL") { cellBg = COLORS.dataSoft; cellFg = COLORS.dataText; }
-            else if (leaveLabel === "VL") { cellBg = COLORS.creativeSoft; cellFg = COLORS.creativeText; }
+            const title = `${leaveLabel ? (override.dayType === "sick" ? "Sick Leave" : "Voluntary Leave") : working ? "Working day" : "Day off"}${eff && hasSchedule ? ` Ã‚Â· ${formatTimeStrTo12h(eff.workStartTime)}Ã¢â‚¬â€œ${formatTimeStrTo12h(eff.workEndTime)}` : ""} â€” click to select`;
+            let cellBg = working ? 'var(--color-successSoft)' : "#fff";
+            let cellFg = working ? 'var(--color-success)' : 'var(--color-mute)';
+            if (leaveLabel === "SL") { cellBg = 'var(--color-productsSoft)'; cellFg = 'var(--color-productsText)'; }
+            else if (leaveLabel === "VL") { cellBg = 'var(--color-eventsSoft)'; cellFg = 'var(--color-eventsText)'; }
             return (
               <button key={i} onClick={() => toggleDateSelected(dateStr)} className="cly-btn" title={title} style={{
                 position: "relative", aspectRatio: "1", borderRadius: 6, fontSize: 11.5, fontWeight: 600,
                 background: cellBg, color: cellFg,
-                border: isSelected ? `2px solid ${COLORS.data}` : isToday ? `1.5px solid ${COLORS.ink}` : isOverride ? `1.5px dashed ${COLORS.gold}` : `1px solid ${COLORS.line}`,
-                boxShadow: isSelected ? `0 0 0 2px ${COLORS.dataSoft}` : "none",
+                border: isSelected ? `2px solid ${'var(--color-products)'}` : isToday ? `1.5px solid ${'var(--color-ink)'}` : isOverride ? `1.5px dashed ${'var(--color-gold)'}` : `1px solid ${'var(--color-line)'}`,
+                boxShadow: isSelected ? `0 0 0 2px ${'var(--color-productsSoft)'}` : "none",
                 display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 0,
               }}>
-                {isSelected && <CheckCircle2 size={11} style={{ position: "absolute", top: 2, right: 2, color: COLORS.data }} />}
+                {isSelected && <CheckCircle2 size={11} style={{ position: "absolute", top: 2, right: 2, color: 'var(--color-products)' }} />}
                 <span>{d}</span>
                 {leaveLabel && <span style={{ fontSize: 7.5, fontWeight: 700, lineHeight: 1 }}>{leaveLabel}</span>}
               </button>
             );
           })}
         </div>
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: COLORS.mute, marginTop: 10 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.successSoft, border: `1px solid ${COLORS.success}` }} /> Working day</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: "#fff", border: `1px solid ${COLORS.line}` }} /> Day off</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.dataSoft, border: `1px solid ${COLORS.dataText}` }} /> Sick Leave</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.creativeSoft, border: `1px solid ${COLORS.creativeText}` }} /> Voluntary Leave</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, border: `1.5px dashed ${COLORS.gold}` }} /> Has a custom override</span>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: 'var(--color-mute)', marginTop: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: 'var(--color-successSoft)', border: `1px solid ${'var(--color-success)'}` }} /> Working day</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: "#fff", border: `1px solid ${'var(--color-line)'}` }} /> Day off</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: 'var(--color-productsSoft)', border: `1px solid ${'var(--color-productsText)'}` }} /> Sick Leave</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: 'var(--color-eventsSoft)', border: `1px solid ${'var(--color-eventsText)'}` }} /> Voluntary Leave</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, border: `1.5px dashed ${'var(--color-gold)'}` }} /> Has a custom override</span>
         </div>
 
         {selectedDates.length > 0 && (
-          <div style={{ marginTop: 12, background: "#fff", border: `2px solid ${COLORS.data}`, borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 10, maxWidth: 460 }}>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>{selectedDates.length} date{selectedDates.length === 1 ? "" : "s"} selected — {selectedDates.length === 1 ? formatPeopleDate(selectedDates[0]) : `${formatPeopleDate([...selectedDates].sort()[0])} and others`}</div>
+          <div style={{ marginTop: 12, background: "#fff", border: `2px solid ${'var(--color-products)'}`, borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 10, maxWidth: 460 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{selectedDates.length} date{selectedDates.length === 1 ? "" : "s"} selected â€” {selectedDates.length === 1 ? formatPeopleDate(selectedDates[0]) : `${formatPeopleDate([...selectedDates].sort()[0])} and others`}</div>
             <div className="cly-grid-3">
               <label style={{ fontSize: 11.5, fontWeight: 600 }}>Day type
                 <select value={panelDayType} onChange={e => setPanelDayType(e.target.value)} style={{ ...inputStyle, marginTop: 4, fontSize: 12.5 }}>
@@ -2768,16 +2601,16 @@ function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
               </label>
             </div>
             {!hoursApply && (
-              <div style={{ fontSize: 11, color: COLORS.mute }}>No work start/end time is needed for {panelDayType === "off" ? "a day off" : "a leave day"} — hours are cleared automatically.</div>
+              <div style={{ fontSize: 11, color: 'var(--color-mute)' }}>No work start/end time is needed for {mode === "presence" ? "Presence Mode" : (panelDayType === "off" ? "a day off" : "a leave day")} â€” hours are cleared automatically.</div>
             )}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button onClick={applyToSelection} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700 }}>
+              <button onClick={applyToSelection} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700 }}>
                 Apply to {selectedDates.length === 1 ? "this date" : "selection"}
               </button>
-              <button onClick={clearSelection} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 600 }}>
+              <button onClick={clearSelection} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 600 }}>
                 Clear override{selectedDates.length === 1 ? "" : "s"}
               </button>
-              <button onClick={() => setSelectedDates([])} className="cly-btn" style={{ background: "none", color: COLORS.mute, padding: "7px 6px", fontSize: 12, fontWeight: 600 }}>
+              <button onClick={() => setSelectedDates([])} className="cly-btn" style={{ background: "none", color: 'var(--color-mute)', padding: "7px 6px", fontSize: 12, fontWeight: 600 }}>
                 Cancel
               </button>
             </div>
@@ -2786,12 +2619,12 @@ function AttendanceRulesEditor({ user, onSave, onDirtyChange }) {
       </div>
 
       {dirty && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.goldSoft, color: "#6B4A1A", borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600 }}>
-          <CircleAlert size={15} /> You have unsaved changes — click Save to apply them.
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: 'var(--color-goldSoft)', color: "#6B4A1A", borderRadius: 8, padding: "9px 14px", fontSize: 12.5, fontWeight: 600 }}>
+          <CircleAlert size={15} /> You have unsaved changes â€” click Save to apply them.
         </div>
       )}
       <button disabled={!dirty} onClick={() => onSave(rules)} className="cly-btn"
-        style={{ alignSelf: "flex-start", padding: "9px 18px", borderRadius: 8, fontWeight: 700, fontSize: 13, background: dirty ? COLORS.ink : COLORS.line, color: dirty ? "#fff" : COLORS.mute }}>
+        style={{ alignSelf: "flex-start", padding: "9px 18px", borderRadius: 8, fontWeight: 700, fontSize: 13, background: dirty ? 'var(--color-ink)' : 'var(--color-line)', color: dirty ? "#fff" : 'var(--color-mute)' }}>
         Save
       </button>
     </div>
@@ -2840,18 +2673,18 @@ function TimeEntryEditModal({ entry, userId, userName, defaultDate, onSave, onCr
   return (
     <Modal title={entry ? "Edit time entry" : "Add time entry"} onClose={onClose} width={380}>
       <div style={{ display: "grid", gap: 12 }}>
-        {userName && <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -4 }}>{userName}</div>}
+        {userName && <div style={{ fontSize: 12.5, color: 'var(--color-mute)', marginTop: -4 }}>{userName}</div>}
         <Field label="Clock in"><input type="datetime-local" value={clockInVal} onChange={e => setClockInVal(e.target.value)} style={inputStyle} /></Field>
         <Field label="Clock out (leave blank if still in progress)"><input type="datetime-local" value={clockOutVal} onChange={e => setClockOutVal(e.target.value)} style={inputStyle} /></Field>
-        {error && <div style={{ fontSize: 12.5, color: COLORS.danger }}>{error}</div>}
+        {error && <div style={{ fontSize: 12.5, color: 'var(--color-danger)' }}>{error}</div>}
         <div style={{ display: "flex", justifyContent: canDelete ? "space-between" : "flex-end", gap: 8, marginTop: 4 }}>
           {canDelete && (
-            <button disabled={saving} onClick={handleDelete} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.dangerSoft}`, color: COLORS.danger, padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
+            <button disabled={saving} onClick={handleDelete} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-dangerSoft)'}`, color: 'var(--color-danger)', padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
               Delete entry
             </button>
           )}
-          <button disabled={saving} onClick={handleSave} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
-            {saving ? "Saving…" : "Save"}
+          <button disabled={saving} onClick={handleSave} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", padding: "9px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}>
+            {saving ? "SavingÃ¢â‚¬Â¦" : "Save"}
           </button>
         </div>
       </div>
@@ -2860,7 +2693,7 @@ function TimeEntryEditModal({ entry, userId, userName, defaultDate, onSave, onCr
 }
 
 function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEntry, deleteTimeEntry }) {
-  const isOwner = user.role === "OWNER";
+  const isOwner = user.role === "ADMIN";
   const [filterUser, setFilterUser] = useState("all");
   const [filterGroup, setFilterGroup] = useState("all");
   const [editingEntry, setEditingEntry] = useState(null);
@@ -2891,18 +2724,18 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
             <option value="all">All team members</option>
             {eligibleUsers.filter(u => filterGroup === "all" || u.role === filterGroup).map(u => {
               const person = personForUser(people, u.id);
-              return <option key={u.id} value={u.id}>{u.name}{person ? ` — ${person.department}` : ""}</option>;
+              return <option key={u.id} value={u.id}>{u.name}{person ? ` â€” ${person.department}` : ""}</option>;
             })}
           </select>
         </div>
       )}
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
         {visible.length === 0 ? (
           <EmptyState icon={Clock} title="No time logs yet" body="Clock-in and clock-out records will appear here once someone uses Time Tracking." />
         ) : (
           <div style={{ overflowX: "auto" }}>
             <div style={{ minWidth: isOwner ? 1150 : 850 }}>
-              <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
+              <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: 'var(--color-mute)', textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${'var(--color-line)'}` }}>
                 {isOwner && <span style={{ flex: 1.5, minWidth: 140 }}>Team member</span>}
                 <span style={{ width: 110 }}>Date</span>
                 <span style={{ width: 100 }}>Clock in</span>
@@ -2919,7 +2752,7 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
                 const entryUser = users.find(u => u.id === e.userId);
                 const flags = computeEntryTimingFlags(e, entryUser);
                 return (
-                  <div key={e.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+                  <div key={e.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${'var(--color-line)'}`, fontSize: 13 }}>
                     {isOwner && (
                       <span style={{ flex: 1.5, minWidth: 140, display: "flex", alignItems: "center", gap: 10 }}>
                         <div style={{ width: 28, height: 28, borderRadius: "50%", background: peopleColorFor(e.userName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
@@ -2927,29 +2760,29 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
                         </div>
                         <span style={{ minWidth: 0 }}>
                           <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.userName}</div>
-                          {person && <div style={{ fontSize: 10.5, color: COLORS.mute }}>{person.department}</div>}
+                          {person && <div style={{ fontSize: 10.5, color: 'var(--color-mute)' }}>{person.department}</div>}
                         </span>
                       </span>
                     )}
                     <span style={{ width: 110 }}>{formatPeopleDate(e.date)}</span>
                     <span style={{ width: 100 }}>{formatClockTime(e.clockIn)}</span>
-                    <span style={{ width: 100 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>In progress</span>}</span>
+                    <span style={{ width: 100 }}>{e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: 'var(--color-warning)', fontWeight: 700 }}>In progress</span>}</span>
                     <span style={{ width: 90 }}>{formatWorkedDuration((e.clockOut || Date.now()) - e.clockIn)}</span>
-                    <span style={{ width: 90, color: flags.earlyMs >= 60000 ? COLORS.dataText : COLORS.mute, fontWeight: flags.earlyMs >= 60000 ? 700 : 400 }}>
-                      {flags.earlyMs >= 60000 ? formatWorkedDuration(flags.earlyMs) : "—"}
+                    <span style={{ width: 90, color: flags.earlyMs >= 60000 ? 'var(--color-productsText)' : 'var(--color-mute)', fontWeight: flags.earlyMs >= 60000 ? 700 : 400 }}>
+                      {flags.earlyMs >= 60000 ? formatWorkedDuration(flags.earlyMs) : "â€”"}
                     </span>
-                    <span style={{ width: 90, color: flags.lateMs >= 60000 ? COLORS.danger : COLORS.mute, fontWeight: flags.lateMs >= 60000 ? 700 : 400 }}>
-                      {flags.lateMs >= 60000 ? formatWorkedDuration(flags.lateMs) : "—"}
+                    <span style={{ width: 90, color: flags.lateMs >= 60000 ? 'var(--color-danger)' : 'var(--color-mute)', fontWeight: flags.lateMs >= 60000 ? 700 : 400 }}>
+                      {flags.lateMs >= 60000 ? formatWorkedDuration(flags.lateMs) : "â€”"}
                     </span>
-                    <span style={{ width: 100, color: flags.undertimeMs >= 60000 ? COLORS.warning : COLORS.mute, fontWeight: flags.undertimeMs >= 60000 ? 700 : 400 }}>
-                      {flags.undertimeMs >= 60000 ? formatWorkedDuration(flags.undertimeMs) : "—"}
+                    <span style={{ width: 100, color: flags.undertimeMs >= 60000 ? 'var(--color-warning)' : 'var(--color-mute)', fontWeight: flags.undertimeMs >= 60000 ? 700 : 400 }}>
+                      {flags.undertimeMs >= 60000 ? formatWorkedDuration(flags.undertimeMs) : "â€”"}
                     </span>
-                    <span style={{ width: 100, color: flags.overtimeMs >= 60000 ? "#6B4A1A" : COLORS.mute, fontWeight: flags.overtimeMs >= 60000 ? 700 : 400 }}>
-                      {flags.overtimeMs >= 60000 ? formatWorkedDuration(flags.overtimeMs) : "—"}
+                    <span style={{ width: 100, color: flags.overtimeMs >= 60000 ? "#6B4A1A" : 'var(--color-mute)', fontWeight: flags.overtimeMs >= 60000 ? 700 : 400 }}>
+                      {flags.overtimeMs >= 60000 ? formatWorkedDuration(flags.overtimeMs) : "â€”"}
                     </span>
                     {isOwner && (
                       <span style={{ width: 32, textAlign: "right" }}>
-                        <button title="Edit for correction" onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}>
+                        <button title="Edit for correction" onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)' }}>
                           <Pencil size={14} />
                         </button>
                       </span>
@@ -2976,7 +2809,7 @@ function TimeInOutPage({ user, users, people, timeEntries, groups, updateTimeEnt
 }
 
 function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEntry, createTimeEntry, deleteTimeEntry, setDayStatusOverride, clearDayStatusOverride, applyBulkDayStatus }) {
-  const isOwner = user.role === "OWNER";
+  const isOwner = user.role === "ADMIN";
   const eligibleUsers = users.filter(u => u.role !== "CLIENT");
   const [filterGroup, setFilterGroup] = useState("all");
   const groupOptions = groups.filter(g => eligibleUsers.some(u => u.role === g.id));
@@ -3033,6 +2866,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
   const selectedUser = eligibleUsers.find(u => u.id === selectedId) || user;
   const person = personForUser(people, selectedUser.id);
   const rules = getAttendanceRules(selectedUser);
+  const mode = selectedUser.timeTrackingMode || (selectedUser.timeTrackingEnabled ? "hourly" : "none");
 
   const monthEntries = timeEntries.filter(e => {
     if (e.userId !== selectedUser.id) return false;
@@ -3062,31 +2896,31 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             <select value={selectedId} onChange={e => setSelectedId(e.target.value)} style={{ ...inputStyle, width: "auto", minWidth: 220 }}>
               {filteredUsers.map(u => {
                 const p = personForUser(people, u.id);
-                return <option key={u.id} value={u.id}>{u.name}{u.role === "OWNER" ? " (You)" : ""}{p ? ` — ${p.department}` : ""}</option>;
+                return <option key={u.id} value={u.id}>{u.name}{u.role === "ADMIN" ? " (You)" : ""}{p ? ` â€” ${p.department}` : ""}</option>;
               })}
             </select>
             {view === "attendance" && (
-              <button onClick={toggleBulkMode} className="cly-btn" style={{ background: bulkMode ? COLORS.ink : "#fff", color: bulkMode ? "#fff" : COLORS.text, border: `1px solid ${bulkMode ? COLORS.ink : COLORS.line}`, borderRadius: 8, padding: "0 14px", fontSize: 13, fontWeight: 600 }}>
+              <button onClick={toggleBulkMode} className="cly-btn" style={{ background: bulkMode ? 'var(--color-ink)' : "#fff", color: bulkMode ? "#fff" : 'var(--color-text)', border: `1px solid ${bulkMode ? 'var(--color-ink)' : 'var(--color-line)'}`, borderRadius: 8, padding: "0 14px", fontSize: 13, fontWeight: 600 }}>
                 {bulkMode ? "Cancel selection" : "Select multiple days"}
               </button>
             )}
           </div>
         ) : (
-          <div style={{ fontSize: 14, fontWeight: 700 }}>{view === "attendance" ? "My attendance" : "My schedule"}{person ? ` · ${person.department}, ${person.role}` : ""}</div>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{view === "attendance" ? "My attendance" : "My schedule"}{person ? ` Ã‚Â· ${person.department}, ${person.role}` : ""}</div>
         )}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 28, height: 28 }}>‹</button>
+          <button onClick={() => setViewMonth(m => { if (m === 0) { setViewYear(y => y - 1); return 11; } return m - 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 6, width: 28, height: 28 }}>Ã¢â‚¬Â¹</button>
           <span style={{ fontSize: 13, fontWeight: 700, minWidth: 130, textAlign: "center" }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
-          <button onClick={() => setViewMonth(m => { if (m === 11) { setViewYear(y => y + 1); return 0; } return m + 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 6, width: 28, height: 28 }}>›</button>
+          <button onClick={() => setViewMonth(m => { if (m === 11) { setViewYear(y => y + 1); return 0; } return m + 1; })} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 6, width: 28, height: 28 }}>Ã¢â‚¬Âº</button>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 4, background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 9, padding: 3, width: "fit-content" }}>
+      <div style={{ display: "flex", gap: 4, background: 'var(--color-cream)', border: `1px solid ${'var(--color-line)'}`, borderRadius: 9, padding: 3, width: "fit-content" }}>
         {[{ key: "attendance", label: "Attendance" }, { key: "schedule", label: "Schedule" }].map(t => (
           <button key={t.key} onClick={() => setView(t.key)} className="cly-btn" style={{
             padding: "6px 16px", borderRadius: 7, fontSize: 12.5, fontWeight: 700,
             background: view === t.key ? "#fff" : "transparent",
-            color: view === t.key ? COLORS.ink : COLORS.mute,
+            color: view === t.key ? 'var(--color-ink)' : 'var(--color-mute)',
             boxShadow: view === t.key ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
           }}>{t.label}</button>
         ))}
@@ -3095,8 +2929,8 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
       {view === "attendance" ? (
         <>
       {isOwner && person && (
-        <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
-          {selectedUser.name} — {person.department}, {person.role} · {bulkMode ? "click days to select them, then apply a day type below" : "click a day to add or correct a session"}.
+        <div style={{ fontSize: 12.5, color: 'var(--color-mute)', marginTop: -8 }}>
+          {selectedUser.name} â€” {person.department}, {person.role} Ã‚Â· {bulkMode ? "click days to select them, then apply a day type below" : "click a day to add or correct a session"}.
         </div>
       )}
 
@@ -3108,12 +2942,12 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             {status}: <strong>{n}</strong>
           </span>;
         })}
-        {Object.values(counts).every(n => n === 0) && <span style={{ color: COLORS.mute }}>No attendance data yet this month.</span>}
+        {Object.values(counts).every(n => n === 0) && <span style={{ color: 'var(--color-mute)' }}>No attendance data yet this month.</span>}
       </div>
 
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20, display: "flex", justifyContent: "center" }}>
+      <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, padding: 20, display: "flex", justifyContent: "center" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, width: "100%", maxWidth: 640 }}>
-          {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
+          {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: 'var(--color-mute)', fontWeight: 700 }}>{l}</div>)}
           {weeks.flat().map((d, i) => {
             if (d === null) return <div key={i} />;
             const dateStr = toDateStr(viewYear, viewMonth, d);
@@ -3122,15 +2956,16 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             const clickable = isOwner && !info.future;
             const isSelected = bulkMode && selectedDates.includes(dateStr);
             const eff = (!info.future && !info.dayOff) ? effectiveHoursForDate(dateStr, rules) : null;
-            let bg = "#fff", fg = COLORS.text, border = COLORS.line, label = "";
+            const showOpenHours = mode === "presence" && eff && !info.dayOff;
+            let bg = "#fff", fg = 'var(--color-text)', border = 'var(--color-line)', label = "";
             if (info.dayOff) {
-              if (info.manualLabel === "Sick Leave") { bg = COLORS.dataSoft; fg = COLORS.dataText; label = "Sick Leave"; }
-              else if (info.manualLabel === "Voluntary Leave") { bg = COLORS.creativeSoft; fg = COLORS.creativeText; label = "Voluntary Leave"; }
-              else { bg = COLORS.cream; fg = COLORS.mute; label = info.manualLabel || "Off"; }
+              if (info.manualLabel === "Sick Leave") { bg = 'var(--color-productsSoft)'; fg = 'var(--color-productsText)'; label = "Sick Leave"; }
+              else if (info.manualLabel === "Voluntary Leave") { bg = 'var(--color-eventsSoft)'; fg = 'var(--color-eventsText)'; label = "Voluntary Leave"; }
+              else { bg = 'var(--color-cream)'; fg = 'var(--color-mute)'; label = info.manualLabel || "Off"; }
             }
-            else if (info.future) { bg = "#fff"; fg = COLORS.line; }
-            else if (info.pending) { bg = "#fff"; fg = COLORS.mute; label = "Today"; }
-            else if (info.empty) { bg = "#fff"; fg = COLORS.mute; }
+            else if (info.future) { bg = "#fff"; fg = 'var(--color-line)'; }
+            else if (info.pending) { bg = "#fff"; fg = 'var(--color-mute)'; label = "Today"; }
+            else if (info.empty) { bg = "#fff"; fg = 'var(--color-mute)'; }
             else if (info.status) {
               const sm = attendanceStatusMeta(info.status);
               bg = sm.soft; fg = sm.text; border = sm.text;
@@ -3139,18 +2974,22 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             return (
               <div key={i}
                 onClick={clickable ? () => { if (bulkMode) { toggleDateSelected(dateStr); } else { setCorrectingDate(dateStr); setEditingEntry(null); } } : undefined}
-                title={info.status ? `${info.status}${info.manual ? " (manually set)" : ""}${info.hours ? ` · ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` · in ${formatClockTime(info.clockIn)}` : ""}${eff ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""}` : (info.dayOff ? (info.manualLabel || "Day off") : (clickable ? (bulkMode ? "Click to select" : "Click to add or correct a session") : ""))}
+                title={info.status ? `${info.status}${info.manual ? " (manually set)" : ""}${info.hours ? ` Â· ${info.hours.toFixed(1)}h` : ""}${info.clockIn ? ` Â· in ${formatClockTime(info.clockIn)}` : ""}${eff && !showOpenHours ? ` Â· ${formatTimeStrTo12h(eff.workStartTime)}â€“${formatTimeStrTo12h(eff.workEndTime)}` : ""}` : (info.dayOff ? (info.manualLabel || "Day off") : (clickable ? (bulkMode ? "Click to select" : "Click to add or correct a session") : ""))}
                 style={{
                   position: "relative", minHeight: 74, borderRadius: 6, background: bg, color: fg,
-                  border: isSelected ? `2px solid ${COLORS.data}` : isToday ? `1.5px solid ${COLORS.ink}` : info.manual ? `1.5px dashed ${COLORS.gold}` : `1px solid ${border}`,
-                  boxShadow: isSelected ? `0 0 0 2px ${COLORS.dataSoft}` : "none",
+                  border: isSelected ? `2px solid ${'var(--color-products)'}` : isToday ? `1.5px solid ${'var(--color-ink)'}` : info.manual ? `1.5px dashed ${'var(--color-gold)'}` : `1px solid ${border}`,
+                  boxShadow: isSelected ? `0 0 0 2px ${'var(--color-productsSoft)'}` : "none",
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1,
                   cursor: clickable ? "pointer" : "default", padding: "3px 2px",
                 }}>
-                {isSelected && <CheckCircle2 size={12} style={{ position: "absolute", top: 3, right: 3, color: COLORS.data }} />}
+                {isSelected && <CheckCircle2 size={12} style={{ position: "absolute", top: 3, right: 3, color: 'var(--color-products)' }} />}
                 <span style={{ fontSize: 12, fontWeight: 700 }}>{d}</span>
                 {label && <span style={{ fontSize: 8.5, fontWeight: 600, textAlign: "center", lineHeight: 1.2 }}>{label}</span>}
-                {eff && (
+                {showOpenHours ? (
+                  <span style={{ fontSize: 8.5, fontWeight: 500, textAlign: "center", lineHeight: 1.3, opacity: 0.85, marginTop: 1, padding: "0 2px" }}>
+                    Open<br />Schedule<br />Hours
+                  </span>
+                ) : eff && (
                   <span style={{ fontSize: 8.5, fontWeight: 500, textAlign: "center", lineHeight: 1.3, opacity: 0.85, marginTop: 1 }}>
                     {formatTimeStrTo12h(eff.workStartTime)}<br />{formatTimeStrTo12h(eff.workEndTime)}
                   </span>
@@ -3162,7 +3001,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
       </div>
 
       {bulkMode && (
-        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, padding: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <span style={{ fontSize: 13, fontWeight: 600 }}>
             {selectedDates.length === 0 ? "No days selected yet" : `${selectedDates.length} day${selectedDates.length !== 1 ? "s" : ""} selected`}
           </span>
@@ -3179,12 +3018,12 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
             disabled={selectedDates.length === 0 || bulkSaving}
             onClick={applyBulkSelection}
             className="cly-btn"
-            style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, opacity: (selectedDates.length === 0 || bulkSaving) ? 0.5 : 1 }}
+            style={{ background: 'var(--color-ink)', color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, opacity: (selectedDates.length === 0 || bulkSaving) ? 0.5 : 1 }}
           >
-            {bulkSaving ? "Applying…" : `Apply to ${selectedDates.length || ""} day${selectedDates.length !== 1 ? "s" : ""}`}
+            {bulkSaving ? "Applyingâ€¦" : `Apply to ${selectedDates.length || ""} day${selectedDates.length !== 1 ? "s" : ""}`}
           </button>
           {selectedDates.length > 0 && (
-            <button onClick={() => setSelectedDates([])} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 13, fontWeight: 600 }}>
+            <button onClick={() => setSelectedDates([])} className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', fontSize: 13, fontWeight: 600 }}>
               Clear selection
             </button>
           )}
@@ -3194,25 +3033,25 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
       ) : (
         <>
           {isOwner && person && (
-            <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
-              {selectedUser.name} — {person.department}, {person.role} · this is a read-only view of their Work calendar. Editable from Time Tracking → "Edit hours & calendar."
+            <div style={{ fontSize: 12.5, color: 'var(--color-mute)', marginTop: -8 }}>
+              {selectedUser.name} â€” {person.department}, {person.role} Â· this is a read-only view of their Work calendar. Editable from Time Tracking â†’ "Edit hours & calendar."
             </div>
           )}
           {!isOwner && (
-            <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: -8 }}>
-              Your schedule for the month — this can differ day to day. Ask an Owner/Admin if anything here needs correcting.
+            <div style={{ fontSize: 12.5, color: 'var(--color-mute)', marginTop: -8 }}>
+              Your schedule for the month â€” this can differ day to day. Ask an Owner/Admin if anything here needs correcting.
             </div>
           )}
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: COLORS.mute }}>
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.successSoft, border: `1px solid ${COLORS.success}` }} /> Working day</span>
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.cream, border: `1px solid ${COLORS.line}` }} /> Day off</span>
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.dataSoft, border: `1px solid ${COLORS.dataText}` }} /> Sick Leave</span>
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: COLORS.creativeSoft, border: `1px solid ${COLORS.creativeText}` }} /> Voluntary Leave</span>
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, border: `1.5px dashed ${COLORS.gold}` }} /> Custom date</span>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: 'var(--color-mute)' }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: 'var(--color-successSoft)', border: `1px solid ${'var(--color-success)'}` }} /> Working day</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: 'var(--color-cream)', border: `1px solid ${'var(--color-line)'}` }} /> Day off</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: 'var(--color-productsSoft)', border: `1px solid ${'var(--color-productsText)'}` }} /> Sick Leave</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: 'var(--color-eventsSoft)', border: `1px solid ${'var(--color-eventsText)'}` }} /> Voluntary Leave</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 3, border: `1.5px dashed ${'var(--color-gold)'}` }} /> Custom date</span>
           </div>
-          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20, display: "flex", justifyContent: "center" }}>
+          <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, padding: 20, display: "flex", justifyContent: "center" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, width: "100%", maxWidth: 640 }}>
-              {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: COLORS.mute, fontWeight: 700 }}>{l}</div>)}
+              {WEEKDAY_LETTERS.map((l, i) => <div key={i} style={{ textAlign: "center", fontSize: 10.5, color: 'var(--color-mute)', fontWeight: 700 }}>{l}</div>)}
               {weeks.flat().map((d, i) => {
                 if (d === null) return <div key={i} />;
                 const dateStr = toDateStr(viewYear, viewMonth, d);
@@ -3222,22 +3061,27 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
                 const isToday = dateStr === todayStr;
                 const eff = working ? effectiveHoursForDate(dateStr, rules) : null;
                 const leaveLabel = override?.dayType === "sick" ? "Sick Leave" : override?.dayType === "voluntary" ? "Voluntary Leave" : null;
-                let cellBg = working ? COLORS.successSoft : COLORS.cream;
-                let cellFg = working ? COLORS.success : COLORS.mute;
-                if (leaveLabel === "Sick Leave") { cellBg = COLORS.dataSoft; cellFg = COLORS.dataText; }
-                else if (leaveLabel === "Voluntary Leave") { cellBg = COLORS.creativeSoft; cellFg = COLORS.creativeText; }
+                const showOpenHours = mode === "presence" && working && !leaveLabel;
+                let cellBg = working ? 'var(--color-successSoft)' : 'var(--color-cream)';
+                let cellFg = working ? 'var(--color-success)' : 'var(--color-mute)';
+                if (leaveLabel === "Sick Leave") { cellBg = 'var(--color-productsSoft)'; cellFg = 'var(--color-productsText)'; }
+                else if (leaveLabel === "Voluntary Leave") { cellBg = 'var(--color-eventsSoft)'; cellFg = 'var(--color-eventsText)'; }
                 return (
                   <div key={i}
-                    title={`${leaveLabel || (working ? "Working day" : "Day off")}${eff ? ` · ${formatTimeStrTo12h(eff.workStartTime)}–${formatTimeStrTo12h(eff.workEndTime)}` : ""}`}
+                    title={`${leaveLabel || (working ? "Working day" : "Day off")}${eff && !showOpenHours ? ` Â· ${formatTimeStrTo12h(eff.workStartTime)}â€“${formatTimeStrTo12h(eff.workEndTime)}` : ""}`}
                     style={{
                       minHeight: 74, borderRadius: 6, background: cellBg, color: cellFg,
-                      border: isToday ? `1.5px solid ${COLORS.ink}` : isOverride ? `1.5px dashed ${COLORS.gold}` : `1px solid ${COLORS.line}`,
+                      border: isToday ? `1.5px solid ${'var(--color-ink)'}` : isOverride ? `1.5px dashed ${'var(--color-gold)'}` : `1px solid ${'var(--color-line)'}`,
                       display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, padding: "3px 2px",
                     }}>
                     <span style={{ fontSize: 12, fontWeight: 700 }}>{d}</span>
                     {leaveLabel && <span style={{ fontSize: 8.5, fontWeight: 600, textAlign: "center", lineHeight: 1.2 }}>{leaveLabel}</span>}
                     {!leaveLabel && !working && <span style={{ fontSize: 8.5, fontWeight: 600, textAlign: "center", lineHeight: 1.2 }}>Off</span>}
-                    {eff && (
+                    {showOpenHours ? (
+                      <span style={{ fontSize: 8.5, fontWeight: 500, textAlign: "center", lineHeight: 1.3, opacity: 0.85, marginTop: 1, padding: "0 2px" }}>
+                        Open<br />Schedule<br />Hours
+                      </span>
+                    ) : eff && (
                       <span style={{ fontSize: 8.5, fontWeight: 500, textAlign: "center", lineHeight: 1.3, opacity: 0.85, marginTop: 1 }}>
                         {formatTimeStrTo12h(eff.workStartTime)}<br />{formatTimeStrTo12h(eff.workEndTime)}
                       </span>
@@ -3251,7 +3095,7 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
       )}
 
       {isOwner && !bulkMode && correctingDate && !editingEntry && (
-        <Modal title={`${formatPeopleDate(correctingDate)} — ${selectedUser.name}`} onClose={() => setCorrectingDate(null)} width={380}>
+        <Modal title={`${formatPeopleDate(correctingDate)} â€” ${selectedUser.name}`} onClose={() => setCorrectingDate(null)} width={380}>
           <div style={{ display: "grid", gap: 14 }}>
             <Field label="Day type">
               <select
@@ -3271,23 +3115,23 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
                 <option value="Sick Leave">Sick Leave</option>
                 <option value="Voluntary Leave">Voluntary Leave</option>
               </select>
-              <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 5 }}>
+              <div style={{ fontSize: 11.5, color: 'var(--color-mute)', marginTop: 5 }}>
                 Choosing anything but "Present" marks the day directly and overrides whatever the sessions below would otherwise compute. Switch back to "Present" any time to go back to following the recorded sessions.
               </div>
             </Field>
             <div>
               <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Recorded sessions</div>
-              {dayEntries.length === 0 && <div style={{ fontSize: 13, color: COLORS.mute }}>No clock-in/out sessions recorded for this day.</div>}
+              {dayEntries.length === 0 && <div style={{ fontSize: 13, color: 'var(--color-mute)' }}>No clock-in/out sessions recorded for this day.</div>}
               <div style={{ display: "grid", gap: 8 }}>
                 {dayEntries.map(e => (
-                  <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "8px 12px" }}>
-                    <span style={{ fontSize: 13 }}>{formatClockTime(e.clockIn)} – {e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: COLORS.warning, fontWeight: 700 }}>in progress</span>}</span>
-                    <button onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><Pencil size={14} /></button>
+                  <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, padding: "8px 12px" }}>
+                    <span style={{ fontSize: 13 }}>{formatClockTime(e.clockIn)} Ã¢â‚¬â€œ {e.clockOut ? formatClockTime(e.clockOut) : <span style={{ color: 'var(--color-warning)', fontWeight: 700 }}>in progress</span>}</span>
+                    <button onClick={() => setEditingEntry(e)} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)' }}><Pencil size={14} /></button>
                   </div>
                 ))}
               </div>
             </div>
-            <button onClick={() => setEditingEntry("new")} className="cly-btn" style={{ background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 600 }}>
+            <button onClick={() => setEditingEntry("new")} className="cly-btn" style={{ background: 'var(--color-cream)', border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 600 }}>
               + Add session
             </button>
           </div>
@@ -3311,20 +3155,20 @@ function AttendancePage({ user, users, people, timeEntries, groups, updateTimeEn
 }
 
 function leaveStatusMeta(status) {
-  if (status === "pending_admin") return { soft: COLORS.warningSoft, text: COLORS.warning, label: "Pending Admin Approval" };
-  if (status === "pending_owner") return { soft: COLORS.goldSoft, text: "#6B4A1A", label: "Pending Owner Approval" };
-  if (status === "pending_cancel_admin") return { soft: COLORS.dangerSoft, text: COLORS.danger, label: "Cancellation — Needs Admin" };
-  if (status === "pending_cancel_owner") return { soft: COLORS.dangerSoft, text: COLORS.danger, label: "Cancellation — Needs Owner" };
-  if (status === "approved") return { soft: COLORS.successSoft, text: COLORS.success, label: "Approved" };
-  if (status === "denied") return { soft: COLORS.dangerSoft, text: COLORS.danger, label: "Denied" };
-  return { soft: COLORS.line, text: COLORS.mute, label: "Cancelled" }; // "cancelled"
+  if (status === "pending_admin") return { soft: 'var(--color-warningSoft)', text: 'var(--color-warning)', label: "Pending Admin Approval" };
+  if (status === "pending_owner") return { soft: 'var(--color-goldSoft)', text: "#6B4A1A", label: "Pending Owner Approval" };
+  if (status === "pending_cancel_admin") return { soft: 'var(--color-dangerSoft)', text: 'var(--color-danger)', label: "Cancellation â€” Needs Admin" };
+  if (status === "pending_cancel_owner") return { soft: 'var(--color-dangerSoft)', text: 'var(--color-danger)', label: "Cancellation â€” Needs Owner" };
+  if (status === "approved") return { soft: 'var(--color-successSoft)', text: 'var(--color-success)', label: "Approved" };
+  if (status === "denied") return { soft: 'var(--color-dangerSoft)', text: 'var(--color-danger)', label: "Denied" };
+  return { soft: 'var(--color-line)', text: 'var(--color-mute)', label: "Cancelled" }; // "cancelled"
 }
 function leaveTypeMeta(type) {
-  return type === "Sick Leave" ? { soft: COLORS.dataSoft, text: COLORS.dataText } : { soft: COLORS.creativeSoft, text: COLORS.creativeText };
+  return type === "Sick Leave" ? { soft: 'var(--color-productsSoft)', text: 'var(--color-productsText)' } : { soft: 'var(--color-eventsSoft)', text: 'var(--color-eventsText)' };
 }
 function formatLeaveRange(startDate, endDate) {
   if (startDate === endDate) return formatPeopleDate(startDate);
-  return `${formatPeopleDate(startDate)} – ${formatPeopleDate(endDate)}`;
+  return `${formatPeopleDate(startDate)} Ã¢â‚¬â€œ ${formatPeopleDate(endDate)}`;
 }
 // Leave Request: Employee/Admin file a Sick or Voluntary Leave request for
 // themselves; an Admin reviews it first (unless the requester IS an Admin,
@@ -3333,12 +3177,12 @@ function formatLeaveRange(startDate, endDate) {
 // requester's Work calendar so it's reflected in Time Tracking/Attendance
 // automatically.
 function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, adminDecideLeave, ownerDecideLeave, cancelLeaveRequest, requestLeaveCancellation, adminDecideCancel, ownerDecideCancel, ownerCancelLeave, deleteLeaveRequest, deleteLeaveRequestsBulk }) {
-  const isOwner = user.role === "OWNER";
+  const isOwner = user.role === "ADMIN";
   const isAdmin = user.role === "ADMIN";
   const [form, setForm] = useState({ type: "Sick Leave", startDate: "", endDate: "", reason: "" });
   const [submitting, setSubmitting] = useState(false);
   const [busyId, setBusyId] = useState(null);
-  // History filters (Owner/Admin only) — by requester name, department,
+  // History filters (Owner/Admin only) â€” by requester name, department,
   // position/job title (from the linked People record), or month.
   const [search, setSearch] = useState("");
   const [deptFilter, setDeptFilter] = useState("All");
@@ -3346,7 +3190,7 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
   const [monthFilter, setMonthFilter] = useState(""); // "YYYY-MM" or ""
   const [bulkDeleting, setBulkDeleting] = useState(false);
   // Cancelling an already-APPROVED leave needs a reason (it goes through
-  // the same Admin/Owner review approving it did) — this holds which
+  // the same Admin/Owner review approving it did) â€” this holds which
   // request that note-modal is open for.
   const [cancelling, setCancelling] = useState(null);
   const [cancelNote, setCancelNote] = useState("");
@@ -3355,9 +3199,9 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
   const cancelReviewStatuses = ["pending_cancel_admin", "pending_cancel_owner"];
   const myRequests = [...leaveRequests].filter(r => r.userId === user.id).sort((a, b) => b.createdAt - a.createdAt);
   const adminQueue = isAdmin ? leaveRequests.filter(r => (r.status === "pending_admin" || r.status === "pending_cancel_admin") && r.userId !== user.id) : [];
-  // The Owner can see and act on everything still awaiting a decision —
+  // The Owner can see and act on everything still awaiting a decision â€”
   // whether it's sitting with an Admin or already passed to them, and
-  // whether it's a new request or a cancellation of an approved one — so
+  // whether it's a new request or a cancellation of an approved one â€” so
   // they can approve/deny directly without waiting on the Admin stage.
   const ownerQueue = isOwner ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner" || cancelReviewStatuses.includes(r.status)) : [];
   const fullHistory = (isOwner || isAdmin) ? [...leaveRequests].sort((a, b) => b.createdAt - a.createdAt) : [];
@@ -3438,22 +3282,22 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
     const tm = leaveTypeMeta(r.type);
     const p = showRequester ? people.find(pp => pp.linkedUserId === r.userId) : null;
     return (
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: "13px 16px", borderTop: `1px solid ${COLORS.line}`, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: "13px 16px", borderTop: `1px solid ${'var(--color-line)'}`, flexWrap: "wrap" }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             {showRequester && <span style={{ fontSize: 13.5, fontWeight: 700 }}>{r.userName}</span>}
             <Badge soft={tm.soft} text={tm.text}>{r.type === "Sick Leave" ? "SL" : "VL"}</Badge>
             <Badge soft={sm.soft} text={sm.text}>{sm.label}</Badge>
           </div>
-          <div style={{ fontSize: 12.5, color: COLORS.mute, marginTop: 3 }}>
-            {formatLeaveRange(r.startDate, r.endDate)}{showRequester && p ? ` · ${p.department}${p.role ? ` · ${p.role}` : ""}` : ""} · requested {timeAgo(r.createdAt)}
+          <div style={{ fontSize: 12.5, color: 'var(--color-mute)', marginTop: 3 }}>
+            {formatLeaveRange(r.startDate, r.endDate)}{showRequester && p ? ` Ã‚Â· ${p.department}${p.role ? ` Ã‚Â· ${p.role}` : ""}` : ""} Ã‚Â· requested {timeAgo(r.createdAt)}
           </div>
           {r.reason && <div style={{ fontSize: 12.5, marginTop: 4 }}>{r.reason}</div>}
-          {r.cancelRequest && <div style={{ fontSize: 11.5, color: COLORS.danger, marginTop: 4 }}>Cancellation requested: {r.cancelRequest.note}</div>}
-          {r.adminDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 4 }}>Admin ({r.adminDecision.byName}): {r.adminDecision.decision === "approve" ? "approved" : "denied"}{r.adminDecision.note ? ` — ${r.adminDecision.note}` : ""}</div>}
-          {r.ownerDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 2 }}>Owner ({r.ownerDecision.byName}): {r.ownerDecision.decision === "approve" ? "approved" : "denied"}{r.ownerDecision.note ? ` — ${r.ownerDecision.note}` : ""}</div>}
-          {r.cancelAdminDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 2 }}>Admin ({r.cancelAdminDecision.byName}) on cancellation: {r.cancelAdminDecision.decision === "approve" ? "approved" : "denied"}{r.cancelAdminDecision.note ? ` — ${r.cancelAdminDecision.note}` : ""}</div>}
-          {r.cancelOwnerDecision && <div style={{ fontSize: 11.5, color: COLORS.mute, marginTop: 2 }}>Owner ({r.cancelOwnerDecision.byName}) on cancellation: {r.cancelOwnerDecision.decision === "approve" ? "approved" : "denied"}{r.cancelOwnerDecision.note ? ` — ${r.cancelOwnerDecision.note}` : ""}</div>}
+          {r.cancelRequest && <div style={{ fontSize: 11.5, color: 'var(--color-danger)', marginTop: 4 }}>Cancellation requested: {r.cancelRequest.note}</div>}
+          {r.adminDecision && <div style={{ fontSize: 11.5, color: 'var(--color-mute)', marginTop: 4 }}>Admin ({r.adminDecision.byName}): {r.adminDecision.decision === "approve" ? "approved" : "denied"}{r.adminDecision.note ? ` â€” ${r.adminDecision.note}` : ""}</div>}
+          {r.ownerDecision && <div style={{ fontSize: 11.5, color: 'var(--color-mute)', marginTop: 2 }}>Owner ({r.ownerDecision.byName}): {r.ownerDecision.decision === "approve" ? "approved" : "denied"}{r.ownerDecision.note ? ` â€” ${r.ownerDecision.note}` : ""}</div>}
+          {r.cancelAdminDecision && <div style={{ fontSize: 11.5, color: 'var(--color-mute)', marginTop: 2 }}>Admin ({r.cancelAdminDecision.byName}) on cancellation: {r.cancelAdminDecision.decision === "approve" ? "approved" : "denied"}{r.cancelAdminDecision.note ? ` â€” ${r.cancelAdminDecision.note}` : ""}</div>}
+          {r.cancelOwnerDecision && <div style={{ fontSize: 11.5, color: 'var(--color-mute)', marginTop: 2 }}>Owner ({r.cancelOwnerDecision.byName}) on cancellation: {r.cancelOwnerDecision.decision === "approve" ? "approved" : "denied"}{r.cancelOwnerDecision.note ? ` â€” ${r.cancelOwnerDecision.note}` : ""}</div>}
         </div>
         {actions}
       </div>
@@ -3463,9 +3307,9 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
   return (
     <div className="cly-fade-in cly-page-pad" style={{ padding: 28, display: "flex", flexDirection: "column", gap: 24 }}>
       {!isOwner && (
-        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, padding: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>New leave request</div>
-          <div style={{ fontSize: 12.5, color: COLORS.mute, marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, color: 'var(--color-mute)', marginBottom: 14 }}>
             {isAdmin ? "Goes straight to the Owner for approval." : "Goes to an Admin first, then the Owner for final approval."}
           </div>
           <div className="cly-grid-3" style={{ maxWidth: 560 }}>
@@ -3486,8 +3330,8 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
             <input type="text" value={form.reason} onChange={e => patch("reason", e.target.value)} placeholder="A short note for whoever's reviewing this" style={{ ...inputStyle, marginTop: 5 }} />
           </label>
           <button disabled={!canSubmit || submitting} onClick={handleSubmit} className="cly-btn"
-            style={{ marginTop: 14, background: canSubmit ? COLORS.ink : COLORS.line, color: canSubmit ? "#fff" : COLORS.mute, borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 700 }}>
-            {submitting ? "Submitting…" : "Submit request"}
+            style={{ marginTop: 14, background: canSubmit ? 'var(--color-ink)' : 'var(--color-line)', color: canSubmit ? "#fff" : 'var(--color-mute)', borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 700 }}>
+            {submitting ? "SubmittingÃ¢â‚¬Â¦" : "Submit request"}
           </button>
         </div>
       )}
@@ -3495,15 +3339,15 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
       {isAdmin && (
         <div>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Needs your approval</div>
-          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
             {adminQueue.length === 0 ? <EmptyState icon={CalendarCheck} title="Nothing pending" body="No leave requests are waiting on you." /> :
               adminQueue.map(r => {
                 const isCancelFlow = r.status === "pending_cancel_admin";
                 return (
                   <RequestRow key={r.id} r={r} showRequester actions={
                     <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? adminDecideCancel(id, "deny") : adminDecideLeave(id, "deny")), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Keep leave" : "Deny"}</button>
-                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? adminDecideCancel(id, "approve") : adminDecideLeave(id, "approve")), r.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Approve cancel" : "Approve"}</button>
+                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? adminDecideCancel(id, "deny") : adminDecideLeave(id, "deny")), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Keep leave" : "Deny"}</button>
+                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? adminDecideCancel(id, "approve") : adminDecideLeave(id, "approve")), r.id)} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Approve cancel" : "Approve"}</button>
                     </div>
                   } />
                 );
@@ -3515,16 +3359,16 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
       {isOwner && (
         <div>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Needs your approval</div>
-          <div style={{ fontSize: 12.5, color: COLORS.mute, marginBottom: 10 }}>Everything still awaiting a decision — new requests an Admin hasn't looked at yet, and cancellation requests for already-approved leave. Approve or deny any of these directly; you don't have to wait for the Admin stage.</div>
-          <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ fontSize: 12.5, color: 'var(--color-mute)', marginBottom: 10 }}>Everything still awaiting a decision â€” new requests an Admin hasn't looked at yet, and cancellation requests for already-approved leave. Approve or deny any of these directly; you don't have to wait for the Admin stage.</div>
+          <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
             {ownerQueue.length === 0 ? <EmptyState icon={CalendarCheck} title="Nothing pending" body="No leave requests are waiting on your approval." /> :
               ownerQueue.map(r => {
                 const isCancelFlow = cancelReviewStatuses.includes(r.status);
                 return (
                   <RequestRow key={r.id} r={r} showRequester actions={
                     <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? ownerDecideCancel(id, "deny") : ownerDecideLeave(id, "deny")), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Keep leave" : "Deny"}</button>
-                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? ownerDecideCancel(id, "approve") : ownerDecideLeave(id, "approve")), r.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Approve cancel" : "Approve"}</button>
+                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? ownerDecideCancel(id, "deny") : ownerDecideLeave(id, "deny")), r.id)} className="cly-btn" style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Keep leave" : "Deny"}</button>
+                      <button disabled={busyId === r.id} onClick={() => act(id => (isCancelFlow ? ownerDecideCancel(id, "approve") : ownerDecideLeave(id, "approve")), r.id)} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12.5, fontWeight: 600 }}>{isCancelFlow ? "Approve cancel" : "Approve"}</button>
                     </div>
                   } />
                 );
@@ -3550,18 +3394,18 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
               </select>
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                 <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "7px 10px", fontSize: 12.5 }} />
-                {monthFilter && <button onClick={() => setMonthFilter("")} title="Clear month filter" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer" }}><X size={14} /></button>}
+                {monthFilter && <button onClick={() => setMonthFilter("")} title="Clear month filter" className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', cursor: "pointer" }}><X size={14} /></button>}
               </div>
               {isOwner && visibleHistory.length > 0 && (
                 <button disabled={bulkDeleting} onClick={handleDeleteVisible} className="cly-btn"
-                  style={{ background: "#fff", border: `1px solid ${COLORS.dangerSoft}`, color: COLORS.danger, borderRadius: 7, padding: "7px 12px", fontSize: 12.5, fontWeight: 600 }}>
-                  {bulkDeleting ? "Deleting…" : `Delete ${filtersActive ? "filtered" : "all"} (${visibleHistory.length})`}
+                  style={{ background: "#fff", border: `1px solid ${'var(--color-dangerSoft)'}`, color: 'var(--color-danger)', borderRadius: 7, padding: "7px 12px", fontSize: 12.5, fontWeight: 600 }}>
+                  {bulkDeleting ? "DeletingÃ¢â‚¬Â¦" : `Delete ${filtersActive ? "filtered" : "all"} (${visibleHistory.length})`}
                 </button>
               )}
             </div>
           )}
         </div>
-        <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
           {visibleHistory.length === 0 ? (
             <EmptyState icon={CalendarCheck} title={filtersActive ? "No matches" : "No leave requests yet"} body={filtersActive ? "Try a different name, department, position, or month." : (isOwner || isAdmin ? "Nothing's been filed yet." : "Submit one above when you need time off.")} />
           ) : visibleHistory.map(r => {
@@ -3573,17 +3417,17 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
               <RequestRow key={r.id} r={r} showRequester={isOwner || isAdmin} actions={
                 <div style={{ display: "flex", gap: 12, alignItems: "center", flexShrink: 0 }}>
                   {(canCancelSimple || canCancelApproved) && (
-                    <button disabled={busyId === r.id} onClick={() => handleCancelClick(r)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                    <button disabled={busyId === r.id} onClick={() => handleCancelClick(r)} className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
                       Cancel
                     </button>
                   )}
                   {ownerCancellable && (
-                    <button disabled={busyId === r.id} title="Cancel this leave" onClick={() => handleOwnerCancel(r.id)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                    <button disabled={busyId === r.id} title="Cancel this leave" onClick={() => handleOwnerCancel(r.id)} className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
                       Cancel
                     </button>
                   )}
                   {isOwner && (
-                    <button disabled={busyId === r.id} title="Delete permanently" onClick={() => handleDeleteOne(r.id)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer" }}>
+                    <button disabled={busyId === r.id} title="Delete permanently" onClick={() => handleDeleteOne(r.id)} className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', cursor: "pointer" }}>
                       <Trash2 size={14} />
                     </button>
                   )}
@@ -3597,15 +3441,15 @@ function LeaveRequestsPage({ user, people, leaveRequests, submitLeaveRequest, ad
       {cancelling && (
         <Modal title="Cancel approved leave" onClose={() => setCancelling(null)} width={400}>
           <div style={{ display: "grid", gap: 12 }}>
-            <div style={{ fontSize: 12.5, color: COLORS.mute }}>
-              This leave has already been approved. Cancelling it now needs {isAdmin ? "the Owner's" : "an Admin's, then the Owner's,"} approval before it's reversed on your Work calendar — please explain why.
+            <div style={{ fontSize: 12.5, color: 'var(--color-mute)' }}>
+              This leave has already been approved. Cancelling it now needs {isAdmin ? "the Owner's" : "an Admin's, then the Owner's,"} approval before it's reversed on your Work calendar â€” please explain why.
             </div>
             <Field label="Reason for cancelling (required)">
               <textarea value={cancelNote} onChange={e => setCancelNote(e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} />
             </Field>
             <button disabled={!cancelNote.trim() || cancelSubmitting} onClick={handleConfirmCancelWithNote} className="cly-btn"
-              style={{ background: cancelNote.trim() ? COLORS.ink : COLORS.line, color: cancelNote.trim() ? "#fff" : COLORS.mute, borderRadius: 8, padding: "10px 0", fontSize: 13.5, fontWeight: 700 }}>
-              {cancelSubmitting ? "Submitting…" : "Submit cancellation request"}
+              style={{ background: cancelNote.trim() ? 'var(--color-ink)' : 'var(--color-line)', color: cancelNote.trim() ? "#fff" : 'var(--color-mute)', borderRadius: 8, padding: "10px 0", fontSize: 13.5, fontWeight: 700 }}>
+              {cancelSubmitting ? "SubmittingÃ¢â‚¬Â¦" : "Submit cancellation request"}
             </button>
           </div>
         </Modal>
@@ -3619,7 +3463,7 @@ function AuthTab({ auth, setAuth, canEdit }) {
   const patch = (k, v) => canEdit && setAuth({ ...auth, [k]: v });
   return (
     <div className="cly-fade-in">
-      {!canEdit && <div style={{ ...noteStyle }}>Read-only — only the owner can change authentication settings.</div>}
+      {!canEdit && <div style={{ ...noteStyle }}>Read-only â€” only the owner can change authentication settings.</div>}
       <Section title="Login" desc="Will your users need to log in?">
         <SegButtons value={auth.loginEnabled ? "on" : "off"} onChange={v => patch("loginEnabled", v === "on")} disabled={!canEdit}
           options={[{ v: "on", l: "Enabled" }, { v: "off", l: "Disabled" }]} />
@@ -3636,14 +3480,14 @@ function AuthTab({ auth, setAuth, canEdit }) {
           {[
             { v: "disabled", l: "Disabled", d: "You control who gets invited" },
             { v: "open", l: "Open", d: "Anyone can sign up" },
-            { v: "domain", l: "Domain restricted", d: "Only @clydecstudio.com can sign up" },
+            { v: "domain", l: "Domain restricted", d: "Only @tago.life can sign up" },
           ].map(o => (
             <button key={o.v} disabled={!canEdit} onClick={() => patch("signup", o.v)} className="cly-btn" style={{
-              textAlign: "left", padding: "10px 14px", borderRadius: 9, border: `1.5px solid ${auth.signup === o.v ? COLORS.ink : COLORS.line}`,
-              background: auth.signup === o.v ? COLORS.cream : "#fff",
+              textAlign: "left", padding: "10px 14px", borderRadius: 9, border: `1.5px solid ${auth.signup === o.v ? 'var(--color-ink)' : 'var(--color-line)'}`,
+              background: auth.signup === o.v ? 'var(--color-cream)' : "#fff",
             }}>
               <div style={{ fontSize: 13.5, fontWeight: 600 }}>{o.l}</div>
-              <div style={{ fontSize: 12, color: COLORS.mute }}>{o.d}</div>
+              <div style={{ fontSize: 12, color: 'var(--color-mute)' }}>{o.d}</div>
             </button>
           ))}
         </div>
@@ -3665,17 +3509,17 @@ function AuthTab({ auth, setAuth, canEdit }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Admin settings — Users tab                                         */
+/* Admin settings â€” Users tab                                         */
 /* ---------------------------------------------------------------- */
 function UsersTab({ user, users, people, addUserRequest, removeUser, groups, updateUserRole, requestRoleChange }) {
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({ email: "", name: "", role: "EMPLOYEE" });
-  const isOwner = user.role === "OWNER";
+  const isOwner = user.role === "ADMIN";
   // Admins can't change a role directly (only the owner can write to the
-  // users collection) — instead they pick a new group here, which opens a
+  // users collection) â€” instead they pick a new group here, which opens a
   // small confirm step that files a role_change request for the owner.
   const [roleRequest, setRoleRequest] = useState(null); // { targetUser, newRole } | null
-  const assignableGroups = groups.filter(g => g.id !== "OWNER");
+  const assignableGroups = groups.filter(g => g.id !== "ADMIN");
 
   function submit(e) {
     e.preventDefault();
@@ -3687,25 +3531,25 @@ function UsersTab({ user, users, people, addUserRequest, removeUser, groups, upd
   return (
     <div className="cly-fade-in">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <div style={{ fontSize: 13, color: COLORS.mute }}>{users.length} user{users.length !== 1 ? "s" : ""}</div>
-        <button onClick={() => setModal(true)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.ink, color: "#fff", padding: "8px 13px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
+        <div style={{ fontSize: 13, color: 'var(--color-mute)' }}>{users.length} user{users.length !== 1 ? "s" : ""}</div>
+        <button onClick={() => setModal(true)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: 'var(--color-ink)', color: "#fff", padding: "8px 13px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
           <UserPlus size={14} /> Add user
         </button>
       </div>
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
-        <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${COLORS.line}` }}>
+      <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
+        <div style={{ display: "flex", padding: "9px 16px", fontSize: 11, fontWeight: 700, color: 'var(--color-mute)', textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${'var(--color-line)'}` }}>
           <span style={{ flex: 1 }}>Name</span><span style={{ width: 170 }}>Role</span><span style={{ width: 100 }}>Status</span><span style={{ width: 50 }}></span>
         </div>
         {users.map((u, i) => {
           const meta = ROLE_META[u.role];
           const person = personForUser(people, u.id);
-          const editable = u.role !== "OWNER"; // the OWNER role is a singleton and never reassigned
+          const editable = u.role !== "ADMIN"; // the OWNER role is a singleton and never reassigned
           return (
-            <div key={u.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${COLORS.line}`, fontSize: 13 }}>
+            <div key={u.id} className="cly-row" style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderTop: `1px solid ${'var(--color-line)'}`, fontSize: 13 }}>
               <span style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name}</div>
-                <div style={{ fontSize: 11.5, color: COLORS.mute }}>{u.email}</div>
-                {person && <div style={{ fontSize: 11, color: COLORS.mute }}>{person.department} · {person.role}</div>}
+                <div style={{ fontSize: 11.5, color: 'var(--color-mute)' }}>{u.email}</div>
+                {person && <div style={{ fontSize: 11, color: 'var(--color-mute)' }}>{person.department} Ã‚Â· {person.role}</div>}
               </span>
               <span style={{ width: 170 }}>
                 {!editable ? (
@@ -3722,16 +3566,16 @@ function UsersTab({ user, users, people, addUserRequest, removeUser, groups, upd
                 ) : (
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <Badge color={meta.color} soft={meta.soft} text={meta.text}>{meta.label}</Badge>
-                    <button title="Request a role change" onClick={() => setRoleRequest({ targetUser: u, newRole: u.role })} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}>
+                    <button title="Request a role change" onClick={() => setRoleRequest({ targetUser: u, newRole: u.role })} className="cly-btn" style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)' }}>
                       <Pencil size={12} />
                     </button>
                   </div>
                 )}
               </span>
-              <span style={{ width: 100 }}><Badge color={COLORS.success} soft={COLORS.successSoft} text={COLORS.success}>{u.status}</Badge></span>
+              <span style={{ width: 100 }}><Badge color={'var(--color-success)'} soft={'var(--color-successSoft)'} text={'var(--color-success)'}>{u.status}</Badge></span>
               <span style={{ width: 50 }}>
-                {isOwner && u.role !== "OWNER" && (
-                  <button title="Remove" onClick={() => removeUser(u.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger }}><Trash2 size={15} /></button>
+                {isOwner && u.role !== "ADMIN" && (
+                  <button title="Remove" onClick={() => removeUser(u.id)} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-danger)' }}><Trash2 size={15} /></button>
                 )}
               </span>
             </div>
@@ -3742,15 +3586,15 @@ function UsersTab({ user, users, people, addUserRequest, removeUser, groups, upd
       {modal && (
         <Modal onClose={() => setModal(false)} title="Add user">
           <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
-            <Field label="Email"><input required type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="name@clydecstudio.com" style={inputStyle} /></Field>
+            <Field label="Email"><input required type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="name@tago.life" style={inputStyle} /></Field>
             <Field label="Full name"><input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Jane Cruz" style={inputStyle} /></Field>
             <Field label="User group">
               <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} style={{ ...inputStyle, padding: "9px 10px" }}>
-                {groups.filter(g => g.id !== "OWNER").map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                {groups.filter(g => g.id !== "ADMIN").map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
               </select>
             </Field>
             {!isOwner && <div style={noteStyle}>As an admin, this creates a request the owner needs to approve.</div>}
-            <button type="submit" className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "10px 0", borderRadius: 8, fontSize: 13.5, fontWeight: 700 }}>
+            <button type="submit" className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", padding: "10px 0", borderRadius: 8, fontSize: 13.5, fontWeight: 700 }}>
               {isOwner ? "Add user" : "Send request"}
             </button>
           </form>
@@ -3758,7 +3602,7 @@ function UsersTab({ user, users, people, addUserRequest, removeUser, groups, upd
       )}
 
       {roleRequest && (
-        <Modal onClose={() => setRoleRequest(null)} title={`Request role change — ${roleRequest.targetUser.name}`} width={360}>
+        <Modal onClose={() => setRoleRequest(null)} title={`Request role change â€” ${roleRequest.targetUser.name}`} width={360}>
           <div style={{ display: "grid", gap: 12 }}>
             <Field label="New group">
               <select value={roleRequest.newRole} onChange={e => setRoleRequest({ ...roleRequest, newRole: e.target.value })} style={{ ...inputStyle, padding: "9px 10px" }}>
@@ -3770,7 +3614,7 @@ function UsersTab({ user, users, people, addUserRequest, removeUser, groups, upd
               disabled={roleRequest.newRole === roleRequest.targetUser.role}
               onClick={async () => { await requestRoleChange(roleRequest.targetUser, roleRequest.newRole); setRoleRequest(null); }}
               className="cly-btn"
-              style={{ background: COLORS.ink, color: "#fff", padding: "10px 0", borderRadius: 8, fontSize: 13.5, fontWeight: 700, opacity: roleRequest.newRole === roleRequest.targetUser.role ? 0.5 : 1 }}
+              style={{ background: 'var(--color-ink)', color: "#fff", padding: "10px 0", borderRadius: 8, fontSize: 13.5, fontWeight: 700, opacity: roleRequest.newRole === roleRequest.targetUser.role ? 0.5 : 1 }}
             >
               Send request
             </button>
@@ -3782,12 +3626,12 @@ function UsersTab({ user, users, people, addUserRequest, removeUser, groups, upd
 }
 
 /* ---------------------------------------------------------------- */
-/* Admin settings — User groups tab                                   */
+/* Admin settings â€” User groups tab                                   */
 /* ---------------------------------------------------------------- */
 function GroupsTab({ user, groups, addGroup }) {
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({ name: "", description: "" });
-  const isOwner = user.role === "OWNER";
+  const isOwner = user.role === "ADMIN";
 
   function submit(e) {
     e.preventDefault();
@@ -3798,23 +3642,23 @@ function GroupsTab({ user, groups, addGroup }) {
 
   return (
     <div className="cly-fade-in">
-      <p style={{ fontSize: 13, color: COLORS.mute, maxWidth: 520, marginTop: 0 }}>Manage roles and permissions among your users. Only the owner can create new groups.</p>
+      <p style={{ fontSize: 13, color: 'var(--color-mute)', maxWidth: 520, marginTop: 0 }}>Manage roles and permissions among your users. Only the owner can create new groups.</p>
       <div style={{ display: "grid", gap: 10 }}>
         {groups.map(g => {
           const meta = ROLE_META[g.id];
           return (
-            <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: "13px 16px" }}>
-              <div style={{ width: 8, height: 8, borderRadius: 4, background: meta ? meta.color : COLORS.creative, flexShrink: 0 }} />
+            <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 10, padding: "13px 16px" }}>
+              <div style={{ width: 8, height: 8, borderRadius: 4, background: meta ? meta.color : 'var(--color-events)', flexShrink: 0 }} />
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{g.name} {!g.custom && <span style={{ fontSize: 11, color: COLORS.mute, fontWeight: 500 }}>· default</span>}</div>
-                <div style={{ fontSize: 12, color: COLORS.mute }}>{g.description}</div>
+                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{g.name} {!g.custom && <span style={{ fontSize: 11, color: 'var(--color-mute)', fontWeight: 500 }}>Ã‚Â· default</span>}</div>
+                <div style={{ fontSize: 12, color: 'var(--color-mute)' }}>{g.description}</div>
               </div>
             </div>
           );
         })}
       </div>
       {isOwner && (
-        <button onClick={() => setModal(true)} className="cly-btn" style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
+        <button onClick={() => setModal(true)} className="cly-btn" style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${'var(--color-line)'}`, padding: "9px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}>
           <Plus size={14} /> Add group
         </button>
       )}
@@ -3823,7 +3667,7 @@ function GroupsTab({ user, groups, addGroup }) {
           <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
             <Field label="Group name"><input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Contractors" style={inputStyle} /></Field>
             <Field label="Description"><input required value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="What this group can do" style={inputStyle} /></Field>
-            <button type="submit" className="cly-btn" style={{ background: COLORS.ink, color: "#fff", padding: "10px 0", borderRadius: 8, fontSize: 13.5, fontWeight: 700 }}>Create group</button>
+            <button type="submit" className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", padding: "10px 0", borderRadius: 8, fontSize: 13.5, fontWeight: 700 }}>Create group</button>
           </form>
         </Modal>
       )}
@@ -3832,10 +3676,10 @@ function GroupsTab({ user, groups, addGroup }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Admin settings — Data restrictions tab                              */
+/* Admin settings â€” Data restrictions tab                              */
 /* ---------------------------------------------------------------- */
 function RestrictionsTab({ user, groups, restrictions, setRestrictions }) {
-  const isOwner = user.role === "OWNER";
+  const isOwner = user.role === "ADMIN";
   function setCell(groupId, catIdx, level) {
     if (!isOwner) return;
     const next = { ...restrictions, [groupId]: [...(restrictions[groupId] || [0, 0, 0, 0])] };
@@ -3844,16 +3688,16 @@ function RestrictionsTab({ user, groups, restrictions, setRestrictions }) {
   }
   return (
     <div className="cly-fade-in">
-      {!isOwner && <div style={noteStyle}>Read-only — only the owner can edit data restrictions.</div>}
-      <p style={{ fontSize: 13, color: COLORS.mute, maxWidth: 560, marginTop: 0 }}>
+      {!isOwner && <div style={noteStyle}>Read-only â€” only the owner can edit data restrictions.</div>}
+      <p style={{ fontSize: 13, color: 'var(--color-mute)', maxWidth: 560, marginTop: 0 }}>
         Limit what each user group can interact with. Rules here apply throughout the entire portal, on top of individual folder settings.
       </p>
-      <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
           <thead>
-            <tr style={{ background: COLORS.cream }}>
-              <th style={{ textAlign: "left", padding: "9px 16px", fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", fontSize: 11 }}>Group</th>
-              {DATA_CATEGORIES.map(c => <th key={c} style={{ textAlign: "left", padding: "9px 10px", fontWeight: 700, color: COLORS.mute, textTransform: "uppercase", fontSize: 11 }}>{c}</th>)}
+            <tr style={{ background: 'var(--color-cream)' }}>
+              <th style={{ textAlign: "left", padding: "9px 16px", fontWeight: 700, color: 'var(--color-mute)', textTransform: "uppercase", fontSize: 11 }}>Group</th>
+              {DATA_CATEGORIES.map(c => <th key={c} style={{ textAlign: "left", padding: "9px 10px", fontWeight: 700, color: 'var(--color-mute)', textTransform: "uppercase", fontSize: 11 }}>{c}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -3861,9 +3705,9 @@ function RestrictionsTab({ user, groups, restrictions, setRestrictions }) {
               const meta = ROLE_META[g.id];
               const row = restrictions[g.id] || [0, 0, 0, 0];
               return (
-                <tr key={g.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
+                <tr key={g.id} style={{ borderTop: `1px solid ${'var(--color-line)'}` }}>
                   <td style={{ padding: "10px 16px", fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ width: 7, height: 7, borderRadius: 4, background: meta ? meta.color : COLORS.creative }} />{g.name}
+                    <span style={{ width: 7, height: 7, borderRadius: 4, background: meta ? meta.color : 'var(--color-events)' }} />{g.name}
                   </td>
                   {DATA_CATEGORIES.map((c, ci) => (
                     <td key={c} style={{ padding: "8px 10px" }}>
@@ -3883,12 +3727,12 @@ function RestrictionsTab({ user, groups, restrictions, setRestrictions }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Admin settings — Notifications tab                                 */
+/* Admin settings â€” Notifications tab                                 */
 /* ---------------------------------------------------------------- */
 function NotifTab({ notif, setNotif, canEdit }) {
   return (
     <div className="cly-fade-in">
-      {!canEdit && <div style={noteStyle}>Read-only — only the owner can edit notification settings.</div>}
+      {!canEdit && <div style={noteStyle}>Read-only â€” only the owner can edit notification settings.</div>}
       <Section title="Email sender" desc="Users will receive system emails from this sender">
         <input disabled={!canEdit} value={notif.sender} onChange={e => setNotif({ ...notif, sender: e.target.value })} style={inputStyle} />
       </Section>
@@ -3911,7 +3755,7 @@ function NotifTab({ notif, setNotif, canEdit }) {
 /* ---------------------------------------------------------------- */
 function AdminSettings(props) {
   const { user } = props;
-  const isOwner = user.role === "OWNER";
+  const isOwner = user.role === "ADMIN";
   const tabs = [
     { key: "auth", label: "Authentication" },
     { key: "users", label: "Users" },
@@ -3922,11 +3766,11 @@ function AdminSettings(props) {
   const [tab, setTab] = useState("auth");
   return (
     <div className="cly-fade-in cly-page-pad" style={{ padding: 28 }}>
-      <div style={{ display: "flex", gap: 6, marginBottom: 20, borderBottom: `1px solid ${COLORS.line}` }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 20, borderBottom: `1px solid ${'var(--color-line)'}` }}>
         {tabs.map(t => (
           <button key={t.key} onClick={() => setTab(t.key)} className="cly-btn" style={{
             background: "none", border: "none", padding: "9px 4px", marginRight: 18, fontSize: 13.5, fontWeight: 600,
-            color: tab === t.key ? COLORS.text : COLORS.mute, borderBottom: tab === t.key ? `2px solid ${COLORS.ink}` : "2px solid transparent",
+            color: tab === t.key ? 'var(--color-text)' : 'var(--color-mute)', borderBottom: tab === t.key ? `2px solid ${'var(--color-ink)'}` : "2px solid transparent",
           }}>{t.label}</button>
         ))}
       </div>
@@ -3940,16 +3784,16 @@ function AdminSettings(props) {
 }
 
 /* small shared building blocks for admin settings */
-const noteStyle = { display: "flex", gap: 8, alignItems: "center", background: COLORS.goldSoft, color: "#6B4A1A", fontSize: 12.5, padding: "9px 12px", borderRadius: 8, marginBottom: 16 };
-const inputStyle = { width: "100%", padding: "9px 11px", borderRadius: 8, border: `1px solid ${COLORS.line}`, fontSize: 13.5 };
-const selStyle = { padding: "6px 8px", borderRadius: 7, border: `1px solid ${COLORS.line}`, fontSize: 12.5, background: "#fff" };
+const noteStyle = { display: "flex", gap: 8, alignItems: "center", background: 'var(--color-goldSoft)', color: "#6B4A1A", fontSize: 12.5, padding: "9px 12px", borderRadius: 8, marginBottom: 16 };
+const inputStyle = { width: "100%", padding: "9px 11px", borderRadius: 8, border: `1px solid ${'var(--color-line)'}`, fontSize: 13.5 };
+const selStyle = { padding: "6px 8px", borderRadius: 7, border: `1px solid ${'var(--color-line)'}`, fontSize: 12.5, background: "#fff" };
 
 function Section({ title, desc, children }) {
   return (
-    <div style={{ display: "flex", gap: 30, padding: "18px 0", borderBottom: `1px solid ${COLORS.line}` }}>
+    <div style={{ display: "flex", gap: 30, padding: "18px 0", borderBottom: `1px solid ${'var(--color-line)'}` }}>
       <div style={{ width: 200, flexShrink: 0 }}>
         <div style={{ fontSize: 13.5, fontWeight: 700 }}>{title}</div>
-        <div style={{ fontSize: 12, color: COLORS.mute, marginTop: 3 }}>{desc}</div>
+        <div style={{ fontSize: 12, color: 'var(--color-mute)', marginTop: 3 }}>{desc}</div>
       </div>
       <div style={{ flex: 1, maxWidth: 420 }}>{children}</div>
     </div>
@@ -3958,10 +3802,10 @@ function Section({ title, desc, children }) {
 function Row({ icon: Icon, label, sub, children, disabled }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", opacity: disabled ? 0.5 : 1 }}>
-      {Icon && <div style={{ width: 30, height: 30, borderRadius: 7, background: COLORS.cream, display: "flex", alignItems: "center", justifyContent: "center" }}><Icon size={14} /></div>}
+      {Icon && <div style={{ width: 30, height: 30, borderRadius: 7, background: 'var(--color-cream)', display: "flex", alignItems: "center", justifyContent: "center" }}><Icon size={14} /></div>}
       <div style={{ flex: 1 }}>
         <div style={{ fontSize: 13, fontWeight: 600 }}>{label}</div>
-        {sub && <div style={{ fontSize: 11.5, color: COLORS.mute }}>{sub}</div>}
+        {sub && <div style={{ fontSize: 11.5, color: 'var(--color-mute)' }}>{sub}</div>}
       </div>
       {children}
     </div>
@@ -3969,21 +3813,158 @@ function Row({ icon: Icon, label, sub, children, disabled }) {
 }
 function SegButtons({ value, onChange, options, disabled }) {
   return (
-    <div style={{ display: "inline-flex", border: `1px solid ${COLORS.line}`, borderRadius: 8, overflow: "hidden" }}>
+    <div style={{ display: "inline-flex", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, overflow: "hidden" }}>
       {options.map(o => (
         <button key={o.v} disabled={disabled} onClick={() => onChange(o.v)} className="cly-btn" style={{
-          padding: "8px 18px", fontSize: 13, fontWeight: 600, background: value === o.v ? COLORS.ink : "#fff", color: value === o.v ? "#fff" : COLORS.text, border: "none",
+          padding: "8px 18px", fontSize: 13, fontWeight: 600, background: value === o.v ? 'var(--color-ink)' : "#fff", color: value === o.v ? "#fff" : 'var(--color-text)', border: "none",
         }}>{o.l}</button>
       ))}
     </div>
   );
 }
+function MyProfileSettingsModal({ user, onClose, onUpdateUser, onChangePassword }) {
+  const [avatarFile, setAvatarFile] = useState(null);
+  const [avatarPreview, setAvatarPreview] = useState(user.avatar || "");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  async function handleSave(ev) {
+    ev.preventDefault();
+    setError("");
+    setSuccess("");
+    if (password && password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setSaving(true);
+    try {
+      if (password) {
+        await onChangePassword(password);
+      }
+      if (avatarFile) {
+        await onUpdateUser(avatarFile);
+      }
+      if (password && !avatarFile) {
+        setSuccess("Password updated successfully.");
+      } else if (avatarFile && !password) {
+        setSuccess("Profile picture updated successfully.");
+      } else if (password && avatarFile) {
+        setSuccess("Profile updated successfully.");
+      }
+      setTimeout(onClose, 1500);
+    } catch (e) {
+      console.error(e);
+      if (e.code === 'auth/requires-recent-login') {
+        setError("Please log out and log back in before changing your password.");
+      } else {
+        setError(e.message || "Failed to update profile.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    if (file) {
+      setAvatarFile(file);
+      setAvatarPreview(URL.createObjectURL(file));
+    }
+  }
+
+  return (
+    <Modal title="Account Settings" onClose={onClose} width={400}>
+      <form onSubmit={handleSave} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {error && <div style={{ color: 'var(--color-danger)', fontSize: 13, padding: 8, background: 'var(--color-dangerSoft)', borderRadius: 6 }}>{error}</div>}
+        {success && <div style={{ color: 'var(--color-success)', fontSize: 13, padding: 8, background: 'var(--color-successSoft)', borderRadius: 6 }}>{success}</div>}
+
+        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 8 }}>
+          {avatarPreview ? (
+            <img src={avatarPreview} alt="Avatar" style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover" }} />
+          ) : (
+            <div style={{ width: 64, height: 64, borderRadius: "50%", background: "#DCD8CC", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700 }}>
+              {user.name.split(" ").map(w => w[0]).slice(0, 2).join("")}
+            </div>
+          )}
+          <div>
+            <label className="cly-btn" style={{ background: 'var(--color-line)', padding: "6px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, display: "inline-block", cursor: "pointer" }}>
+              Upload Picture
+              <input type="file" accept="image/*" onChange={handleFileChange} style={{ display: "none" }} />
+            </label>
+          </div>
+        </div>
+
+        <Field label="New Password">
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="cly-input" placeholder="Leave blank to keep current" style={{ width: "100%", padding: "10px 14px", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8 }} />
+        </Field>
+        {password && (
+          <Field label="Confirm Password">
+            <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="cly-input" placeholder="Confirm new password" style={{ width: "100%", padding: "10px 14px", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8 }} />
+          </Field>
+        )}
+
+        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <button type="button" onClick={onClose} className="cly-btn" style={{ flex: 1, padding: "10px", background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, fontWeight: 600 }}>Cancel</button>
+          <button type="submit" disabled={saving || (!password && !avatarFile)} className="cly-btn" style={{ flex: 1, padding: "10px", background: 'var(--color-primary)', color: "#fff", border: "none", borderRadius: 8, fontWeight: 600, opacity: (saving || (!password && !avatarFile)) ? 0.6 : 1 }}>
+            {saving ? "Saving..." : "Save Changes"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function Field({ label, children }) {
   return <label style={{ display: "block" }}><div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 5 }}>{label}</div>{children}</label>;
 }
+function ProfileDetailsModal({ user, person, onClose }) {
+  if (!user) return null;
+  
+  return (
+    <Modal title="Profile Details" onClose={onClose} width={400}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: "8px 0" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          {person?.avatar ? (
+            <img src={person.avatar} alt="" style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover" }} />
+          ) : (
+            <div style={{ width: 64, height: 64, borderRadius: "50%", background: peopleColorFor(user.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700 }}>
+              {peopleInitials(user.name)}
+            </div>
+          )}
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>{user.name}</div>
+            <div style={{ fontSize: 13, color: 'var(--color-mute)' }}>{ROLE_META[user.role]?.label || user.role}</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", paddingBottom: 8, borderBottom: `1px solid ${'var(--color-line)'}` }}>
+            <span style={{ fontSize: 13, color: 'var(--color-mute)' }}>Email</span>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{user.email || person?.email || "N/A"}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", paddingBottom: 8, borderBottom: `1px solid ${'var(--color-line)'}` }}>
+            <span style={{ fontSize: 13, color: 'var(--color-mute)' }}>Department</span>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{person?.department || "N/A"}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", paddingBottom: 8, borderBottom: `1px solid ${'var(--color-line)'}` }}>
+            <span style={{ fontSize: 13, color: 'var(--color-mute)' }}>Employment Status</span>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{person?.employmentStatus || "N/A"}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 13, color: 'var(--color-mute)' }}>Start Date</span>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{person?.startDate || "N/A"}</span>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function Modal({ title, onClose, children, width = 360 }) {
   // Rendered via a portal straight into <body> so it always centers on the
-  // real viewport — nesting it inside a page's own scrollable container
+  // real viewport â€” nesting it inside a page's own scrollable container
   // (as plain JSX would) let that ancestor's scroll position clip/offset
   // the modal, which is what caused it to render cut off at the top.
   useEffect(() => {
@@ -3997,7 +3978,7 @@ function Modal({ title, onClose, children, width = 360 }) {
       <div onClick={e => e.stopPropagation()} className="cly-fade-in" style={{ background: "#fff", borderRadius: 14, padding: 22, width, maxWidth: "92vw", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 50px rgba(0,0,0,0.2)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <div className="cly-serif" style={{ fontSize: 17 }}>{title}</div>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.mute }}><X size={17} /></button>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: 'var(--color-mute)' }}><X size={17} /></button>
         </div>
         {children}
       </div>
@@ -4007,141 +3988,254 @@ function Modal({ title, onClose, children, width = 360 }) {
 }
 
 /* ---------------------------------------------------------------- */
-/* Root App                                                            */
+/* EOD Reports Page                                                 */
 /* ---------------------------------------------------------------- */
-/* ---------------------------------------------------------------- */
-/* Workspace: Orbit project-management workspaces                    */
-/* ---------------------------------------------------------------- */
-// Deterministic color assignment so the same person always gets the same
-// avatar color inside Orbit across sessions/renders, without needing to
-// store a color choice anywhere.
-const ORBIT_MEMBER_COLORS = ["bg-violet-500", "bg-teal-500", "bg-amber-500", "bg-blue-500", "bg-rose-500", "bg-emerald-500", "bg-pink-500", "bg-indigo-500"];
-function colorForId(id) {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return ORBIT_MEMBER_COLORS[h % ORBIT_MEMBER_COLORS.length];
-}
-// Builds the member list Orbit sees for a given workspace: every non-Client
-// portal user, with the logged-in viewer always mapped to Orbit's existing
-// "m1 = current user" convention (see src/orbit/OrbitApp.jsx) so nothing
-// inside Orbit needed to change to know who's looking at it. This is the
-// concrete "connected to People/Users" link the Workspace feature was
-// asked for — team membership itself isn't managed inside Orbit anymore
-// (see OrbitApp's TeamView guards), it's read live from here.
-function membersForOrbit(users, currentUser) {
-  const others = users
-    .filter(u => u.id !== currentUser.id && u.role !== "CLIENT")
-    .map(u => ({ id: u.id, name: u.name, color: colorForId(u.id) }));
-  return [{ id: "m1", name: currentUser.name, color: "bg-violet-500" }, ...others];
-}
+function EodReportsPage({ user, users, reports, createReport, updateReport, deleteReport }) {
+  const [tab, setTab] = useState("submit");
+  
+  // Submit state
+  const [reportDate, setReportDate] = useState(new Date().toISOString().split("T")[0]);
+  const [targetUserId, setTargetUserId] = useState(user.id);
+  const [completedToday, setCompletedToday] = useState("");
+  const [movedForward, setMovedForward] = useState("");
+  const [nextTomorrow, setNextTomorrow] = useState("");
+  const [blockers, setBlockers] = useState("");
 
-// One Orbit Workspace, opened full-bleed (replaces the page body, like
-// Communication does for a call overlay) — loads/saves its `data` field on
-// the matching orbit-workspaces/{id} Firestore doc.
-function OrbitWorkspaceView({ user, users, workspace, onExit, saveOrbitWorkspaceData }) {
-  const members = React.useMemo(() => membersForOrbit(users, user), [users, user]);
-  const handleDataChange = React.useCallback((data) => {
-    saveOrbitWorkspaceData(workspace.id, data);
-  }, [workspace.id, saveOrbitWorkspaceData]);
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 40, background: "#fff" }}>
-      <OrbitApp
-        members={members}
-        initialData={workspace.data || null}
-        onDataChange={handleDataChange}
-        onExit={onExit}
-        workspaceName={workspace.name}
-        currentUserId={user.id}
-      />
-    </div>
-  );
-}
+  // View state
+  const [viewType, setViewType] = useState("daily"); // "daily" | "weekly" | "monthly"
+  const [selectedUserId, setSelectedUserId] = useState(user.role === "ADMIN" ? "all" : user.id);
 
-function WorkspacePage({ user, orbitWorkspaces, addOrbitWorkspace, deleteOrbitWorkspace, onOpenWorkspace }) {
-  const canManage = user.role === "OWNER" || user.role === "ADMIN";
-  const [addingForWing, setAddingForWing] = useState(null);
-  const [newName, setNewName] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState(null); // { id, name } | null
+  const isAdmin = user.role === "ADMIN";
 
-  function submitAdd(wing) {
-    if (!newName.trim()) return;
-    addOrbitWorkspace(newName.trim(), wing);
-    setNewName("");
-    setAddingForWing(null);
+  async function handleSubmit(e) {
+    e.preventDefault();
+    await createReport({
+      userId: targetUserId,
+      date: reportDate,
+      completedToday,
+      movedForward,
+      nextTomorrow,
+      blockers,
+      createdAt: Date.now()
+    });
+    setCompletedToday("");
+    setMovedForward("");
+    setNextTomorrow("");
+    setBlockers("");
+    setTab("view");
   }
 
+  function getWeekString(dateStr) {
+    const d = new Date(dateStr);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(d.setDate(diff));
+    return `Week of ${monday.toISOString().split("T")[0]}`;
+  }
+
+  function getMonthString(dateStr) {
+    return dateStr.substring(0, 7);
+  }
+
+  const visibleReports = reports.filter(r => {
+    if (!isAdmin) return r.userId === user.id;
+    if (selectedUserId === "all") return true;
+    return r.userId === selectedUserId;
+  });
+
+  const groupedReports = visibleReports.reduce((acc, r) => {
+    let key = r.date;
+    if (viewType === "weekly") key = getWeekString(r.date);
+    if (viewType === "monthly") key = getMonthString(r.date);
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(r);
+    return acc;
+  }, {});
+
+  const sortedKeys = Object.keys(groupedReports).sort((a, b) => b.localeCompare(a));
+
   return (
-    <div style={{ padding: 28 }}>
-      <div style={{ maxWidth: 980, margin: "0 auto", display: "flex", flexDirection: "column", gap: 22 }}>
-        {!canManage && (
-          <div style={{ background: COLORS.dataSoft, color: COLORS.dataText, borderRadius: 10, padding: "10px 14px", fontSize: 12.5 }}>
-            Only Admins and Owners can create or delete Orbit Workspaces — you can still open and work inside any workspace below.
-          </div>
-        )}
-        {WORKSPACE_WINGS.map(wing => {
-          const wingWorkspaces = orbitWorkspaces.filter(w => w.wing === wing.id);
-          return (
-            <div key={wing.id} style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, padding: 18 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-                <div className="cly-serif" style={{ fontSize: 15.5 }}>{wing.name}</div>
-                {canManage && (
-                  addingForWing === wing.id ? (
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <input
-                        autoFocus value={newName} onChange={e => setNewName(e.target.value)}
-                        onKeyDown={e => { if (e.key === "Enter") submitAdd(wing.id); if (e.key === "Escape") { setAddingForWing(null); setNewName(""); } }}
-                        placeholder="Workspace name" className="cly-input"
-                        style={{ fontSize: 12.5, padding: "6px 10px", borderRadius: 7, border: `1px solid ${COLORS.line}`, width: 180 }}
-                      />
-                      <button onClick={() => submitAdd(wing.id)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 700 }}>Add</button>
-                      <button onClick={() => { setAddingForWing(null); setNewName(""); }} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 12 }}>Cancel</button>
-                    </div>
-                  ) : (
-                    <button onClick={() => { setAddingForWing(wing.id); setNewName(""); }} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 700, color: COLORS.text }}>
-                      <Plus size={13} /> New Orbit Workspace
-                    </button>
-                  )
-                )}
-              </div>
-              {wingWorkspaces.length === 0 ? (
-                <div style={{ color: COLORS.mute, fontSize: 12.5, padding: "6px 2px" }}>No Orbit Workspaces in this Wing yet.</div>
-              ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
-                  {wingWorkspaces.map(w => (
-                    <div key={w.id} style={{ border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ width: 26, height: 26, borderRadius: 6, background: "#4F46E5", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>O</div>
-                        <div style={{ fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={w.name}>{w.name}</div>
-                      </div>
-                      <div style={{ fontSize: 10.5, color: COLORS.mute }}>Created by {w.createdByName || "—"}{w.createdAt ? ` · ${timeAgo(w.createdAt)}` : ""}</div>
-                      <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
-                        <button onClick={() => onOpenWorkspace(w.id)} className="cly-btn" style={{ flex: 1, background: COLORS.ink, color: "#fff", border: "none", borderRadius: 7, padding: "6px 8px", fontSize: 11.5, fontWeight: 700 }}>Open</button>
-                        {canManage && (
-                          confirmDelete?.id === w.id ? (
-                            <>
-                              <button onClick={() => { deleteOrbitWorkspace(w.id, w.name); setConfirmDelete(null); }} className="cly-btn" style={{ background: COLORS.danger, color: "#fff", border: "none", borderRadius: 7, padding: "6px 8px", fontSize: 11.5, fontWeight: 700 }}>Confirm</button>
-                              <button onClick={() => setConfirmDelete(null)} className="cly-btn" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 8px", fontSize: 11.5 }}>×</button>
-                            </>
-                          ) : (
-                            <button onClick={() => setConfirmDelete({ id: w.id, name: w.name })} className="cly-btn" title="Delete workspace" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "6px 8px", color: COLORS.danger }}>
-                              <Trash2 size={13} />
-                            </button>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 24, gap: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>EOD Reports</h2>
+        <div style={{ display: "flex", background: 'var(--color-bgDark)', borderRadius: 8, overflow: "hidden" }}>
+          {[{ id: "submit", label: "Submit Report" }, { id: "view", label: "View Reports" }].map(t => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              style={{
+                flex: 1, padding: "8px 16px", border: "none", cursor: "pointer",
+                background: tab === t.id ? 'var(--color-primary)' : "transparent",
+                color: tab === t.id ? 'var(--color-white)' : 'var(--color-mute)',
+                fontWeight: tab === t.id ? 600 : 500,
+              }}
+            >{t.label}</button>
+          ))}
+        </div>
       </div>
+
+      {tab === "submit" && (
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16, background: 'var(--color-surface)', padding: 24, borderRadius: 12, border: `1px solid ${'var(--color-border)'}` }}>
+          <div style={{ display: "flex", gap: 16 }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 600, color: 'var(--color-mute)' }}>Date</label>
+              <input type="date" value={reportDate} onChange={e => setReportDate(e.target.value)} required disabled={!isAdmin} style={{ width: "100%", padding: "10px 12px", background: 'var(--color-bgDark)', border: `1px solid ${'var(--color-border)'}`, borderRadius: 6, color: 'var(--color-text)', fontFamily: "inherit" }} />
+            </div>
+            {isAdmin && (
+              <div style={{ flex: 1 }}>
+                <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 600, color: 'var(--color-mute)' }}>Filing for</label>
+                <select value={targetUserId} onChange={e => setTargetUserId(e.target.value)} style={{ width: "100%", padding: "10px 12px", background: 'var(--color-bgDark)', border: `1px solid ${'var(--color-border)'}`, borderRadius: 6, color: 'var(--color-text)', fontFamily: "inherit" }}>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 600, color: 'var(--color-mute)' }}>Completed Today</label>
+            <textarea value={completedToday} onChange={e => setCompletedToday(e.target.value)} required rows={4} placeholder="List of what has been done..." style={{ width: "100%", padding: "10px 12px", background: 'var(--color-bgDark)', border: `1px solid ${'var(--color-border)'}`, borderRadius: 6, color: 'var(--color-text)', fontFamily: "inherit", resize: "vertical" }} />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 600, color: 'var(--color-mute)' }}>What Moved Forward</label>
+            <textarea value={movedForward} onChange={e => setMovedForward(e.target.value)} required rows={3} placeholder="What has been achieved for the day..." style={{ width: "100%", padding: "10px 12px", background: 'var(--color-bgDark)', border: `1px solid ${'var(--color-border)'}`, borderRadius: 6, color: 'var(--color-text)', fontFamily: "inherit", resize: "vertical" }} />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 600, color: 'var(--color-mute)' }}>What's Next Tomorrow</label>
+            <textarea value={nextTomorrow} onChange={e => setNextTomorrow(e.target.value)} required rows={3} placeholder="Task for tomorrow or continuations..." style={{ width: "100%", padding: "10px 12px", background: 'var(--color-bgDark)', border: `1px solid ${'var(--color-border)'}`, borderRadius: 6, color: 'var(--color-text)', fontFamily: "inherit", resize: "vertical" }} />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: 8, fontSize: 13, fontWeight: 600, color: 'var(--color-mute)' }}>Blockers / Questions</label>
+            <textarea value={blockers} onChange={e => setBlockers(e.target.value)} rows={2} placeholder="Any blockers or questions..." style={{ width: "100%", padding: "10px 12px", background: 'var(--color-bgDark)', border: `1px solid ${'var(--color-border)'}`, borderRadius: 6, color: 'var(--color-text)', fontFamily: "inherit", resize: "vertical" }} />
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+            <button type="submit" style={{ padding: "10px 24px", background: 'var(--color-primary)', color: 'var(--color-white)', border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600 }}>Submit EOD Report</button>
+          </div>
+        </form>
+      )}
+
+      {tab === "view" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <div style={{ display: "flex", background: 'var(--color-bgDark)', borderRadius: 6, overflow: "hidden" }}>
+              {["daily", "weekly", "monthly"].map(v => (
+                <button
+                  key={v}
+                  onClick={() => setViewType(v)}
+                  style={{
+                    padding: "6px 12px", border: "none", cursor: "pointer", fontSize: 13, textTransform: "capitalize",
+                    background: viewType === v ? 'var(--color-border)' : "transparent",
+                    color: viewType === v ? 'var(--color-text)' : 'var(--color-mute)',
+                  }}
+                >{v}</button>
+              ))}
+            </div>
+            {isAdmin && (
+              <select value={selectedUserId} onChange={e => setSelectedUserId(e.target.value)} style={{ padding: "6px 12px", background: 'var(--color-bgDark)', border: `1px solid ${'var(--color-border)'}`, borderRadius: 6, color: 'var(--color-text)', fontSize: 13 }}>
+                <option value="all">All Employees</option>
+                {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            )}
+          </div>
+
+          {sortedKeys.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 48, color: 'var(--color-mute)', background: 'var(--color-surface)', borderRadius: 12 }}>No reports found.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+              {sortedKeys.map(key => (
+                <div key={key}>
+                  <h3 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 600, color: 'var(--color-text)', borderBottom: `1px solid ${'var(--color-border)'}`, paddingBottom: 8 }}>
+                    {key}
+                  </h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                    {groupedReports[key].map(r => {
+                      const u = users.find(x => x.id === r.userId);
+                      return (
+                        <div key={r.id} style={{ background: 'var(--color-surface)', border: `1px solid ${'var(--color-border)'}`, borderRadius: 12, padding: 20 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                              {u?.avatar ? (
+                                <img src={u.avatar} alt="" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover" }} />
+                              ) : (
+                                <div style={{ width: 32, height: 32, borderRadius: "50%", background: 'var(--color-primary)', display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: "bold", fontSize: 14 }}>
+                                  {u?.name?.[0] || "?"}
+                                </div>
+                              )}
+                              <div>
+                                <div style={{ fontWeight: 600, fontSize: 14 }}>{u?.name || "Unknown"}</div>
+                                <div style={{ fontSize: 12, color: 'var(--color-mute)' }}>{new Date(r.createdAt).toLocaleString()}</div>
+                              </div>
+                            </div>
+                            {isAdmin && (
+                              <button onClick={() => { if(confirm("Delete report?")) deleteReport(r.id); }} style={{ background: "transparent", border: "none", color: 'var(--color-danger)', cursor: "pointer", fontSize: 13 }}>Delete</button>
+                            )}
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 14 }}>
+                            <div><strong style={{ color: 'var(--color-mute)', display: "block", fontSize: 12, marginBottom: 4 }}>COMPLETED TODAY</strong> <div style={{ whiteSpace: "pre-wrap" }}>{r.completedToday}</div></div>
+                            <div><strong style={{ color: 'var(--color-mute)', display: "block", fontSize: 12, marginBottom: 4 }}>WHAT MOVED FORWARD</strong> <div style={{ whiteSpace: "pre-wrap" }}>{r.movedForward}</div></div>
+                            <div><strong style={{ color: 'var(--color-mute)', display: "block", fontSize: 12, marginBottom: 4 }}>WHAT'S NEXT TOMORROW</strong> <div style={{ whiteSpace: "pre-wrap" }}>{r.nextTomorrow}</div></div>
+                            {r.blockers && <div><strong style={{ color: 'var(--color-mute)', display: "block", fontSize: 12, marginBottom: 4 }}>BLOCKERS / QUESTIONS</strong> <div style={{ whiteSpace: "pre-wrap" }}>{r.blockers}</div></div>}
+
+                            {/* Comments Section */}
+                            <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid var(--color-border)` }}>
+                              <strong style={{ color: 'var(--color-mute)', display: "block", fontSize: 12, marginBottom: 8 }}>COMMENTS</strong>
+                              {r.comments && r.comments.length > 0 ? (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                                  {r.comments.map((c, i) => (
+                                    <div key={i} style={{ background: 'var(--color-bgDark)', padding: "8px 12px", borderRadius: 8, fontSize: 13 }}>
+                                      <span style={{ fontWeight: 600, marginRight: 6 }}>{c.authorName}</span>
+                                      <span style={{ color: 'var(--color-mute)', fontSize: 11, marginRight: 8 }}>{new Date(c.createdAt).toLocaleString()}</span>
+                                      <div style={{ marginTop: 4 }}>{c.text}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: 12, color: 'var(--color-mute)', marginBottom: 12 }}>No comments yet.</div>
+                              )}
+                              <div style={{ display: "flex", gap: 8 }}>
+                                <input 
+                                  type="text" 
+                                  placeholder="Add a comment... (Press Enter to post)" 
+                                  style={{ flex: 1, padding: "8px 12px", background: 'var(--color-bgDark)', border: `1px solid var(--color-border)`, borderRadius: 6, color: 'var(--color-text)', fontSize: 13, outline: 'none' }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && e.target.value.trim()) {
+                                      const newComment = {
+                                        text: e.target.value.trim(),
+                                        authorId: user.id,
+                                        authorName: user.name,
+                                        createdAt: Date.now()
+                                      };
+                                      const updatedComments = [...(r.comments || []), newComment];
+                                      updateReport(r.id, { comments: updatedComments });
+                                      e.target.value = '';
+                                    }
+                                  }}
+                                />
+                              </div>
+                            </div>
+
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function CommunicationPage({ user, users, people, conversations, activeConversationId, setActiveConversationId, messages, sendMessage, getOrCreateDirectConversation, createGroupConversation, markConversationRead, startCall, activeCall, callConnecting, editMessage, deleteMessage, sendFileMessage, hideConversationForMe, addGroupMembers, removeGroupMember, leaveGroupConversation, setMyPresenceStatus }) {
+/* ---------------------------------------------------------------- */
+/* Root App                                                            */
+/* ---------------------------------------------------------------- */
+function CommunicationPage({ user, users, people, conversations, activeConversationId, setActiveConversationId, messages, sendMessage, getOrCreateDirectConversation, createGroupConversation, markConversationRead, startCall, activeCall, callConnecting, setCallConnecting, setToast, editMessage, deleteMessage, sendFileMessage, hideConversationForMe, addGroupMembers, removeGroupMember, leaveGroupConversation, setMyPresenceStatus }) {
   const [search, setSearch] = useState("");
   const [messageText, setMessageText] = useState("");
   const [leftTab, setLeftTab] = useState("chats"); // "chats" | "people"
@@ -4159,6 +4253,8 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState("");
   const [hoveredId, setHoveredId] = useState(null);
+  const [addMembersOpen, setAddMembersOpen] = useState(false);
+  const [profileModalUserId, setProfileModalUserId] = useState(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -4193,7 +4289,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
   // Legacy groups (created before `createdBy` existed) fall back to
   // allowing any current member to manage it, rather than locking everyone
   // out of a feature that predates the field.
-  const canManageGroup = activeConversation?.type === "group" && (!activeConversation.createdBy || activeConversation.createdBy === user.id || user.role === "OWNER" || user.role === "ADMIN");
+  const canManageGroup = activeConversation?.type === "group" && (!activeConversation.createdBy || activeConversation.createdBy === user.id || user.role === "ADMIN" || user.role === "ADMIN");
   const groupMembers = activeConversation?.type === "group" ? activeConversation.participantIds.map(id => ({ id, u: users.find(u => u.id === id), name: activeConversation.participantNames?.[id] || "?" })) : [];
   const addableContacts = contacts.filter(c => !activeConversation?.participantIds?.includes(c.u.id));
 
@@ -4240,7 +4336,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
     await deleteMessage(activeConversationId, m.id);
   }
   async function handleDeleteChat() {
-    if (!window.confirm("Delete this chat from your list? The other participant(s) will keep their copy — it'll come back for you if anyone sends a new message.")) return;
+    if (!window.confirm("Delete this chat from your list? The other participant(s) will keep their copy â€” it'll come back for you if anyone sends a new message.")) return;
     setMenuOpen(false);
     await hideConversationForMe(activeConversationId);
   }
@@ -4260,45 +4356,45 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
   const inCallWithThisConvo = activeCall && activeCall.conversationId === activeConversationId;
 
   return (
-    <div className="cly-fade-in" style={{ display: "flex", height: "calc(100vh - 130px)", background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 12, overflow: "hidden", margin: 4 }}>
-      <div className={`cly-chat-list${activeConversation ? " cly-hide-mobile" : ""}`} style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column" }}>
-        <div style={{ padding: 14, borderBottom: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column", gap: 10 }}>
+    <div className="cly-fade-in" style={{ display: "flex", height: "calc(100vh - 130px)", background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 12, overflow: "hidden", margin: 4 }}>
+      <div className={`cly-chat-list${activeConversation ? " cly-hide-mobile" : ""}`} style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${'var(--color-line)'}`, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: 14, borderBottom: `1px solid ${'var(--color-line)'}`, display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ position: "relative" }}>
-            <button onClick={() => setStatusOpen(o => !o)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: COLORS.cream, border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "7px 10px", textAlign: "left" }}>
+            <button onClick={() => setStatusOpen(o => !o)} className="cly-btn" style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: 'var(--color-cream)', border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, padding: "7px 10px", textAlign: "left" }}>
               <span style={{ position: "relative", flexShrink: 0 }}>
                 <span style={{ width: 22, height: 22, borderRadius: "50%", background: peopleColorFor(user.name), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9.5, fontWeight: 700 }}>{peopleInitials(user.name)}</span>
                 <span style={{ position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%", background: myPresence.color, border: "1.5px solid #fff" }} />
               </span>
               <span style={{ fontSize: 12, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{myPresence.label}</span>
-              <ChevronDown size={13} style={{ color: COLORS.mute }} />
+              <ChevronDown size={13} style={{ color: 'var(--color-mute)' }} />
             </button>
             {statusOpen && (
-              <div style={{ position: "absolute", top: "110%", left: 0, right: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 30, padding: 8 }}>
+              <div style={{ position: "absolute", top: "110%", left: 0, right: 0, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 30, padding: 8 }}>
                 {[["auto", "Automatic (based on activity)"], ["online", "Online"], ["dnd", "Do Not Disturb"], ["offline", "Appear offline"]].map(([val, label]) => (
-                  <button key={val} onClick={() => { setMyPresenceStatus(val); setStatusOpen(false); }} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 8px", background: (myLiveUser.presenceStatus || "auto") === val ? COLORS.cream : "none", border: "none", borderRadius: 6, fontSize: 12.5 }}>
+                  <button key={val} onClick={() => { setMyPresenceStatus(val); setStatusOpen(false); }} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 8px", background: (myLiveUser.presenceStatus || "auto") === val ? 'var(--color-cream)' : "none", border: "none", borderRadius: 6, fontSize: 12.5 }}>
                     {label}
                   </button>
                 ))}
                 <div style={{ display: "flex", gap: 6, padding: "6px 8px 2px" }}>
-                  <input value={customStatusText} onChange={e => setCustomStatusText(e.target.value)} placeholder="Custom status…" style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }} />
-                  <button onClick={() => { setMyPresenceStatus("custom", customStatusText); setStatusOpen(false); }} disabled={!customStatusText.trim()} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 6, padding: "0 10px", fontSize: 12, opacity: customStatusText.trim() ? 1 : 0.5 }}>Set</button>
+                  <input value={customStatusText} onChange={e => setCustomStatusText(e.target.value)} placeholder="Custom statusÃ¢â‚¬Â¦" style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }} />
+                  <button onClick={() => { setMyPresenceStatus("custom", customStatusText); setStatusOpen(false); }} disabled={!customStatusText.trim()} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", border: "none", borderRadius: 6, padding: "0 10px", fontSize: 12, opacity: customStatusText.trim() ? 1 : 0.5 }}>Set</button>
                 </div>
               </div>
             )}
           </div>
           <div style={{ position: "relative" }}>
-            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: COLORS.mute }} />
+            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: 'var(--color-mute)' }} />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search people or chats" style={{ ...inputStyle, paddingLeft: 30 }} />
           </div>
           <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={() => setLeftTab("chats")} className="cly-btn" style={{ flex: 1, padding: "7px 0", borderRadius: 7, fontSize: 12.5, fontWeight: 700, background: leftTab === "chats" ? COLORS.ink : "#fff", color: leftTab === "chats" ? "#fff" : COLORS.text, border: `1px solid ${leftTab === "chats" ? COLORS.ink : COLORS.line}` }}>Chats</button>
-            <button onClick={() => setLeftTab("people")} className="cly-btn" style={{ flex: 1, padding: "7px 0", borderRadius: 7, fontSize: 12.5, fontWeight: 700, background: leftTab === "people" ? COLORS.ink : "#fff", color: leftTab === "people" ? "#fff" : COLORS.text, border: `1px solid ${leftTab === "people" ? COLORS.ink : COLORS.line}` }}>People</button>
+            <button onClick={() => setLeftTab("chats")} className="cly-btn" style={{ flex: 1, padding: "7px 0", borderRadius: 7, fontSize: 12.5, fontWeight: 700, background: leftTab === "chats" ? 'var(--color-ink)' : "#fff", color: leftTab === "chats" ? "#fff" : 'var(--color-text)', border: `1px solid ${leftTab === "chats" ? 'var(--color-ink)' : 'var(--color-line)'}` }}>Chats</button>
+            <button onClick={() => setLeftTab("people")} className="cly-btn" style={{ flex: 1, padding: "7px 0", borderRadius: 7, fontSize: 12.5, fontWeight: 700, background: leftTab === "people" ? 'var(--color-ink)' : "#fff", color: leftTab === "people" ? "#fff" : 'var(--color-text)', border: `1px solid ${leftTab === "people" ? 'var(--color-ink)' : 'var(--color-line)'}` }}>People</button>
           </div>
         </div>
         <div style={{ overflowY: "auto", flex: 1 }}>
           {leftTab === "chats" ? (
             sortedConversations.length === 0 ? (
-              <div style={{ padding: "16px 14px", fontSize: 12, color: COLORS.mute }}>No chats yet — start one from the People tab.</div>
+              <div style={{ padding: "16px 14px", fontSize: 12, color: 'var(--color-mute)' }}>No chats yet â€” start one from the People tab.</div>
             ) : sortedConversations.map(c => {
               const label = conversationLabel(c, user);
               const other = c.type === "direct" ? users.find(u => u.id === c.participantIds.find(id => id !== user.id)) : null;
@@ -4306,7 +4402,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
               const unread = conversationUnread(c);
               return (
                 <button key={c.id} onClick={() => setActiveConversationId(c.id)} className="cly-btn" style={{
-                  display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 14px", background: activeConversationId === c.id ? COLORS.cream : "transparent", border: "none", textAlign: "left",
+                  display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 14px", background: activeConversationId === c.id ? 'var(--color-cream)' : "transparent", border: "none", textAlign: "left",
                 }}>
                   <div style={{ position: "relative", flexShrink: 0 }}>
                     <div style={{ width: 34, height: 34, borderRadius: "50%", background: peopleColorFor(label), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
@@ -4316,21 +4412,21 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                   </div>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ fontSize: 13, fontWeight: unread ? 700 : 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
-                    <div style={{ fontSize: 11.5, color: unread ? COLORS.text : COLORS.mute, fontWeight: unread ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <div style={{ fontSize: 11.5, color: unread ? 'var(--color-text)' : 'var(--color-mute)', fontWeight: unread ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {c.lastMessageText || "No messages yet"}
                     </div>
                   </div>
-                  {unread && <span style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.data, flexShrink: 0 }} />}
+                  {unread && <span style={{ width: 8, height: 8, borderRadius: "50%", background: 'var(--color-products)', flexShrink: 0 }} />}
                 </button>
               );
             })
           ) : (
             <>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px 4px" }}>
-                <span style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.mute, letterSpacing: 0.5 }}>PEOPLE</span>
-                <button onClick={() => setGroupOpen(true)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.data, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>+ New group</button>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--color-mute)', letterSpacing: 0.5 }}>PEOPLE</span>
+                <button onClick={() => setGroupOpen(true)} className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-products)', fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>+ New group</button>
               </div>
-              {contacts.length === 0 && <div style={{ padding: "8px 14px", fontSize: 12, color: COLORS.mute }}>No one else is linked to a portal account yet.</div>}
+              {contacts.length === 0 && <div style={{ padding: "8px 14px", fontSize: 12, color: 'var(--color-mute)' }}>No one else is linked to a portal account yet.</div>}
               {contacts.map(c => {
                 const p = getPresenceDisplay(c.u);
                 return (
@@ -4344,7 +4440,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                       </div>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.u.name}</div>
-                        <div style={{ fontSize: 11, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.label}</div>
+                        <div style={{ fontSize: 11, color: 'var(--color-mute)', overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.label}</div>
                       </div>
                     </button>
                     <button
@@ -4352,7 +4448,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                       title={`Video call ${c.u.name}`}
                       onClick={async () => { const cid = await getOrCreateDirectConversation(c.u.id, c.u.name); startCall(c.u.id, c.u.name, cid, "video"); }}
                       className="cly-btn"
-                      style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", flexShrink: 0, opacity: (!!activeCall || callConnecting) ? 0.4 : 1 }}
+                      style={{ background: "none", border: "none", color: 'var(--color-mute)', cursor: "pointer", flexShrink: 0, opacity: (!!activeCall || callConnecting) ? 0.4 : 1 }}
                     >
                       <Video size={15} />
                     </button>
@@ -4369,16 +4465,25 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
           <EmptyState icon={MessageSquare} title="Pick a chat" body="Select someone from People, or an existing chat, to start messaging." />
         ) : (
           <>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: `1px solid ${COLORS.line}`, position: "relative" }}>
-              <button onClick={() => setActiveConversationId(null)} className="cly-mobile-only cly-btn" style={{ background: "none", border: "none", color: COLORS.text, padding: 4, flexShrink: 0 }} aria-label="Back to chats">
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: `1px solid ${'var(--color-line)'}`, position: "relative" }}>
+              <button onClick={() => setActiveConversationId(null)} className="cly-mobile-only cly-btn" style={{ background: "none", border: "none", color: 'var(--color-text)', padding: 4, flexShrink: 0 }} aria-label="Back to chats">
                 <ChevronRight size={18} style={{ transform: "rotate(180deg)" }} />
               </button>
               <div style={{ width: 34, height: 34, borderRadius: "50%", background: peopleColorFor(conversationLabel(activeConversation, user)), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
                 {activeConversation.type === "group" ? <UsersRound size={15} /> : peopleInitials(conversationLabel(activeConversation, user))}
               </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 700 }}>{conversationLabel(activeConversation, user)}</div>
-                <div style={{ fontSize: 11.5, color: COLORS.mute }}>
+              <div 
+                style={{ flex: 1, minWidth: 0, cursor: activeConversation.type === "direct" && otherParticipant?.u ? "pointer" : "default" }}
+                onClick={() => {
+                  if (activeConversation.type === "direct" && otherParticipant?.u) {
+                    setProfileModalUserId(otherParticipant.id);
+                  }
+                }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 700, display: "inline-block" }} className={activeConversation.type === "direct" && otherParticipant?.u ? "cly-hover-underline" : ""}>
+                  {conversationLabel(activeConversation, user)}
+                </div>
+                <div style={{ fontSize: 11.5, color: 'var(--color-mute)' }}>
                   {activeConversation.type === "group" ? `${activeConversation.participantIds.length} members` : (otherParticipant?.u ? getPresenceDisplay(otherParticipant.u).label : "Offline")}
                 </div>
               </div>
@@ -4390,64 +4495,98 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                     onClick={() => startCall(otherParticipant.id, otherParticipant.u.name, activeConversation.id, "audio")}
                     title="Start an audio call"
                     className="cly-btn"
-                    style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
+                    style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
                   >
                     <Phone size={14} />
                   </button>
                   <button
-                    disabled={!!activeCall || callConnecting}
-                    onClick={() => startCall(otherParticipant.id, otherParticipant.u.name, activeConversation.id, "video")}
-                    title="Start a video call"
+                    disabled={callConnecting}
+                    onClick={async () => {
+                      setCallConnecting(true);
+                      try {
+                        if (!auth.currentUser) throw new Error("Not logged in");
+                        const token = await auth.currentUser.getIdToken();
+                        const res = await fetch("/api/createMeet", { headers: { "Authorization": "Bearer " + token } });
+                        if (!res.ok) throw new Error();
+                        const data = await res.json();
+                        await sendMessage(activeConversation.id, "Join my Google Meet: " + data.meetLink);
+                        window.open(data.meetLink, "_blank");
+                      } catch (err) {
+                        setToast({ msg: "Failed to generate Meet link", type: "error" });
+                      } finally {
+                        setCallConnecting(false);
+                      }
+                    }}
+                    title="Start a Google Meet video call"
                     className="cly-btn"
-                    style={{ display: "flex", alignItems: "center", gap: 6, background: inCallWithThisConvo ? COLORS.success : COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
+                    style={{ display: "flex", alignItems: "center", gap: 6, background: 'var(--color-ink)', color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, opacity: callConnecting ? 0.5 : 1 }}
                   >
-                    <Video size={14} /> {inCallWithThisConvo ? "In call" : "Video call"}
+                    <Video size={14} /> Video call
                   </button>
                 </div>
               )}
 
               {activeConversation.type === "group" && (
-                <div style={{ position: "relative" }}>
+                <div style={{ position: "relative", display: "flex", gap: 8 }}>
+                  <button onClick={async () => {
+                    setCallConnecting(true);
+                    try {
+                      if (!auth.currentUser) throw new Error("Not logged in");
+                      const token = await auth.currentUser.getIdToken();
+                      const res = await fetch("/api/createMeet", { headers: { "Authorization": "Bearer " + token } });
+                      if (!res.ok) throw new Error();
+                      const data = await res.json();
+                      await sendMessage(activeConversation.id, "Join Google Meet: " + data.meetLink);
+                    } catch (err) {
+                      setToast({ msg: "Failed to generate Meet link", type: "error" });
+                    } finally {
+                      setCallConnecting(false);
+                    }
+                  }} className="cly-btn" disabled={!!activeCall || callConnecting} style={{ display: "flex", alignItems: "center", gap: 6, background: 'var(--color-media)', color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}>
+                    <Video size={14} /> Group Meet
+                  </button>
+                  <div style={{ position: "relative" }}>
                   <button
                     disabled={!!activeCall || callConnecting}
                     onClick={() => setCallPickerOpen(o => !o)}
                     title="Start a video call with one member"
                     className="cly-btn"
-                    style={{ display: "flex", alignItems: "center", gap: 6, background: inCallWithThisConvo ? COLORS.success : COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
+                    style={{ display: "flex", alignItems: "center", gap: 6, background: inCallWithThisConvo ? 'var(--color-success)' : 'var(--color-ink)', color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, opacity: (!!activeCall || callConnecting) ? 0.5 : 1 }}
                   >
                     <Video size={14} /> {inCallWithThisConvo ? "In call" : "Video call"}
                   </button>
                   {callPickerOpen && (
-                    <div style={{ position: "absolute", top: "110%", right: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 240, zIndex: 20, overflow: "hidden" }}>
-                      <div style={{ padding: "8px 12px", fontSize: 11, fontWeight: 700, color: COLORS.mute, borderBottom: `1px solid ${COLORS.line}` }}>Call a member — video is 1:1 only</div>
+                    <div style={{ position: "absolute", top: "110%", right: 0, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 240, zIndex: 20, overflow: "hidden" }}>
+                      <div style={{ padding: "8px 12px", fontSize: 11, fontWeight: 700, color: 'var(--color-mute)', borderBottom: `1px solid ${'var(--color-line)'}` }}>Call a member â€” video is 1:1 only</div>
                       {groupMembers.filter(m => m.id !== user.id && m.u).map(m => (
                         <div key={m.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 12px" }}>
                           <span style={{ fontSize: 13 }}>{m.name}</span>
                           <div style={{ display: "flex", gap: 6 }}>
-                            <button onClick={() => { setCallPickerOpen(false); startCall(m.id, m.name, activeConversation.id, "audio"); }} title="Audio call" className="cly-btn" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: "4px 6px" }}><Phone size={12} /></button>
-                            <button onClick={() => { setCallPickerOpen(false); startCall(m.id, m.name, activeConversation.id, "video"); }} title="Video call" className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 6, padding: "4px 6px" }}><Video size={12} /></button>
+                            <button onClick={() => { setCallPickerOpen(false); startCall(m.id, m.name, activeConversation.id, "audio"); }} title="Audio call" className="cly-btn" style={{ background: "none", border: `1px solid ${'var(--color-line)'}`, borderRadius: 6, padding: "4px 6px" }}><Phone size={12} /></button>
+                            <button onClick={() => { setCallPickerOpen(false); startCall(m.id, m.name, activeConversation.id, "video"); }} title="Video call" className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", border: "none", borderRadius: 6, padding: "4px 6px" }}><Video size={12} /></button>
                           </div>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
+                </div>
               )}
 
               <div style={{ position: "relative" }}>
-                <button onClick={() => setMenuOpen(o => !o)} className="cly-btn" title="Chat options" style={{ background: "none", border: "none", color: COLORS.mute, padding: 6, cursor: "pointer" }}>
+                <button onClick={() => setMenuOpen(o => !o)} className="cly-btn" title="Chat options" style={{ background: "none", border: "none", color: 'var(--color-mute)', padding: 6, cursor: "pointer" }}>
                   <ChevronDown size={18} />
                 </button>
                 {menuOpen && (
-                  <div style={{ position: "absolute", top: "110%", right: 0, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 190, zIndex: 20, overflow: "hidden" }}>
+                  <div style={{ position: "absolute", top: "110%", right: 0, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", width: 190, zIndex: 20, overflow: "hidden" }}>
                     {activeConversation.type === "group" && (
                       <button onClick={() => { setMenuOpen(false); setMembersOpen(true); }} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", background: "none", border: "none", fontSize: 13 }}>Manage members</button>
                     )}
                     {activeConversation.type === "group" && (
-                      <button onClick={handleLeaveGroup} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", background: "none", border: "none", fontSize: 13, borderTop: `1px solid ${COLORS.line}` }}>Leave group</button>
+                      <button onClick={handleLeaveGroup} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", background: "none", border: "none", fontSize: 13, borderTop: `1px solid ${'var(--color-line)'}` }}>Leave group</button>
                     )}
                     {(activeConversation.type === "direct" || canManageGroup) && (
-                      <button onClick={handleDeleteChat} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", background: "none", border: "none", fontSize: 13, color: COLORS.danger, borderTop: `1px solid ${COLORS.line}` }}>Delete chat</button>
+                      <button onClick={handleDeleteChat} className="cly-btn" style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", background: "none", border: "none", fontSize: 13, color: 'var(--color-danger)', borderTop: `1px solid ${'var(--color-line)'}` }}>Delete chat</button>
                     )}
                   </div>
                 )}
@@ -4455,12 +4594,12 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
             </div>
 
             <div style={{ flex: 1, overflowY: "auto", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
-              {messages.length === 0 && <div style={{ fontSize: 12.5, color: COLORS.mute, textAlign: "center", marginTop: 20 }}>No messages yet — say hello.</div>}
+              {messages.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--color-mute)', textAlign: "center", marginTop: 20 }}>No messages yet â€” say hello.</div>}
               {messages.map(m => {
                 if (m.type === "call_log") {
                   return (
-                    <div key={m.id} style={{ textAlign: "center", fontSize: 11.5, color: COLORS.mute, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                      <Video size={12} /> {m.text} · {formatClockTime(m.createdAt)}
+                    <div key={m.id} style={{ textAlign: "center", fontSize: 11.5, color: 'var(--color-mute)', display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                      <Video size={12} /> {m.text} Ã‚Â· {formatClockTime(m.createdAt)}
                     </div>
                   );
                 }
@@ -4469,16 +4608,16 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                 return (
                   <div key={m.id} onMouseEnter={() => setHoveredId(m.id)} onMouseLeave={() => setHoveredId(h => h === m.id ? null : h)}
                     style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
-                    {!mine && activeConversation.type === "group" && <div style={{ fontSize: 10.5, color: COLORS.mute, marginBottom: 2, marginLeft: 4 }}>{m.senderName}</div>}
+                    {!mine && activeConversation.type === "group" && <div style={{ fontSize: 10.5, color: 'var(--color-mute)', marginBottom: 2, marginLeft: 4 }}>{m.senderName}</div>}
                     {isEditing ? (
                       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         <input value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") saveEdit(m); if (e.key === "Escape") setEditingId(null); }} autoFocus style={{ ...inputStyle, width: 220 }} />
-                        <button onClick={() => saveEdit(m)} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 6, padding: "6px 10px", fontSize: 11.5 }}>Save</button>
-                        <button onClick={() => setEditingId(null)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, fontSize: 11.5 }}>Cancel</button>
+                        <button onClick={() => saveEdit(m)} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", border: "none", borderRadius: 6, padding: "6px 10px", fontSize: 11.5 }}>Save</button>
+                        <button onClick={() => setEditingId(null)} className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', fontSize: 11.5 }}>Cancel</button>
                       </div>
                     ) : (
                       // A plain block/inline-block sized by the normal CSS box
-                      // model (content size, capped at maxWidth) — not a flex
+                      // model (content size, capped at maxWidth) â€” not a flex
                       // item, so there's no flex-shrink math that can collapse
                       // it. The hover action icons are absolutely positioned
                       // beside it, entirely outside normal flow, so they can
@@ -4494,15 +4633,15 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                               <img src={m.fileData} alt={m.fileName} style={{ maxWidth: 220, maxHeight: 220, borderRadius: 12, display: "block" }} />
                             </a>
                           ) : (
-                            <a href={m.fileData} download={m.fileName} style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.cream, borderRadius: 14, padding: "9px 13px", fontSize: 13, color: COLORS.text, textDecoration: "none" }}>
+                            <a href={m.fileData} download={m.fileName} style={{ display: "flex", alignItems: "center", gap: 8, background: 'var(--color-cream)', borderRadius: 14, padding: "9px 13px", fontSize: 13, color: 'var(--color-text)', textDecoration: "none" }}>
                               <FileIcon size={16} /> <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.fileName}</span>
-                              <span style={{ color: COLORS.mute, fontSize: 11 }}>{Math.round((m.fileSize || 0) / 1000)}KB</span>
+                              <span style={{ color: 'var(--color-mute)', fontSize: 11 }}>{Math.round((m.fileSize || 0) / 1000)}KB</span>
                             </a>
                           )
                         ) : (
-                          <div style={{ background: mine ? COLORS.ink : COLORS.cream, color: mine ? "#fff" : COLORS.text, borderRadius: 14, padding: "9px 13px", fontSize: 13.5 }}>
+                          <div style={{ background: mine ? 'var(--color-ink)' : 'var(--color-cream)', color: mine ? "#fff" : 'var(--color-text)', borderRadius: 14, padding: "9px 13px", fontSize: 13.5 }}>
                             {m.replyTo && (
-                              <div style={{ borderLeft: `2px solid ${mine ? "rgba(255,255,255,0.4)" : COLORS.line}`, paddingLeft: 8, marginBottom: 5, opacity: 0.8 }}>
+                              <div style={{ borderLeft: `2px solid ${mine ? "rgba(255,255,255,0.4)" : 'var(--color-line)'}`, paddingLeft: 8, marginBottom: 5, opacity: 0.8 }}>
                                 <div style={{ fontSize: 10.5, fontWeight: 700 }}>{m.replyTo.senderName}</div>
                                 <div style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.replyTo.text}</div>
                               </div>
@@ -4514,22 +4653,22 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                           <div style={{
                             position: "absolute", top: "50%", transform: "translateY(-50%)",
                             ...(mine ? { right: "100%", marginRight: 6 } : { left: "100%", marginLeft: 6 }),
-                            display: "flex", gap: 2, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 3,
+                            display: "flex", gap: 2, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, padding: 3,
                             boxShadow: "0 2px 8px rgba(0,0,0,0.12)", whiteSpace: "nowrap", zIndex: 5,
                           }}>
-                            <button onClick={() => setReplyingTo(m)} title="Reply" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><MessageSquare size={12} /></button>
+                            <button onClick={() => setReplyingTo(m)} title="Reply" className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', cursor: "pointer", padding: 3 }}><MessageSquare size={12} /></button>
                             {mine && (
                               <>
-                                {m.type !== "file" && <button onClick={() => startEdit(m)} title="Edit" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Pencil size={12} /></button>}
-                                <button onClick={() => handleDeleteMessage(m)} title="Delete" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", padding: 3 }}><Trash2 size={12} /></button>
+                                {m.type !== "file" && <button onClick={() => startEdit(m)} title="Edit" className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', cursor: "pointer", padding: 3 }}><Pencil size={12} /></button>}
+                                <button onClick={() => handleDeleteMessage(m)} title="Delete" className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', cursor: "pointer", padding: 3 }}><Trash2 size={12} /></button>
                               </>
                             )}
                           </div>
                         )}
                       </div>
                     )}
-                    <div style={{ fontSize: 10, color: COLORS.mute, marginTop: 2, marginLeft: mine ? 0 : 4, marginRight: mine ? 4 : 0 }}>
-                      {formatClockTime(m.createdAt)}{m.editedAt ? " · edited" : ""}
+                    <div style={{ fontSize: 10, color: 'var(--color-mute)', marginTop: 2, marginLeft: mine ? 0 : 4, marginRight: mine ? 4 : 0 }}>
+                      {formatClockTime(m.createdAt)}{m.editedAt ? " Ã‚Â· edited" : ""}
                     </div>
                   </div>
                 );
@@ -4537,30 +4676,30 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
               <div ref={messagesEndRef} />
             </div>
             {replyingTo && (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 14px", borderTop: `1px solid ${COLORS.line}`, background: COLORS.cream }}>
-                <div style={{ minWidth: 0, borderLeft: `2px solid ${COLORS.data}`, paddingLeft: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 14px", borderTop: `1px solid ${'var(--color-line)'}`, background: 'var(--color-cream)' }}>
+                <div style={{ minWidth: 0, borderLeft: `2px solid ${'var(--color-products)'}`, paddingLeft: 8 }}>
                   <div style={{ fontSize: 11, fontWeight: 700 }}>Replying to {replyingTo.senderName}</div>
-                  <div style={{ fontSize: 11.5, color: COLORS.mute, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {replyingTo.type === "file" ? `📎 ${replyingTo.fileName}` : replyingTo.text}
+                  <div style={{ fontSize: 11.5, color: 'var(--color-mute)', overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {replyingTo.type === "file" ? `Ã°Å¸â€œÅ½ ${replyingTo.fileName}` : replyingTo.text}
                   </div>
                 </div>
-                <button onClick={() => setReplyingTo(null)} className="cly-btn" style={{ background: "none", border: "none", color: COLORS.mute, cursor: "pointer", flexShrink: 0 }}><X size={14} /></button>
+                <button onClick={() => setReplyingTo(null)} className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-mute)', cursor: "pointer", flexShrink: 0 }}><X size={14} /></button>
               </div>
             )}
-            <div style={{ display: "flex", gap: 10, padding: 14, borderTop: replyingTo ? "none" : `1px solid ${COLORS.line}`, alignItems: "flex-end" }}>
+            <div style={{ display: "flex", gap: 10, padding: 14, borderTop: replyingTo ? "none" : `1px solid ${'var(--color-line)'}`, alignItems: "flex-end" }}>
               <input ref={fileInputRef} type="file" onChange={handleFileChange} style={{ display: "none" }} />
-              <button onClick={handleFileClick} title="Attach a file (up to 500KB)" className="cly-btn" style={{ background: "none", border: `1px solid ${COLORS.line}`, borderRadius: 8, width: 40, height: 40, color: COLORS.mute, flexShrink: 0 }}>
+              <button onClick={handleFileClick} title="Attach a file (up to 500KB)" className="cly-btn" style={{ background: "none", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, width: 40, height: 40, color: 'var(--color-mute)', flexShrink: 0 }}>
                 <FileIcon size={16} />
               </button>
               <textarea
                 value={messageText}
                 onChange={e => setMessageText(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                placeholder="Write a message…"
+                placeholder="Write a messageÃ¢â‚¬Â¦"
                 rows={1}
                 style={{ ...inputStyle, resize: "none", flex: 1, fontFamily: "inherit" }}
               />
-              <button onClick={handleSend} disabled={!messageText.trim() || sending} className="cly-btn" style={{ background: COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "0 16px", height: 40, opacity: (!messageText.trim() || sending) ? 0.5 : 1 }}>
+              <button onClick={handleSend} disabled={!messageText.trim() || sending} className="cly-btn" style={{ background: 'var(--color-ink)', color: "#fff", border: "none", borderRadius: 8, padding: "0 16px", height: 40, opacity: (!messageText.trim() || sending) ? 0.5 : 1 }}>
                 <Send size={16} />
               </button>
             </div>
@@ -4575,11 +4714,11 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
               <input value={groupName} onChange={e => setGroupName(e.target.value)} placeholder="e.g. Creative Team" style={inputStyle} />
             </Field>
             <Field label="Members">
-              <div style={{ display: "grid", gap: 6, maxHeight: 220, overflowY: "auto", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 8 }}>
+              <div style={{ display: "grid", gap: 6, maxHeight: 220, overflowY: "auto", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, padding: 8 }}>
                 {contacts.map(c => (
                   <label key={c.u.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "4px 4px" }}>
                     <input type="checkbox" checked={groupSelection.includes(c.u.id)} onChange={() => toggleGroupMember(c.u.id)} />
-                    {c.u.name} <span style={{ color: COLORS.mute, fontSize: 11.5 }}>· {c.person ? c.person.department : ROLE_META[c.u.role]?.label}</span>
+                    {c.u.name} <span style={{ color: 'var(--color-mute)', fontSize: 11.5 }}>Ã‚Â· {c.person ? c.person.department : ROLE_META[c.u.role]?.label}</span>
                   </label>
                 ))}
               </div>
@@ -4588,7 +4727,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
               disabled={!groupName.trim() || groupSelection.length === 0}
               onClick={handleCreateGroup}
               className="cly-btn"
-              style={{ background: COLORS.ink, color: "#fff", borderRadius: 8, padding: "10px 0", fontSize: 13.5, fontWeight: 700, opacity: (!groupName.trim() || groupSelection.length === 0) ? 0.5 : 1 }}
+              style={{ background: 'var(--color-ink)', color: "#fff", borderRadius: 8, padding: "10px 0", fontSize: 13.5, fontWeight: 700, opacity: (!groupName.trim() || groupSelection.length === 0) ? 0.5 : 1 }}
             >
               Create group
             </button>
@@ -4601,12 +4740,12 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
           <div style={{ display: "grid", gap: 14 }}>
             <div>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Current members ({groupMembers.length})</div>
-              <div style={{ display: "grid", gap: 6, maxHeight: 180, overflowY: "auto", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 8 }}>
+              <div style={{ display: "grid", gap: 6, maxHeight: 180, overflowY: "auto", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, padding: 8 }}>
                 {groupMembers.map(m => (
                   <div key={m.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13, padding: "3px 2px" }}>
                     <span>{m.name}{m.id === user.id ? " (you)" : ""}</span>
                     {canManageGroup && m.id !== user.id && (
-                      <button onClick={() => removeGroupMember(activeConversation, m.id)} title="Remove" className="cly-btn" style={{ background: "none", border: "none", color: COLORS.danger, cursor: "pointer" }}><X size={14} /></button>
+                      <button onClick={() => removeGroupMember(activeConversation, m.id)} title="Remove" className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-danger)', cursor: "pointer" }}><X size={14} /></button>
                     )}
                   </div>
                 ))}
@@ -4615,10 +4754,10 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
             <div>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Add members</div>
               {addableContacts.length === 0 ? (
-                <div style={{ fontSize: 12.5, color: COLORS.mute }}>Everyone's already in this group.</div>
+                <div style={{ fontSize: 12.5, color: 'var(--color-mute)' }}>Everyone's already in this group.</div>
               ) : (
                 <>
-                  <div style={{ display: "grid", gap: 6, maxHeight: 160, overflowY: "auto", border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: 8 }}>
+                  <div style={{ display: "grid", gap: 6, maxHeight: 160, overflowY: "auto", border: `1px solid ${'var(--color-line)'}`, borderRadius: 8, padding: 8 }}>
                     {addableContacts.map(c => (
                       <label key={c.u.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
                         <input type="checkbox" checked={addMemberSelection.includes(c.u.id)} onChange={() => setAddMemberSelection(sel => sel.includes(c.u.id) ? sel.filter(id => id !== c.u.id) : [...sel, c.u.id])} />
@@ -4627,7 +4766,7 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
                     ))}
                   </div>
                   <button disabled={addMemberSelection.length === 0} onClick={handleAddMembers} className="cly-btn"
-                    style={{ marginTop: 10, background: COLORS.ink, color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", width: "100%", fontSize: 13, fontWeight: 700, opacity: addMemberSelection.length === 0 ? 0.5 : 1 }}>
+                    style={{ marginTop: 10, background: 'var(--color-ink)', color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", width: "100%", fontSize: 13, fontWeight: 700, opacity: addMemberSelection.length === 0 ? 0.5 : 1 }}>
                     Add selected
                   </button>
                 </>
@@ -4636,11 +4775,19 @@ function CommunicationPage({ user, users, people, conversations, activeConversat
           </div>
         </Modal>
       )}
+
+      {profileModalUserId && (
+        <ProfileDetailsModal
+          user={users.find(u => u.id === profileModalUserId)}
+          person={people.find(p => p.id === profileModalUserId)}
+          onClose={() => setProfileModalUserId(null)}
+        />
+      )}
     </div>
   );
 }
 
-// Global overlay for incoming/active calls — mounted once at the app root
+// Global overlay for incoming/active calls â€” mounted once at the app root
 // so a call rings (and stays connected) no matter which page you're on.
 function CallOverlay({ incomingCall, activeCall, callConnecting, localStream, remoteStream, onAnswer, onDecline, onEnd }) {
   const localVideoRef = useRef(null);
@@ -4654,7 +4801,7 @@ function CallOverlay({ incomingCall, activeCall, callConnecting, localStream, re
   useEffect(() => { if (localVideoRef.current) localVideoRef.current.srcObject = localStream || null; }, [localStream]);
   useEffect(() => { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream || null; }, [remoteStream]);
 
-  // Simple two-tone ringtone, synthesized on the fly — no audio file to
+  // Simple two-tone ringtone, synthesized on the fly â€” no audio file to
   // host. Plays on a loop while there's an incoming call not yet answered.
   useEffect(() => {
     function stopRing() {
@@ -4714,22 +4861,22 @@ function CallOverlay({ incomingCall, activeCall, callConnecting, localStream, re
 
   if (incomingCall && !activeCall) {
     return (
-      <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,0.18)", padding: 18, width: 300 }}>
+      <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: "#fff", border: `1px solid ${'var(--color-line)'}`, borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,0.18)", padding: 18, width: 300 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
           <div style={{ width: 40, height: 40, borderRadius: "50%", background: peopleColorFor(incomingCall.callerName), color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700 }}>
             {peopleInitials(incomingCall.callerName)}
           </div>
           <div>
             <div style={{ fontSize: 13.5, fontWeight: 700 }}>{incomingCall.callerName}</div>
-            <div style={{ fontSize: 11.5, color: COLORS.mute, display: "flex", alignItems: "center", gap: 4 }}><PhoneIncoming size={12} /> Incoming video call…</div>
+            <div style={{ fontSize: 11.5, color: 'var(--color-mute)', display: "flex", alignItems: "center", gap: 4 }}><PhoneIncoming size={12} /> Incoming video callÃ¢â‚¬Â¦</div>
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={onDecline} className="cly-btn" style={{ flex: 1, background: "#fff", border: `1px solid ${COLORS.dangerSoft}`, color: COLORS.danger, borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>
+          <button onClick={onDecline} className="cly-btn" style={{ flex: 1, background: "#fff", border: `1px solid ${'var(--color-dangerSoft)'}`, color: 'var(--color-danger)', borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>
             <PhoneOff size={14} style={{ verticalAlign: -2, marginRight: 5 }} />Decline
           </button>
-          <button disabled={callConnecting} onClick={onAnswer} className="cly-btn" style={{ flex: 1, background: COLORS.success, color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>
-            <Phone size={14} style={{ verticalAlign: -2, marginRight: 5 }} />{callConnecting ? "Joining…" : "Answer"}
+          <button disabled={callConnecting} onClick={onAnswer} className="cly-btn" style={{ flex: 1, background: 'var(--color-success)', color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>
+            <Phone size={14} style={{ verticalAlign: -2, marginRight: 5 }} />{callConnecting ? "JoiningÃ¢â‚¬Â¦" : "Answer"}
           </button>
         </div>
       </div>
@@ -4748,7 +4895,7 @@ function CallOverlay({ incomingCall, activeCall, callConnecting, localStream, re
               <div style={{ width: 64, height: 64, borderRadius: "50%", background: peopleColorFor(otherName), display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 700, marginBottom: 12 }}>
                 {peopleInitials(otherName)}
               </div>
-              <div style={{ fontSize: 14 }}>{activeCall.role === "caller" ? `Calling ${otherName}…` : "Connecting…"}</div>
+              <div style={{ fontSize: 14 }}>{activeCall.role === "caller" ? `Calling ${otherName}Ã¢â‚¬Â¦` : "ConnectingÃ¢â‚¬Â¦"}</div>
             </div>
           )}
           <video ref={localVideoRef} autoPlay playsInline muted style={{ position: "absolute", bottom: 16, right: 16, width: 160, height: 110, objectFit: "cover", borderRadius: 10, border: "2px solid rgba(255,255,255,0.3)", transform: "scaleX(-1)" }} />
@@ -4763,7 +4910,7 @@ function CallOverlay({ incomingCall, activeCall, callConnecting, localStream, re
           <button onClick={toggleCamera} className="cly-btn" style={{ width: 46, height: 46, borderRadius: "50%", background: cameraOff ? "#fff" : "rgba(255,255,255,0.15)", color: cameraOff ? "#111" : "#fff", border: "none" }}>
             {cameraOff ? <VideoOff size={18} /> : <Video size={18} />}
           </button>
-          <button onClick={onEnd} className="cly-btn" style={{ width: 46, height: 46, borderRadius: "50%", background: COLORS.danger, color: "#fff", border: "none" }}>
+          <button onClick={onEnd} className="cly-btn" style={{ width: 46, height: 46, borderRadius: "50%", background: 'var(--color-danger)', color: "#fff", border: "none" }}>
             <PhoneOff size={18} />
           </button>
         </div>
@@ -4774,14 +4921,437 @@ function CallOverlay({ incomingCall, activeCall, callConnecting, localStream, re
   return null;
 }
 
+function CalendarPage({ user, users, people, events, createEvent, updateEvent, deleteEvent, notify }) {
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [viewMode, setViewMode] = useState("all"); // "all" | "company" | "my"
+  const [showForm, setShowForm] = useState(false);
+  const [selectedEvent, setSelectedEvent] = useState(null);
+  
+  // form state
+  const [title, setTitle] = useState("");
+  const [date, setDate] = useState(""); // YYYY-MM-DD
+  const [time, setTime] = useState(""); // HH:MM
+  const [duration, setDuration] = useState(60); // minutes
+  const [type, setType] = useState("company"); // company | huddle
+  const [attendees, setAttendees] = useState([]);
+  const [description, setDescription] = useState("");
+  const [creatingMeet, setCreatingMeet] = useState(false);
+
+  const filteredEvents = events.filter(e => {
+    if (viewMode === "company") return e.type === "company";
+    if (viewMode === "my") return e.organizerId === user.id || (e.attendees || []).includes(user.id);
+    return true; // all
+  });
+
+  const generateMeetLink = async () => {
+    try {
+      const res = await fetch("/api/createMeet", { headers: { "Authorization": `Bearer ${await auth.currentUser.getIdToken()}` } });
+      if (!res.ok) throw new Error("Failed to generate link");
+      const data = await res.json();
+      return data.meetLink;
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!title || !date || !time) {
+      notify("Please fill required fields", "error");
+      return;
+    }
+    setCreatingMeet(true);
+    let meetLink = await generateMeetLink();
+    if (!meetLink) {
+      notify("Warning: Could not auto-generate Meet link.", "error");
+    }
+    
+    createEvent({
+      title,
+      date,
+      time,
+      duration: parseInt(duration, 10),
+      type,
+      attendees,
+      description,
+      meetLink: meetLink || "",
+      organizerId: user.id,
+      createdAt: Date.now()
+    });
+    
+    notify("Event created!", "ok");
+    setShowForm(false);
+    setCreatingMeet(false);
+    setTitle(""); setDate(""); setTime(""); setDuration(60); setType("company"); setAttendees([]); setDescription("");
+  };
+
+  // Calendar logic
+  const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
+  const getFirstDayOfMonth = (year, month) => new Date(year, month, 1).getDay();
+  
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const daysInMonth = getDaysInMonth(year, month);
+  const firstDay = getFirstDayOfMonth(year, month);
+  
+  const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
+  const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
+  const today = new Date();
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20, height: "100%" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 15 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button className="cly-btn" onClick={prevMonth} style={{ background: "#fff", border: "1px solid " + 'var(--color-line)', color: 'var(--color-text)', padding: "6px 10px", borderRadius: 6 }}><ChevronRight size={16} style={{ transform: "rotate(180deg)" }} /></button>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--color-text)' }}>
+            {currentDate.toLocaleString('default', { month: 'long' })} {year}
+          </div>
+          <button className="cly-btn" onClick={nextMonth} style={{ background: "#fff", border: "1px solid " + 'var(--color-line)', color: 'var(--color-text)', padding: "6px 10px", borderRadius: 6 }}><ChevronRight size={16} /></button>
+          <button className="cly-btn" onClick={() => setCurrentDate(new Date())} style={{ background: 'var(--color-cream)', border: "1px solid " + 'var(--color-line)', color: 'var(--color-text)', padding: "6px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, marginLeft: 10 }}>Today</button>
+        </div>
+        
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <select className="cly-input" value={viewMode} onChange={e => setViewMode(e.target.value)} style={{ padding: "8px 12px", width: "auto" }}>
+            <option value="all">All Events</option>
+            <option value="company">Company Events</option>
+            <option value="my">My Schedule</option>
+          </select>
+          <button className="cly-btn" onClick={() => setShowForm(true)} style={{ background: 'var(--color-events)', border: "none", color: "#fff", padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+            <CalendarCheck size={16} /> New Event
+          </button>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", background: "#fff", borderRadius: 12, border: "1px solid " + 'var(--color-line)', overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", background: 'var(--color-cream)', borderBottom: "1px solid " + 'var(--color-line)', padding: "10px 0", textAlign: "center", fontSize: 12, fontWeight: 700, color: 'var(--color-text)', letterSpacing: 1, textTransform: "uppercase", opacity: 0.8 }}>
+          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d => <div key={d}>{d}</div>)}
+        </div>
+        <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "1fr", gap: 1, background: 'var(--color-line)' }}>
+          {Array.from({ length: firstDay }).map((_, i) => <div key={`empty-${i}`} style={{ background: 'var(--color-cream)' }} />)}
+          {Array.from({ length: daysInMonth }).map((_, i) => {
+            const dateNum = i + 1;
+            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(dateNum).padStart(2, '0')}`;
+            const isToday = today.getDate() === dateNum && today.getMonth() === month && today.getFullYear() === year;
+            const dayEvents = filteredEvents.filter(e => e.date === dateStr).sort((a, b) => a.time.localeCompare(b.time));
+            
+            return (
+              <div 
+                key={dateNum} 
+                onClick={() => {
+                  setDate(dateStr);
+                  setShowForm(true);
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "rgba(255, 255, 255, 0.08)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "rgba(255, 255, 255, 0.03)"; }}
+                style={{ background: "rgba(255, 255, 255, 0.03)", padding: 8, display: "flex", flexDirection: "column", gap: 4, minHeight: 100, cursor: "pointer", transition: "background-color 0.2s" }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700, color: isToday ? 'var(--color-events)' : 'var(--color-text)', opacity: isToday ? 1 : 0.8, alignSelf: "flex-end" }}>
+                  {dateNum}
+                </div>
+                <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                  {dayEvents.map(e => (
+                    <div key={e.id} onClick={(evt) => { evt.stopPropagation(); setSelectedEvent(e); }} style={{ background: e.type === "company" ? 'var(--color-eventsSoft)' : 'var(--color-productsSoft)', borderLeft: `3px solid ${e.type === "company" ? 'var(--color-events)' : 'var(--color-products)'}`, padding: "4px 6px", borderRadius: 4, fontSize: 11, cursor: "pointer" }}>
+                      <div style={{ fontWeight: 600, color: e.type === "company" ? 'var(--color-eventsText)' : 'var(--color-productsText)', whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.time} {e.title}</div>
+                      {e.meetLink && (
+                        <a href={e.meetLink} target="_blank" rel="noreferrer" onClick={(evt) => evt.stopPropagation()} style={{ color: 'var(--color-success)', textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 3, marginTop: 3, fontWeight: 600 }}>
+                          <Video size={10} /> Join Meet
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          {Array.from({ length: (42 - (firstDay + daysInMonth)) % 7 }).map((_, i) => <div key={`empty-end-${i}`} style={{ background: 'var(--color-cream)' }} />)}
+        </div>
+      </div>
+
+      {showForm && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
+          <div style={{ background: 'var(--color-surface)', width: "100%", maxWidth: 500, borderRadius: 16, border: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", maxHeight: "90vh" }}>
+            <div style={{ padding: "20px 24px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ fontSize: 16, fontWeight: 700 }}>Schedule Event</div>
+              <button onClick={() => setShowForm(false)} className="cly-btn" style={{ background: "none", border: "none", color: "#fff", opacity: 0.7 }}><XCircle size={20} /></button>
+            </div>
+            <div style={{ padding: 24, overflowY: "auto" }}>
+              <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 15 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.7, marginBottom: 5 }}>Title *</div>
+                  <input className="cly-input" value={title} onChange={e => setTitle(e.target.value)} placeholder="Event Title" required />
+                </div>
+                <div style={{ display: "flex", gap: 15 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.7, marginBottom: 5 }}>Date *</div>
+                    <input type="date" className="cly-input" value={date} onChange={e => setDate(e.target.value)} required />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.7, marginBottom: 5 }}>Time *</div>
+                    <input type="time" className="cly-input" value={time} onChange={e => setTime(e.target.value)} required />
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.7, marginBottom: 5 }}>Duration (Minutes)</div>
+                  <input type="number" className="cly-input" value={duration} onChange={e => setDuration(e.target.value)} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.7, marginBottom: 5 }}>Event Type</div>
+                  <select className="cly-input" value={type} onChange={e => { setType(e.target.value); if (e.target.value === "company") setAttendees([]); }}>
+                    <option value="company">Company Wide (Everyone)</option>
+                    <option value="huddle">Huddle / Specific Group</option>
+                  </select>
+                </div>
+                {type === "huddle" && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.7, marginBottom: 5 }}>Attendees (Hold Ctrl/Cmd to select multiple)</div>
+                    <select multiple className="cly-input" style={{ height: 120 }} value={attendees} onChange={e => setAttendees(Array.from(e.target.selectedOptions, o => o.value))}>
+                      {people.map(p => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.7, marginBottom: 5 }}>Description</div>
+                  <textarea className="cly-input" value={description} onChange={e => setDescription(e.target.value)} rows={3} placeholder="Event details..." />
+                </div>
+                <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                  <button type="submit" disabled={creatingMeet} className="cly-btn" style={{ flex: 1, background: 'var(--color-events)', border: "none", color: "#fff", padding: "12px", borderRadius: 8, fontSize: 14, fontWeight: 600, display: "flex", justifyContent: "center", alignItems: "center", gap: 8 }}>
+                    {creatingMeet ? <Loader2 size={18} className="cly-spin" /> : <CalendarCheck size={18} />}
+                    {creatingMeet ? "Generating Meet Link..." : "Create Event & Meet Link"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+      {selectedEvent && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
+          <div style={{ background: 'var(--color-surface)', width: "100%", maxWidth: 450, borderRadius: 16, border: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "20px 24px", borderBottom: "1px solid " + 'var(--color-line)', display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-text)' }}>Event Details</div>
+              <button onClick={() => setSelectedEvent(null)} className="cly-btn" style={{ background: "none", border: "none", color: 'var(--color-text)', opacity: 0.7 }}><XCircle size={20} /></button>
+            </div>
+            <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 15, color: 'var(--color-text)' }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--color-text)' }}>{selectedEvent.title}</div>
+                <div style={{ fontSize: 13, color: 'var(--color-mute)', marginTop: 4 }}>
+                  {new Date(selectedEvent.date).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} at {selectedEvent.time} ({selectedEvent.duration} mins)
+                </div>
+              </div>
+              
+              <div>
+                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: 'var(--color-mute)', display: "block" }}>Type</span>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedEvent.type === "company" ? "Company Wide Meeting" : "Huddle"}</span>
+              </div>
+
+              {selectedEvent.description && (
+                <div>
+                  <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: 'var(--color-mute)', display: "block" }}>Description</span>
+                  <div style={{ fontSize: 13, background: 'var(--color-cream)', padding: 12, borderRadius: 8, marginTop: 4 }}>{selectedEvent.description}</div>
+                </div>
+              )}
+
+              
+              <div style={{ marginTop: 15, background: 'var(--color-cream)', padding: 12, borderRadius: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: 'var(--color-mute)', display: "block", marginBottom: 8 }}>Your RSVP</span>
+                <div style={{ display: "flex", gap: 10 }}>
+                  {['Going', 'Maybe', 'Not Going'].map(status => {
+                    const currentStatus = selectedEvent.rsvps?.[user.id] === status;
+                    return (
+                      <button 
+                        key={status}
+                        onClick={() => {
+                          const newRsvps = { ...(selectedEvent.rsvps || {}), [user.id]: status };
+                          updateEvent(selectedEvent.id, { rsvps: newRsvps });
+                          setSelectedEvent({ ...selectedEvent, rsvps: newRsvps });
+                          notify('RSVP updated to ' + status, 'ok');
+                        }}
+                        className="cly-btn" 
+                        style={{ flex: 1, background: currentStatus ? 'var(--color-events)' : 'var(--color-line)', color: currentStatus ? '#fff' : 'var(--color-text)', border: "none", padding: "8px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}
+                      >
+                        {status}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+
+
+              <div style={{ marginTop: 10 }}>
+                <button 
+                  onClick={() => {
+                    const formatDate = (dateStr, timeStr) => {
+                      const d = new Date(dateStr + 'T' + timeStr);
+                      return d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+                    };
+                    const start = formatDate(selectedEvent.date, selectedEvent.time);
+                    const d = new Date(selectedEvent.date + 'T' + selectedEvent.time);
+                    d.setMinutes(d.getMinutes() + selectedEvent.duration);
+                    const end = d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+                    const icsData = [
+                      'BEGIN:VCALENDAR',
+                      'VERSION:2.0',
+                      'BEGIN:VEVENT',
+                      'DTSTART:' + start,
+                      'DTEND:' + end,
+                      'SUMMARY:' + selectedEvent.title,
+                      'DESCRIPTION:' + (selectedEvent.description || '') + '\n\nJoin: ' + (selectedEvent.meetLink || ''),
+                      'END:VEVENT',
+                      'END:VCALENDAR'
+                    ].join('\r\n');
+                    const blob = new Blob([icsData], { type: 'text/calendar' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = selectedEvent.title.replace(/\s+/g, '_') + '.ics';
+                    a.click();
+                  }}
+                  className="cly-btn"
+                  style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "center", gap: 8, background: 'var(--color-line)', color: 'var(--color-text)', textDecoration: "none", padding: "12px", borderRadius: 8, fontSize: 14, fontWeight: 700 }}
+                >
+                  <CalendarDays size={18} /> Add to Calendar (.ics)
+                </button>
+              </div>
+
+
+              {selectedEvent.meetLink ? (
+                <div style={{ marginTop: 10 }}>
+                  <a 
+                    href={selectedEvent.meetLink} 
+                    target="_blank" 
+                    rel="noreferrer" 
+                    className="cly-btn" 
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: 'var(--color-success)', color: "#fff", textDecoration: "none", padding: "12px", borderRadius: 8, fontSize: 14, fontWeight: 700 }}
+                  >
+                    <Video size={18} /> Join Google Meet
+                  </a>
+                </div>
+              ) : (
+                <div style={{ background: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.2)", color: 'var(--color-danger)', padding: 12, borderRadius: 8, fontSize: 12, marginTop: 10 }}>
+                  No Google Meet link was generated for this event. Make sure your calendar token is configured.
+                </div>
+              )}
+
+              {(user.role === "ADMIN" || selectedEvent.organizerId === user.id) && (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 15, borderTop: "1px solid " + 'var(--color-line)', paddingTop: 15 }}>
+                  <button 
+                    onClick={() => {
+                      if (window.confirm("Are you sure you want to delete this event?")) {
+                        deleteEvent(selectedEvent.id);
+                        setSelectedEvent(null);
+                        notify("Event deleted!", "ok");
+                      }
+                    }} 
+                    className="cly-btn" 
+                    style={{ background: 'var(--color-danger)', border: "none", color: "#fff", padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600 }}
+                  >
+                    Delete Event
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+
+function MeetRecordingsPage({ user, notify }) {
+  const [recordings, setRecordings] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchRecordings = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch("/api/listMeetRecordings", { headers: { "Authorization": `Bearer ${await auth.currentUser.getIdToken()}` } });
+        if (!res.ok) throw new Error("Failed to fetch recordings");
+        const data = await res.json();
+        setRecordings(data.files || []);
+      } catch (err) {
+        console.error(err);
+        notify("Could not load meet recordings", "error");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchRecordings();
+  }, [notify]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20, height: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>Meet Recordings</div>
+          <div style={{ fontSize: 13, opacity: 0.7, marginTop: 4 }}>Access recent recordings from Google Drive</div>
+        </div>
+        <button onClick={() => window.location.reload()} className="cly-btn" style={{ background: "rgba(255,255,255,0.05)", border: "none", color: "#fff", padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+          <RefreshCw size={16} /> Refresh
+        </button>
+      </div>
+
+      <div style={{ flex: 1, background: "rgba(255,255,255,0.02)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.05)", padding: 20, overflowY: "auto" }}>
+        {loading ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5, gap: 10 }}>
+            <Loader2 className="cly-spin" size={20} /> Loading recordings...
+          </div>
+        ) : recordings.length === 0 ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5 }}>
+            No recordings found in the Meet Recordings folder.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 15 }}>
+            {recordings.map(file => (
+              <a key={file.id} href={file.webViewLink} target="_blank" rel="noreferrer" style={{ display: "block", textDecoration: "none", color: "inherit" }}>
+                <div className="cly-btn" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 8, padding: 15, transition: "0.2s" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                    <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(59, 130, 246, 0.15)", color: 'var(--color-media)', display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <Video size={20} />
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{file.name}</div>
+                      <div style={{ fontSize: 12, opacity: 0.6 }}>{new Date(file.createdTime).toLocaleString()}</div>
+                    </div>
+                  </div>
+                  {file.hasThumbnail && <img src={file.thumbnailLink} alt="Thumbnail" style={{ width: "100%", height: 140, objectFit: "cover", borderRadius: 6 }} />}
+                  {!file.hasThumbnail && (
+                     <div style={{ width: "100%", height: 140, background: "rgba(255,255,255,0.02)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.3 }}>
+                       <PlaySquare size={40} />
+                     </div>
+                  )}
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 export default function App() {
+  const [theme, setTheme] = useState(localStorage.getItem('tago-theme') || 'dark');
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('tago-theme', theme);
+  }, [theme]);
+
   const [ready, setReady] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [user, setUser] = useState(null);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [page, setPage] = useState("dashboard");
-  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile/tablet drawer only — always visually open on desktop via CSS
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile/tablet drawer only â€” always visually open on desktop via CSS
+  const [myProfileSettingsOpen, setMyProfileSettingsOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
   const [users, setUsers] = useState([]);
@@ -4793,16 +5363,12 @@ export default function App() {
   const [timeEntries, setTimeEntries] = useState([]);
   const [requests, setRequests] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
+  const [eodReports, setEodReports] = useState([]);
+  const [calendarEvents, setCalendarEvents] = useState([]);
   const [auth, setAuth] = useState(SEED_AUTH);
   const [notif, setNotif] = useState(SEED_NOTIF);
   const [restrictions, setRestrictions] = useState(SEED_RESTRICTIONS);
-  // Screenshot check-ins (Owner-only viewing, self-only writing — see
-  // firestore.rules and §7 Time Tracking in the history doc).
-  const [screenshotCheckins, setScreenshotCheckins] = useState([]);
-
-  // --- Workspace (Orbit project-management workspaces) ---
-  const [orbitWorkspaces, setOrbitWorkspaces] = useState([]);
-  const [activeOrbitWorkspaceId, setActiveOrbitWorkspaceId] = useState(null);
+  const [activityLogs, setActivityLogs] = useState([]);
 
   // --- Communication (chat + 1:1 video calls) ---
   const [conversations, setConversations] = useState([]);
@@ -4828,9 +5394,11 @@ export default function App() {
       if (!fbUser) { setUser(null); setAuthChecked(true); return; }
       const snap = await getDoc(fsDoc(db, "users", fbUser.uid));
       if (snap.exists()) {
-        setUser({ id: fbUser.uid, email: fbUser.email, ...snap.data() });
+        const udata = snap.data();
+        if (udata.role === "ADMIN") udata.role = "ADMIN"; // Normalize legacy role
+        setUser({ id: fbUser.uid, email: fbUser.email, ...udata });
       } else {
-        // Signed in with Firebase Auth but no workspace profile yet —
+        // Signed in with Firebase Auth but no workspace profile yet â€”
         // treat as not provisioned rather than guessing a role.
         setLoginError("Your account isn't set up in this workspace yet. Contact your owner.");
         await fbLogout();
@@ -4841,7 +5409,7 @@ export default function App() {
     return unsub;
   }, []);
 
-  // workspace data load — every collection here requires a signed-in user
+  // workspace data load â€” every collection here requires a signed-in user
   // per firestore.rules, so this must wait for auth to resolve. Running it
   // unconditionally on mount meant logged-out visitors always hit
   // permission-denied errors, which left `ready` stuck false forever (blank
@@ -4849,7 +5417,7 @@ export default function App() {
   // fetch fails for any other reason, so `ready` is set once all initial
   // snapshots have arrived (or failed), whichever comes first per job.
   //
-  // These are realtime subscriptions (onSnapshot), not one-time fetches —
+  // These are realtime subscriptions (onSnapshot), not one-time fetches â€”
   // any change to any of these collections, from this tab, another tab, or
   // another person entirely, pushes fresh data in automatically. That's
   // what keeps the whole app in sync without needing a page reload.
@@ -4857,9 +5425,9 @@ export default function App() {
     if (!authChecked) return; // wait until we know whether someone's signed in
     if (!user) { setReady(true); return; } // nothing to load pre-login
 
-    const canReadRequests = user.role === "OWNER" || user.role === "ADMIN";
+    const canReadRequests = user.role === "ADMIN" || user.role === "ADMIN";
     const canReadPeople = user.role !== "CLIENT";
-    const canReadAllLeave = user.role === "OWNER" || user.role === "ADMIN";
+    const canReadAllLeave = user.role === "ADMIN" || user.role === "ADMIN";
 
     const unsubs = [];
     const pending = new Set();
@@ -4873,11 +5441,11 @@ export default function App() {
       if (failed.size) {
         // Most common cause: a Firestore security rule for one of these
         // collections hasn't been deployed yet (committing firestore.rules
-        // to GitHub does NOT push it — run `firebase deploy --only
+        // to GitHub does NOT push it â€” run `firebase deploy --only
         // firestore:rules` from the terminal, or publish it in the Firebase
         // Console's Rules editor). Check the browser console for the exact
         // collection and error code.
-        notify(`Some data didn't load (${[...failed].join(", ")}) — check console for details.`, "error");
+        notify(`Some data didn't load (${[...failed].join(", ")}) â€” check console for details.`, "error");
       }
       setReady(true);
     }
@@ -4890,17 +5458,21 @@ export default function App() {
         console.error(`Failed to load "${key}":`, e);
         setter(fallback);
         if (!readyFired) { failed.add(key); pending.delete(key); checkReady(); }
-        else notify(`Lost real-time updates for "${key}" — check console for details.`, "error");
+        else notify(`Lost real-time updates for "${key}" â€” check console for details.`, "error");
       };
     }
 
     pending.add("users");
-    unsubs.push(subscribeCollection("users", vals => { setUsers(vals); onOk("users"); }, onErr("users", [], setUsers)));
+    unsubs.push(subscribeCollection("users", vals => { 
+      const mapped = vals.map(u => u.role === "ADMIN" ? { ...u, role: "ADMIN" } : u);
+      setUsers(mapped); 
+      onOk("users"); 
+    }, onErr("users", [], setUsers)));
 
     pending.add("groups");
     unsubs.push(subscribeCollection("groups", vals => { setGroups(vals.length ? vals : SEED_GROUPS); onOk("groups"); }, onErr("groups", SEED_GROUPS, setGroups)));
 
-    // requests/{id} is Admin/Owner-only per firestore.rules — subscribing
+    // requests/{id} is Admin/Owner-only per firestore.rules â€” subscribing
     // as anyone else is a guaranteed permission-denied, so skip it entirely
     // rather than let it fail and show a "data didn't load" banner.
     if (canReadRequests) {
@@ -4920,7 +5492,7 @@ export default function App() {
     pending.add("files");
     unsubs.push(subscribeCollection("files", vals => { setFiles([...vals].sort((x, y) => y.uploadedAt - x.uploadedAt)); onOk("files"); }, onErr("files", [], setFiles)));
 
-    // people/{id} is hidden from CLIENT per firestore.rules — same reasoning as requests.
+    // people/{id} is hidden from CLIENT per firestore.rules â€” same reasoning as requests.
     if (canReadPeople) {
       pending.add("people");
       unsubs.push(subscribeCollection("people", vals => { setPeople(vals); onOk("people"); }, onErr("people", [], setPeople)));
@@ -4930,12 +5502,10 @@ export default function App() {
     pending.add("peopleConfig");
     unsubs.push(subscribeSetting("people-config", SEED_PEOPLE_CONFIG, val => { setPeopleConfig(val); onOk("peopleConfig"); }, onErr("peopleConfig", SEED_PEOPLE_CONFIG, setPeopleConfig)));
 
-    // Owner, or an Admin the Owner has granted Monitoring report access to,
-    // can read every user's time entries (per firestore.rules'
-    // hasMonitoringAccess()); everyone else's query is scoped to their own
-    // uid so it isn't denied.
+    // Only the Owner can read every user's time entries (per firestore.rules);
+    // everyone else's query is scoped to their own uid so it isn't denied.
     pending.add("timeEntries");
-    if (user.role === "OWNER" || (user.role === "ADMIN" && !!user.canViewMonitoring)) {
+    if (user.role === "ADMIN") {
       unsubs.push(subscribeCollection("time-entries", vals => { setTimeEntries(vals); onOk("timeEntries"); }, onErr("timeEntries", [], setTimeEntries)));
     } else {
       unsubs.push(subscribeCollectionWhere("time-entries", "userId", user.id, vals => { setTimeEntries(vals); onOk("timeEntries"); }, onErr("timeEntries", [], setTimeEntries)));
@@ -4950,34 +5520,23 @@ export default function App() {
       unsubs.push(subscribeCollectionWhere("leave-requests", "userId", user.id, vals => { setLeaveRequests(vals); onOk("leaveRequests"); }, onErr("leaveRequests", [], setLeaveRequests)));
     }
 
-    // Workspace (Orbit): Clients don't get this feature at all (enforced
-    // here, in the sidebar, and in firestore.rules) — same pattern as
-    // Communication/People. Creating/deleting a workspace is additionally
-    // gated to Admin/Owner in the handler functions below and in
-    // firestore.rules; everyone else who can see this collection can
-    // still read/use (open, edit tasks in) any workspace, matching how
-    // the rest of the internal-facing portal treats Employees.
-    const canUseWorkspace = user.role !== "CLIENT";
-    if (canUseWorkspace) {
-      pending.add("orbitWorkspaces");
-      unsubs.push(subscribeCollection("orbit-workspaces", vals => { setOrbitWorkspaces(vals); onOk("orbitWorkspaces"); }, onErr("orbitWorkspaces", [], setOrbitWorkspaces)));
+    pending.add("eodReports");
+    if (user.role === "ADMIN") {
+      unsubs.push(subscribeCollection("eod-reports", vals => { setEodReports(vals); onOk("eodReports"); }, onErr("eodReports", [], setEodReports)));
     } else {
-      setOrbitWorkspaces([]);
+      unsubs.push(subscribeCollectionWhere("eod-reports", "userId", user.id, vals => { setEodReports(vals); onOk("eodReports"); }, onErr("eodReports", [], setEodReports)));
     }
-
-    // Screenshot check-ins: Owner always sees this; an Admin only if the
-    // Owner has explicitly granted them Monitoring report access
-    // (`canViewMonitoring`) — matches `hasMonitoringAccess()` in
-    // firestore.rules exactly (not even the person whose screenshots they
-    // are can list everyone else's, only Owner/granted-Admin can). Everyone
-    // still writes their own via submitScreenshotCheckin(), which doesn't
-    // need a subscription.
-    const canViewMonitoring = user.role === "OWNER" || (user.role === "ADMIN" && !!user.canViewMonitoring);
-    if (canViewMonitoring) {
-      pending.add("screenshotCheckins");
-      unsubs.push(subscribeCollection("screenshot-checkins", vals => { setScreenshotCheckins(vals); onOk("screenshotCheckins"); }, onErr("screenshotCheckins", [], setScreenshotCheckins)));
+    
+    pending.add("calendarEvents");
+    if (user.role === "ADMIN") {
+      unsubs.push(subscribeCollection("calendar-events", vals => { setCalendarEvents(vals); onOk("calendarEvents"); }, onErr("calendarEvents", [], setCalendarEvents)));
     } else {
-      setScreenshotCheckins([]);
+      let combined = [];
+      let c1 = false, c2 = false, c3 = false;
+      const checkDone = () => { if (c1 && c2 && c3) { const unique = Array.from(new Map(combined.map(e => [e.id, e])).values()); setCalendarEvents(unique); onOk("calendarEvents"); } };
+      unsubs.push(subscribeCollectionWhere("calendar-events", "type", "company", vals => { combined = [...combined.filter(e => e.type !== "company"), ...vals]; c1 = true; checkDone(); }, () => { c1 = true; checkDone(); }));
+      unsubs.push(subscribeCollectionWhere("calendar-events", "organizerId", user.id, vals => { combined = [...combined.filter(e => e.organizerId !== user.id), ...vals]; c2 = true; checkDone(); }, () => { c2 = true; checkDone(); }));
+      unsubs.push(subscribeCollectionArrayContains("calendar-events", "attendees", user.id, vals => { combined = [...combined.filter(e => !(e.attendees||[]).includes(user.id)), ...vals]; c3 = true; checkDone(); }, () => { c3 = true; checkDone(); }));
     }
 
     // Communication: Clients don't get this feature at all (enforced here,
@@ -4997,11 +5556,18 @@ export default function App() {
       setIncomingCall(null);
     }
 
+    pending.add("activityLogs");
+    if (user.role === "ADMIN") {
+      unsubs.push(subscribeCollection("activity-logs", vals => { setActivityLogs(vals); onOk("activityLogs"); }, onErr("activityLogs", [], setActivityLogs)));
+    } else {
+      unsubs.push(subscribeCollectionWhere("activity-logs", "id", user.id, vals => { setActivityLogs(vals); onOk("activityLogs"); }, onErr("activityLogs", [], setActivityLogs)));
+    }
+
     return () => { unsubs.forEach(u => { try { u && u(); } catch (e) { /* already gone */ } }); };
   }, [authChecked, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Messages for whichever conversation is currently open on the
-  // Communication page — subscribed separately (not as part of the bulk
+  // Communication page â€” subscribed separately (not as part of the bulk
   // loader above) since which one is "active" changes as you click around,
   // and there's no reason to hold every conversation's full message history
   // in memory at once.
@@ -5013,17 +5579,126 @@ export default function App() {
     return () => { try { unsub(); } catch (e) { /* already gone */ } };
   }, [activeConversationId]);
 
-  // Lightweight presence: while the app is open, ping `users/{uid}.lastActiveAt`
-  // every 60s so Communication can show a simple "Active now" indicator.
-  // Best-effort — a failed ping just means presence looks stale, nothing breaks.
+  const latestTimeEntries = useRef([]);
+  useEffect(() => { latestTimeEntries.current = timeEntries; }, [timeEntries]);
+
+  // Lightweight presence + Heartbeat activity tracking
   useEffect(() => {
     if (!user) return;
-    const ping = () => { updateDocIn("users", user.id, { lastActiveAt: Date.now() }).catch(() => {}); };
-    ping();
-    const t = setInterval(ping, 60000);
-    return () => clearInterval(t);
+    
+    let interactions = { keys: 0, clicks: 0, moves: 0, scrolls: 0 };
+    const trackKey = () => interactions.keys++;
+    const trackClick = () => interactions.clicks++;
+    const trackMove = () => interactions.moves++;
+    const trackScroll = () => interactions.scrolls++;
+    
+    window.addEventListener("mousemove", trackMove);
+    window.addEventListener("keydown", trackKey);
+    window.addEventListener("scroll", trackScroll);
+    window.addEventListener("click", trackClick);
+
+    // Track total since last screenshot
+    let totalInteractionsSinceScreenshot = 0;
+    let totalKeysSinceScreenshot = 0;
+    let totalClicksSinceScreenshot = 0;
+    let totalMovesSinceScreenshot = 0;
+    let totalScrollsSinceScreenshot = 0;
+    let ticksSinceScreenshot = 0; // 30s ticks
+
+    const ping = async () => {
+      const isClockedIn = latestTimeEntries.current.some(e => e.userId === user.id && !e.clockOut);
+      if (!isClockedIn) {
+        interactions = { keys: 0, clicks: 0, moves: 0, scrolls: 0 };
+        return;
+      }
+
+      const currentInteractions = interactions.keys + interactions.clicks + interactions.moves + interactions.scrolls;
+      totalInteractionsSinceScreenshot += currentInteractions;
+      totalKeysSinceScreenshot += interactions.keys;
+      totalClicksSinceScreenshot += interactions.clicks;
+      totalMovesSinceScreenshot += interactions.moves;
+      totalScrollsSinceScreenshot += interactions.scrolls;
+      ticksSinceScreenshot++;
+      
+      const today = new Date();
+      const hrKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}_${String(today.getHours()).padStart(2,'0')}`;
+      const dayKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+      
+      let baseUpdates = {
+        id: user.id,
+        status: "working",
+        [`hourlyInteractions.${hrKey}`]: increment(currentInteractions),
+        [`hourlyKeys.${hrKey}`]: increment(interactions.keys),
+        [`hourlyClicks.${hrKey}`]: increment(interactions.clicks),
+        [`dailyKeys.${dayKey}`]: increment(interactions.keys),
+        [`dailyClicks.${dayKey}`]: increment(interactions.clicks),
+      };
+
+      if (currentInteractions > 0) {
+        baseUpdates.lastActiveAt = Date.now();
+      }
+
+      // Every 2 minutes (4 ticks of 30s), capture history even if idle
+      if (ticksSinceScreenshot >= 4) {
+        let base64 = null;
+        if (totalInteractionsSinceScreenshot > 0) {
+          try {
+            const canvas = await html2canvas(document.body, { 
+              scale: 0.5, 
+              useCORS: true, 
+              logging: false,
+              ignoreElements: (el) => el.tagName === 'IFRAME' || el.tagName === 'VIDEO'
+            });
+            base64 = canvas.toDataURL("image/jpeg", 0.4);
+            baseUpdates.latestScreenshot = base64;
+            baseUpdates.latestScreenshotAt = Date.now();
+          } catch (e) {
+            console.error("Failed to capture screenshot:", e);
+          }
+        }
+        
+        try {
+          await addDocPath(["activity-logs", user.id, "screenshots"], {
+            image: base64,
+            timestamp: Date.now(),
+            dateKey: dayKey,
+            keys: totalKeysSinceScreenshot,
+            clicks: totalClicksSinceScreenshot,
+            moves: totalMovesSinceScreenshot,
+            scrolls: totalScrollsSinceScreenshot,
+            isIdle: totalInteractionsSinceScreenshot === 0
+          });
+        } catch (e) {
+          console.error("Failed to save screenshot history:", e);
+        }
+
+        ticksSinceScreenshot = 0;
+        totalInteractionsSinceScreenshot = 0;
+        totalKeysSinceScreenshot = 0;
+        totalClicksSinceScreenshot = 0;
+        totalMovesSinceScreenshot = 0;
+        totalScrollsSinceScreenshot = 0;
+      }
+        
+      setDocPath(["activity-logs", user.id], baseUpdates, { merge: true }).catch(() => {});
+        
+      interactions = { keys: 0, clicks: 0, moves: 0, scrolls: 0 };
+      
+      // Still ping the lightweight `users` collection for the Communication page, which doesn't check activityLogs
+      updateDocIn("users", user.id, { lastActiveAt: Date.now() }).catch(() => {});
+    };
+    
+    ping(); // initial ping
+    const t = setInterval(ping, 30000); // 30s heartbeat
+    return () => {
+      window.removeEventListener("mousemove", trackMove);
+      window.removeEventListener("keydown", trackKey);
+      window.removeEventListener("scroll", trackScroll);
+      window.removeEventListener("click", trackClick);
+      clearInterval(t);
+    };
   }, [user?.id]);
-  // Manual status picker (Communication) — "auto" clears the override so
+  // Manual status picker (Communication) â€” "auto" clears the override so
   // the heartbeat-based indicator takes back over; anything else sticks
   // until changed again, regardless of activity.
   async function setMyPresenceStatus(status, statusText) {
@@ -5033,7 +5708,7 @@ export default function App() {
       setUsers(prev => prev.map(u => u.id === user.id ? { ...u, ...patch } : u));
     } catch (e) {
       console.error("Failed to set status:", e);
-      notify("Couldn't update your status — check your connection and try again.", "error");
+      notify("Couldn't update your status â€” check your connection and try again.", "error");
     }
   }
 
@@ -5131,7 +5806,7 @@ export default function App() {
       );
       setFiles(files.filter(f => !missing.includes(f.driveFileId)));
     } catch (e) {
-      // Silent — stale entries just persist until the next successful check.
+      // Silent â€” stale entries just persist until the next successful check.
     }
   }
 
@@ -5144,7 +5819,7 @@ export default function App() {
         await setDocIn("users", newUid, nu);
         setUsers([...users, { id: newUid, ...nu }]);
         await requestPasswordResetFor(form.email);
-        notify(`${form.name} added — a password-setup email has been sent to them.`);
+        notify(`${form.name} added â€” a password-setup email has been sent to them.`);
       } catch (e) {
         notify(e.message?.replace("Firebase: ", "") || "Couldn't create that user.", "error");
       }
@@ -5173,7 +5848,7 @@ export default function App() {
       notify("Role updated.");
     } catch (e) {
       console.error("Failed to update role:", e);
-      notify("Couldn't update role — check your connection or permissions and try again.", "error");
+      notify("Couldn't update role â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5207,18 +5882,28 @@ export default function App() {
       notify(`${form.name} added.`);
     } catch (e) {
       console.error("Failed to add person:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e; // let the form know it failed so it can keep the modal open
     }
   }
   async function updatePerson(id, form) {
     try {
       await updateDocIn("people", id, form);
+      if (form.linkedUserId) {
+        const userUpdate = {};
+        if (form.allowedFolders) userUpdate.allowedFolders = form.allowedFolders;
+        if (form.allowedPanels) userUpdate.allowedPanels = form.allowedPanels;
+        if (Object.keys(userUpdate).length > 0) {
+          await updateDocIn("users", form.linkedUserId, userUpdate).catch(e => {
+             console.warn("Failed to sync access config to user doc:", e);
+          });
+        }
+      }
       setPeople(people.map(p => p.id === id ? { ...p, ...form } : p));
       notify("Changes saved.");
     } catch (e) {
       console.error("Failed to update person:", e);
-      notify("Couldn't save changes — check your connection or permissions and try again.", "error");
+      notify("Couldn't save changes â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5229,7 +5914,7 @@ export default function App() {
       notify("Person removed.");
     } catch (e) {
       console.error("Failed to remove person:", e);
-      notify("Couldn't remove — check your connection or permissions and try again.", "error");
+      notify("Couldn't remove â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5237,74 +5922,6 @@ export default function App() {
     setPeopleConfig(next);
     await sset("people-config", next);
   }
-  // Silent — no toast — since this fires automatically every ~20s and a
-  // notification per heartbeat would spam the person. `updateTimeEntry`
-  // above stays as the user-facing, toast-showing version for deliberate
-  // edits (Owner corrections, etc).
-  async function silentUpdateTimeEntry(entryId, patch) {
-    try {
-      await updateDocIn("time-entries", entryId, patch);
-      setTimeEntries((prev) => prev.map((e) => (e.id === entryId ? { ...e, ...patch } : e)));
-    } catch (e) {
-      // Heartbeats are best-effort — a dropped one just means the Owner's
-      // live view goes stale for a beat, not worth surfacing an error toast
-      // for something the person didn't take an action to trigger.
-      console.error("Heartbeat write failed:", e);
-    }
-  }
-
-  // ---- Real-time "are they actually working" presence ----
-  // While someone has an open (not-yet-clocked-out) time entry, this
-  // watches for genuine interaction — mouse movement, clicks, keystrokes,
-  // scrolling, touches — and writes a heartbeat to their own entry doc
-  // every 20s: `heartbeatAt` (this write happened), `lastInteractionAt`
-  // (the most recent real interaction), `recentActivityCount` (how many
-  // discrete interactions happened in that last 20s window), and
-  // `activityByHour` (a same-day running tally, `{ "9": 142, "10": 88 }`,
-  // hour-of-day -> total interaction count that hour). None of this
-  // records WHAT was clicked or typed, or any keystroke content — only
-  // that *something* happened and roughly how much. No keylogging, no
-  // screen capture. `recentActivityCount` counts discrete actions (clicks/
-  // keydowns/scroll notches/touches) — not raw `mousemove`, which fires
-  // continuously and would make "activity level" meaningless (it'd read
-  // "high" just from someone resting their hand near the mouse).
-  // TimeTrackingPage's "Currently clocked in" list (Owner view) turns the
-  // heartbeat into a live Working/Idle/Away status (LiveStatusDot) and the
-  // activity counts into a small per-hour bar (ActivityBar) — see both
-  // components below for exactly how each is derived.
-  const lastInteractionRef = useRef(Date.now());
-  const activityCountRef = useRef(0);
-  const timeEntriesRef = useRef(timeEntries);
-  useEffect(() => { timeEntriesRef.current = timeEntries; }, [timeEntries]);
-  useEffect(() => {
-    const bumpPresence = () => { lastInteractionRef.current = Date.now(); };
-    const bumpActivity = () => { lastInteractionRef.current = Date.now(); activityCountRef.current += 1; };
-    window.addEventListener("mousemove", bumpPresence, { passive: true });
-    ["mousedown", "keydown", "wheel", "touchstart"].forEach((ev) => window.addEventListener(ev, bumpActivity, { passive: true }));
-    return () => {
-      window.removeEventListener("mousemove", bumpPresence);
-      ["mousedown", "keydown", "wheel", "touchstart"].forEach((ev) => window.removeEventListener(ev, bumpActivity));
-    };
-  }, []);
-  useEffect(() => {
-    if (!user || user.role === "CLIENT") return;
-    const myOpenEntry = timeEntries.find((e) => e.userId === user.id && !e.clockOut);
-    if (!myOpenEntry) return;
-    const HEARTBEAT_MS = 20000;
-    const send = () => {
-      const count = activityCountRef.current;
-      activityCountRef.current = 0;
-      const current = timeEntriesRef.current.find((e) => e.id === myOpenEntry.id);
-      const hourKey = String(new Date().getHours());
-      const activityByHour = { ...(current?.activityByHour || {}), [hourKey]: (current?.activityByHour?.[hourKey] || 0) + count };
-      silentUpdateTimeEntry(myOpenEntry.id, { heartbeatAt: Date.now(), lastInteractionAt: lastInteractionRef.current, recentActivityCount: count, activityByHour });
-    };
-    send(); // immediately on clocking in / app load while already clocked in, not just after the first interval
-    const interval = setInterval(send, HEARTBEAT_MS);
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, timeEntries.find((e) => e.userId === user?.id && !e.clockOut)?.id]);
-
   async function clockIn() {
     const now = Date.now();
     const entry = {
@@ -5318,7 +5935,7 @@ export default function App() {
       notify("Clocked in.");
     } catch (e) {
       console.error("Failed to clock in:", e);
-      notify("Couldn't clock in — check your connection or permissions and try again.", "error");
+      notify("Couldn't clock in â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5330,7 +5947,7 @@ export default function App() {
       notify("Clocked out.");
     } catch (e) {
       console.error("Failed to clock out:", e);
-      notify("Couldn't clock out — check your connection or permissions and try again.", "error");
+      notify("Couldn't clock out â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5343,7 +5960,7 @@ export default function App() {
       notify("Time entry updated.");
     } catch (e) {
       console.error("Failed to update time entry:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5355,7 +5972,7 @@ export default function App() {
       notify("Time entry added.");
     } catch (e) {
       console.error("Failed to add time entry:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5366,7 +5983,7 @@ export default function App() {
       notify("Time entry deleted.");
     } catch (e) {
       console.error("Failed to delete time entry:", e);
-      notify("Couldn't delete — check your connection or permissions and try again.", "error");
+      notify("Couldn't delete â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5374,7 +5991,7 @@ export default function App() {
   // Half Day / Off / Restday / Holiday Off stores a manual override that
   // wins over whatever the recorded sessions would otherwise compute.
   // Picking "Present" clears the override instead of storing it, so the day
-  // goes back to following its actual clock-in/out entries — which keeps
+  // goes back to following its actual clock-in/out entries â€” which keeps
   // this calendar and the Time in/out table always in agreement.
   async function setDayStatusOverride(userId, dateStr, status) {
     try {
@@ -5383,7 +6000,7 @@ export default function App() {
       notify(`Day marked as ${status}.`);
     } catch (e) {
       console.error("Failed to set day status override:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5399,7 +6016,7 @@ export default function App() {
       notify("Back to following recorded sessions for that day.");
     } catch (e) {
       console.error("Failed to clear day status override:", e);
-      notify("Couldn't update — check your connection or permissions and try again.", "error");
+      notify("Couldn't update â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5418,69 +6035,19 @@ export default function App() {
       notify(`${dateStrs.length} day${dateStrs.length !== 1 ? "s" : ""} set to ${status}.`);
     } catch (e) {
       console.error("Failed to bulk-update day status:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
-  async function setUserTimeTrackingEnabled(userId, enabled) {
+  async function setUserTimeTrackingMode(userId, mode) {
     try {
-      await updateDocIn("users", userId, { timeTrackingEnabled: enabled });
-      setUsers(users.map(u => u.id === userId ? { ...u, timeTrackingEnabled: enabled } : u));
-      notify(enabled ? "Time tracking enabled for that user." : "Time tracking disabled for that user.");
+      await updateDocIn("users", userId, { timeTrackingMode: mode });
+      setUsers(users.map(u => u.id === userId ? { ...u, timeTrackingMode: mode } : u));
+      notify(`Time tracking mode updated.`);
     } catch (e) {
-      console.error("Failed to update time-tracking access:", e);
-      notify("Couldn't update — check your connection or permissions and try again.", "error");
+      console.error("Failed to update time-tracking mode:", e);
+      notify("Couldn't update â€” check your connection or permissions and try again.", "error");
       throw e;
-    }
-  }
-  // Owner opts a person IN to screenshot check-ins — the person still has
-  // to explicitly grant screen-share permission themselves each session
-  // (a browser-level requirement no app code can bypass or make covert;
-  // see the consent card in TimeTrackingPage). Turning this on is a
-  // request the app can surface, not a switch that starts capturing
-  // anything by itself.
-  async function setUserScreenshotCheckinsEnabled(userId, enabled) {
-    try {
-      await updateDocIn("users", userId, { screenshotCheckinsEnabled: enabled });
-      setUsers(users.map(u => u.id === userId ? { ...u, screenshotCheckinsEnabled: enabled } : u));
-      notify(enabled ? "Screenshot check-ins requested for that user." : "Screenshot check-ins turned off for that user.");
-    } catch (e) {
-      console.error("Failed to update screenshot check-in access:", e);
-      notify("Couldn't update — check your connection or permissions and try again.", "error");
-      throw e;
-    }
-  }
-  // Owner grants a specific Admin the ability to VIEW the Monitoring
-  // report (Activity-level signal, Work-produced evidence, Screenshot
-  // check-ins for everyone at once — see MonitoringReportPage). This only
-  // ever widens read access beyond Owner — matches `hasMonitoringAccess()`
-  // in firestore.rules exactly, which is the real enforcement; this
-  // function just sets the flag it checks. Deliberately does NOT grant an
-  // Admin the ability to manage any of it (enable/disable Screenshot
-  // check-ins for someone, or grant this to another Admin) — those stay
-  // Owner-only, same as before.
-  async function setAdminMonitoringAccess(userId, granted) {
-    try {
-      await updateDocIn("users", userId, { canViewMonitoring: granted });
-      setUsers(users.map(u => u.id === userId ? { ...u, canViewMonitoring: granted } : u));
-      notify(granted ? "Monitoring report access granted." : "Monitoring report access revoked.");
-    } catch (e) {
-      console.error("Failed to update monitoring access:", e);
-      notify("Couldn't update — check your connection or permissions and try again.", "error");
-      throw e;
-    }
-  }
-  // Downscaled, moderate-quality JPEG data URLs only (~80-150KB typical) —
-  // comfortably under Firestore's 1MiB document limit with room to spare.
-  // One document per capture, in their own collection (not appended onto
-  // the time-entries doc), so this never risks growing that doc unbounded.
-  async function submitScreenshotCheckin(dataUrl) {
-    try {
-      await addDocIn("screenshot-checkins", { userId: user.id, userName: user.name, capturedAt: Date.now(), dataUrl });
-    } catch (e) {
-      // Best-effort, same reasoning as heartbeat writes — a dropped capture
-      // isn't worth interrupting the person's work with an error toast.
-      console.error("Screenshot check-in failed to save:", e);
     }
   }
   async function saveUserAttendanceRules(userId, rules) {
@@ -5490,14 +6057,14 @@ export default function App() {
       notify("Attendance settings saved.");
     } catch (e) {
       console.error("Failed to save attendance settings:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
   // Leave requests: Employee -> Admin -> Owner. An Admin's own request skips
   // straight to the Owner (an Admin can't approve their own leave). Approval
   // at every stage is Owner-only for an Admin requester, and Admin-then-Owner
-  // for everyone else — the Owner always has the final say.
+  // for everyone else â€” the Owner always has the final say.
   async function submitLeaveRequest({ type, startDate, endDate, reason }) {
     try {
       const startsAsOwnerStage = user.role === "ADMIN";
@@ -5511,7 +6078,7 @@ export default function App() {
       notify("Leave request submitted.");
     } catch (e) {
       console.error("Failed to submit leave request:", e);
-      notify("Couldn't submit — check your connection or permissions and try again.", "error");
+      notify("Couldn't submit â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5525,14 +6092,14 @@ export default function App() {
       notify(decision === "approve" ? "Sent to the Owner for final approval." : "Leave request denied.");
     } catch (e) {
       console.error("Failed to record admin decision:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
   // Owner's approval is final. On approve, the leave dates are written
   // straight onto the requester's Work calendar (dateOverrides) as a
   // Sick/Voluntary Leave day type, so Time Tracking and Attendance both pick
-  // it up automatically — no separate step to block off their schedule.
+  // it up automatically â€” no separate step to block off their schedule.
   async function ownerDecideLeave(reqId, decision, note) {
     const req = leaveRequests.find(r => r.id === reqId);
     if (!req) return;
@@ -5557,7 +6124,7 @@ export default function App() {
       notify(decision === "approve" ? "Leave approved." : "Leave denied.");
     } catch (e) {
       console.error("Failed to record owner decision:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5570,7 +6137,7 @@ export default function App() {
       notify("Leave request cancelled.");
     } catch (e) {
       console.error("Failed to cancel leave request:", e);
-      notify("Couldn't cancel — check your connection or permissions and try again.", "error");
+      notify("Couldn't cancel â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5578,7 +6145,7 @@ export default function App() {
   // already wrote real Sick/Voluntary Leave dates onto the person's Work
   // calendar, so silently reversing that with no review could quietly
   // undo a schedule change nobody signed off on. This goes through the
-  // same Admin → Owner chain approving it did in the first place (an
+  // same Admin â†’ Owner chain approving it did in the first place (an
   // Admin's own cancellation still skips straight to the Owner, same as
   // submitting does) and requires a note explaining why.
   async function requestLeaveCancellation(reqId, note) {
@@ -5593,7 +6160,7 @@ export default function App() {
       notify("Cancellation request sent for approval.");
     } catch (e) {
       console.error("Failed to request leave cancellation:", e);
-      notify("Couldn't submit — check your connection or permissions and try again.", "error");
+      notify("Couldn't submit â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5604,10 +6171,10 @@ export default function App() {
         : { status: "approved", cancelAdminDecision: { by: user.id, byName: user.name, decision: "deny", note: note || "", at: Date.now() } };
       await updateDocIn("leave-requests", reqId, patch);
       setLeaveRequests(leaveRequests.map(r => r.id === reqId ? { ...r, ...patch } : r));
-      notify(decision === "approve" ? "Sent to the Owner for final approval." : "Cancellation denied — leave stays approved.");
+      notify(decision === "approve" ? "Sent to the Owner for final approval." : "Cancellation denied â€” leave stays approved.");
     } catch (e) {
       console.error("Failed to record admin cancel decision:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5638,15 +6205,15 @@ export default function App() {
           setUsers(prev => prev.map(u => u.id === targetUser.id ? { ...u, attendanceRules: nextRules } : u));
         }
       }
-      notify(decision === "approve" ? "Leave cancelled." : "Cancellation denied — leave stays approved.");
+      notify(decision === "approve" ? "Leave cancelled." : "Cancellation denied â€” leave stays approved.");
     } catch (e) {
       console.error("Failed to record owner cancel decision:", e);
-      notify("Couldn't save — check your connection or permissions and try again.", "error");
+      notify("Couldn't save â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
   // Owner-only shortcut, used from "All leave requests": cancel any
-  // request directly, right now, no note and no separate review — since
+  // request directly, right now, no note and no separate review â€” since
   // the Owner is already the final approver, routing it through
   // themselves for review would be circular. Works whether the request is
   // still pending (nothing to undo yet) or already approved (removes the
@@ -5678,7 +6245,7 @@ export default function App() {
       notify("Leave request cancelled.");
     } catch (e) {
       console.error("Failed to cancel leave request:", e);
-      notify("Couldn't cancel — check your connection or permissions and try again.", "error");
+      notify("Couldn't cancel â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5693,11 +6260,11 @@ export default function App() {
       notify("Leave request deleted.");
     } catch (e) {
       console.error("Failed to delete leave request:", e);
-      notify("Couldn't delete — check your connection or permissions and try again.", "error");
+      notify("Couldn't delete â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
-  // Bulk version for the "Delete all / Delete filtered" button — one toast
+  // Bulk version for the "Delete all / Delete filtered" button â€” one toast
   // instead of one per row.
   async function deleteLeaveRequestsBulk(reqIds) {
     try {
@@ -5706,60 +6273,8 @@ export default function App() {
       notify(`${reqIds.length} leave request${reqIds.length !== 1 ? "s" : ""} deleted.`);
     } catch (e) {
       console.error("Failed to bulk-delete leave requests:", e);
-      notify("Couldn't delete all — check your connection or permissions and try again.", "error");
+      notify("Couldn't delete all â€” check your connection or permissions and try again.", "error");
       throw e;
-    }
-  }
-
-  // ---------------- Workspace: Orbit project-management workspaces ----------------
-  // Create/delete are gated to Admin/Owner here (client-side convenience —
-  // the real enforcement is firestore.rules' isAdminOrOwner() checks on
-  // orbit-workspaces create/delete). Anyone who can see the collection
-  // (everyone except CLIENT) can open/edit an existing workspace, matching
-  // how the rest of the internal portal treats Employees.
-  async function addOrbitWorkspace(name, wing) {
-    if (user.role !== "OWNER" && user.role !== "ADMIN") {
-      notify("Only Admins and Owners can create an Orbit Workspace.", "error");
-      return;
-    }
-    if (!name.trim() || !wing) { notify("Give the workspace a name and pick a Wing.", "error"); return; }
-    try {
-      await addDocIn("orbit-workspaces", {
-        name: name.trim(), wing,
-        createdBy: user.id, createdByName: user.name,
-        createdAt: Date.now(), updatedAt: Date.now(),
-        data: null, // OrbitApp treats a null/missing data field as a brand-new blank workspace
-      });
-      notify(`"${name.trim()}" created.`);
-    } catch (e) {
-      console.error("Failed to create Orbit Workspace:", e);
-      notify("Couldn't create the workspace — check your connection or permissions and try again.", "error");
-    }
-  }
-  async function deleteOrbitWorkspace(workspaceId, workspaceName) {
-    if (user.role !== "OWNER" && user.role !== "ADMIN") {
-      notify("Only Admins and Owners can delete an Orbit Workspace.", "error");
-      return;
-    }
-    try {
-      await deleteDocIn("orbit-workspaces", workspaceId);
-      if (activeOrbitWorkspaceId === workspaceId) setActiveOrbitWorkspaceId(null);
-      notify(`"${workspaceName || "Workspace"}" deleted.`);
-    } catch (e) {
-      console.error("Failed to delete Orbit Workspace:", e);
-      notify("Couldn't delete the workspace — check your connection or permissions and try again.", "error");
-    }
-  }
-  // Called (debounced, from inside OrbitApp) on every persist-worthy change
-  // to a workspace's content — not role-gated beyond "can see Workspace at
-  // all" (see firestore.rules: update is open to any non-Client), same as
-  // editing any other shared portal content.
-  async function saveOrbitWorkspaceData(workspaceId, data) {
-    try {
-      await updateDocIn("orbit-workspaces", workspaceId, { data, updatedAt: Date.now() });
-    } catch (e) {
-      console.error("Failed to save Orbit Workspace data:", e);
-      notify("Couldn't save your latest Workspace changes — check your connection.", "error");
     }
   }
 
@@ -5781,7 +6296,7 @@ export default function App() {
       return id;
     } catch (e) {
       console.error("Failed to start conversation:", e);
-      notify("Couldn't start that chat — check your connection or permissions and try again.", "error");
+      notify("Couldn't start that chat â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5802,7 +6317,7 @@ export default function App() {
       return id;
     } catch (e) {
       console.error("Failed to create group:", e);
-      notify("Couldn't create the group — check your connection or permissions and try again.", "error");
+      notify("Couldn't create the group â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5810,7 +6325,7 @@ export default function App() {
     try {
       await addDocPath(["conversations", conversationId, "messages"], {
         senderId: user.id, senderName: user.name, text, type: "text", createdAt: Date.now(),
-        ...(replyTo ? { replyTo: { messageId: replyTo.id, senderName: replyTo.senderName, text: (replyTo.type === "file" ? `📎 ${replyTo.fileName}` : replyTo.text || "").slice(0, 140) } } : {}),
+        ...(replyTo ? { replyTo: { messageId: replyTo.id, senderName: replyTo.senderName, text: (replyTo.type === "file" ? `ðŸ“Ž ${replyTo.fileName}` : replyTo.text || "").slice(0, 140) } } : {}),
       });
       await updateDocPath(["conversations", conversationId], {
         lastMessageAt: Date.now(), lastMessageText: text, lastMessageBy: user.name,
@@ -5818,23 +6333,23 @@ export default function App() {
       });
     } catch (e) {
       console.error("Failed to send message:", e);
-      notify("Message didn't send — check your connection or permissions and try again.", "error");
+      notify("Message didn't send â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
   async function markConversationRead(conversationId) {
     try {
       await updateDocPath(["conversations", conversationId], { [`lastReadAt.${user.id}`]: Date.now() });
-    } catch (e) { /* non-fatal — worst case an unread badge lingers briefly */ }
+    } catch (e) { /* non-fatal â€” worst case an unread badge lingers briefly */ }
   }
-  // Only the original sender can edit/delete their own message — matches
+  // Only the original sender can edit/delete their own message â€” matches
   // firestore.rules, which checks resource.data.senderId == request.auth.uid.
   async function editMessage(conversationId, messageId, newText) {
     try {
       await updateDocPath(["conversations", conversationId, "messages", messageId], { text: newText, editedAt: Date.now() });
     } catch (e) {
       console.error("Failed to edit message:", e);
-      notify("Couldn't save that edit — check your connection or permissions and try again.", "error");
+      notify("Couldn't save that edit â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5843,12 +6358,12 @@ export default function App() {
       await deleteDocPath(["conversations", conversationId, "messages", messageId]);
     } catch (e) {
       console.error("Failed to delete message:", e);
-      notify("Couldn't delete that message — check your connection or permissions and try again.", "error");
+      notify("Couldn't delete that message â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
   // Small file/image attachments, stored inline as a data URL on the
-  // message doc itself (no separate file-storage backend for chat — the
+  // message doc itself (no separate file-storage backend for chat â€” the
   // Wings/Drive system is folder-based and doesn't map onto "whoever's in
   // this conversation," so extending it would be a much bigger change).
   // Firestore caps a document at 1MiB; base64 inflates size by ~4/3, so
@@ -5857,7 +6372,7 @@ export default function App() {
   const CHAT_ATTACHMENT_MAX_BYTES = 500000;
   async function sendFileMessage(conversationId, file) {
     if (file.size > CHAT_ATTACHMENT_MAX_BYTES) {
-      notify(`"${file.name}" is too large — chat attachments are limited to ${Math.round(CHAT_ATTACHMENT_MAX_BYTES / 1000)}KB. For bigger files, share them via the Files page instead.`, "error");
+      notify(`"${file.name}" is too large â€” chat attachments are limited to ${Math.round(CHAT_ATTACHMENT_MAX_BYTES / 1000)}KB. For bigger files, share them via the Files page instead.`, "error");
       return;
     }
     try {
@@ -5867,7 +6382,7 @@ export default function App() {
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
-      const preview = `📎 ${file.name}`;
+      const preview = `ðŸ“Ž ${file.name}`;
       await addDocPath(["conversations", conversationId, "messages"], {
         senderId: user.id, senderName: user.name, type: "file",
         fileName: file.name, fileType: file.type, fileSize: file.size, fileData: dataUrl,
@@ -5879,10 +6394,10 @@ export default function App() {
       });
     } catch (e) {
       console.error("Failed to send attachment:", e);
-      notify("Couldn't send that file — check your connection and try again.", "error");
+      notify("Couldn't send that file â€” check your connection and try again.", "error");
     }
   }
-  // "Delete chat" only ever removes it from *your own* list — it never
+  // "Delete chat" only ever removes it from *your own* list â€” it never
   // touches the other participant(s)' messages or their copy of the
   // conversation. A new message to a hidden conversation un-hides it again
   // for everyone (see sendMessage), the same way most chat apps bring a
@@ -5895,7 +6410,7 @@ export default function App() {
       notify("Chat removed from your list.");
     } catch (e) {
       console.error("Failed to delete chat:", e);
-      notify("Couldn't delete — check your connection or permissions and try again.", "error");
+      notify("Couldn't delete â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5908,7 +6423,7 @@ export default function App() {
       notify("Added to the group.");
     } catch (e) {
       console.error("Failed to add group members:", e);
-      notify("Couldn't add them — check your connection or permissions and try again.", "error");
+      notify("Couldn't add them â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5922,7 +6437,7 @@ export default function App() {
       notify("Removed from the group.");
     } catch (e) {
       console.error("Failed to remove group member:", e);
-      notify("Couldn't remove them — check your connection or permissions and try again.", "error");
+      notify("Couldn't remove them â€” check your connection or permissions and try again.", "error");
       throw e;
     }
   }
@@ -5985,7 +6500,7 @@ export default function App() {
       });
       callUnsubsRef.current = [unsubDoc, unsubCand];
 
-      // No answer after 45s — treat as unanswered rather than ringing forever.
+      // No answer after 45s â€” treat as unanswered rather than ringing forever.
       ringTimeoutRef.current = setTimeout(() => { endCall("missed"); }, 45000);
     } catch (e) {
       console.error("Failed to start call:", e);
@@ -6052,7 +6567,7 @@ export default function App() {
             senderId: user.id, senderName: "System", type: "call_log", text: logText, createdAt: Date.now(),
           });
           await updateDocPath(["conversations", call.conversationId], { lastMessageAt: Date.now(), lastMessageText: logText, lastMessageBy: "System" });
-        } catch (e) { /* best effort — don't block hangup on a logging failure */ }
+        } catch (e) { /* best effort â€” don't block hangup on a logging failure */ }
       }
     }
     cleanupCallState();
@@ -6087,15 +6602,17 @@ export default function App() {
       await requestPasswordResetFor(email);
       notify("Password reset email sent.");
     } catch (e) {
-      notify("Couldn't send reset email — check the address.", "error");
+      notify("Couldn't send reset email â€” check the address.", "error");
     }
   }
 
   if (!ready || !authChecked) return (
-    <div className="cly" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 400, color: COLORS.mute }}>
+    <div className="cly" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 400, color: 'var(--color-mute)' }}>
       <Loader2 size={20} className="cly-spin" />
     </div>
   );
+
+  const myLiveUser = user ? (users.find(u => u.id === user.id) || user) : user;
 
   return (
     <div className="cly" style={{ position: "relative", minHeight: "100vh" }}>
@@ -6106,18 +6623,16 @@ export default function App() {
       ) : (
         <div style={{ display: "flex", minHeight: "100vh" }}>
           <div className={`cly-sidebar-backdrop${sidebarOpen ? " cly-open" : ""}`} onClick={() => setSidebarOpen(false)} />
-          <Sidebar user={user} page={page} setPage={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} pendingCount={requests.filter(r => r.status === "pending").length} leavePendingCount={
-            user.role === "OWNER" ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner").length :
+          <Sidebar user={myLiveUser} page={page} setPage={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onProfileClick={() => setMyProfileSettingsOpen(true)} pendingCount={requests.filter(r => r.status === "pending").length} leavePendingCount={
+            user.role === "ADMIN" ? leaveRequests.filter(r => r.status === "pending_admin" || r.status === "pending_owner").length :
             user.role === "ADMIN" ? leaveRequests.filter(r => r.status === "pending_admin" && r.userId !== user.id).length : 0
           } unreadMessageCount={conversations.filter(c => (c.lastMessageAt || 0) > (c.lastReadAt?.[user.id] || 0) && c.lastMessageBy && c.lastMessageBy !== user.name).length} />
-          <div style={{ flex: 1, background: COLORS.cream, minWidth: 0, display: "flex", flexDirection: "column" }}>
-            <Topbar user={user} onLogout={() => fbLogout()} onMenuClick={() => setSidebarOpen(true)} title={
+          <div style={{ flex: 1, background: 'var(--color-cream)', minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <Topbar user={myLiveUser} onLogout={() => fbLogout()} onMenuClick={() => setSidebarOpen(true)} title={
               page === "dashboard" ? "Dashboard" : page === "files" ? "Files" : page === "requests" ? "Access requests" :
               page === "people-info" ? "People Information" : page === "org-chart" ? "Organizational Chart" : page === "time-tracking" ? "Time Tracking" :
               page === "time-inout" ? "Time in/Time out information" :
-              page === "attendance" ? "Attendance" : page === "leave-requests" ? "Leave Requests" : page === "communication" ? "Communication" :
-              page === "monitoring" ? "Monitoring" :
-              page === "workspace" ? "Workspace" : "Admin settings"
+              page === "attendance" ? "Attendance" : page === "intern-tracking" ? "Intern Tracking" : page === "leave-requests" ? "Leave Requests" : page === "eod-reports" ? "EOD Reports" : page === "communication" ? "Communication" : page === "calendar" ? "Calendar & Meetings" : page === "meet-recordings" ? "Meet Recordings" : "Admin settings"
             } subtitle={
               page === "dashboard" ? "Your workspace at a glance." :
               page === "files" ? "Shared storage for your team and clients." :
@@ -6127,50 +6642,51 @@ export default function App() {
               page === "time-tracking" ? "Live time-tracking sessions." :
               page === "time-inout" ? "Clock-in and clock-out records." :
               page === "attendance" ? "Daily attendance summaries." :
+              page === "intern-tracking" ? "Live presence and interaction heartbeat for interns." :
               page === "leave-requests" ? "Request Sick or Voluntary Leave and track approvals." :
-              page === "communication" ? "Chat and video call your team, built from People Information." :
-              page === "monitoring" ? "Everyone's activity level, work-produced evidence, and screenshot check-ins, live and side by side." :
-              page === "workspace" ? "Orbit project-management workspaces, organized by Wing." : "Authentication, users, groups, and restrictions."
+              page === "eod-reports" ? "End of Day reports." :
+              page === "calendar" ? "Schedule meetings, Google Meet links, and huddles." :
+              page === "meet-recordings" ? "View Google Meet recordings from Drive." :
+              page === "communication" ? "Chat and video call your team, built from People Information." : "Authentication, users, groups, and restrictions."
             } />
-            <div style={{ flex: 1, overflow: "auto" }}>
-              {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} people={people} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
-              {page === "files" && <FilesPage user={user} folders={folders} files={files} people={people} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
-              {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
-              {page === "people-info" && <PeopleInfoPage user={user} users={users} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
-              {page === "org-chart" && <OrgChartPage user={user} people={people} updatePerson={updatePerson} />}
-              {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingEnabled={setUserTimeTrackingEnabled} saveUserAttendanceRules={saveUserAttendanceRules} orbitWorkspaces={orbitWorkspaces} setUserScreenshotCheckinsEnabled={setUserScreenshotCheckinsEnabled} screenshotCheckins={screenshotCheckins} submitScreenshotCheckin={submitScreenshotCheckin} />}
-              {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
-              {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
-              {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
-              {page === "communication" && <CommunicationPage user={user} users={users} people={people} conversations={conversations} activeConversationId={activeConversationId} setActiveConversationId={setActiveConversationId} messages={messages} sendMessage={sendMessage} getOrCreateDirectConversation={getOrCreateDirectConversation} createGroupConversation={createGroupConversation} markConversationRead={markConversationRead} startCall={startCall} activeCall={activeCall} callConnecting={callConnecting} editMessage={editMessage} deleteMessage={deleteMessage} sendFileMessage={sendFileMessage} hideConversationForMe={hideConversationForMe} addGroupMembers={addGroupMembers} removeGroupMember={removeGroupMember} leaveGroupConversation={leaveGroupConversation} setMyPresenceStatus={setMyPresenceStatus} />}
-              {page === "monitoring" && <MonitoringReportPage user={user} users={users} people={people} timeEntries={timeEntries} orbitWorkspaces={orbitWorkspaces} screenshotCheckins={screenshotCheckins} setAdminMonitoringAccess={setAdminMonitoringAccess} />}
-              {page === "workspace" && <WorkspacePage user={user} orbitWorkspaces={orbitWorkspaces} addOrbitWorkspace={addOrbitWorkspace} deleteOrbitWorkspace={deleteOrbitWorkspace} onOpenWorkspace={setActiveOrbitWorkspaceId} />}
-              {page === "admin" && (
-                <AdminSettings
-                  user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
-                  updateUserRole={updateUserRole} requestRoleChange={requestRoleChange}
-                  groups={groups} addGroup={addGroup} restrictions={restrictions} setRestrictions={persistRestrictions}
-                  notif={notif} setNotif={persistNotif}
-                />
-              )}
+            <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={page}
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -15 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  style={{ minHeight: "100%" }}
+                >
+                  {page === "dashboard" && <DashboardPage user={user} users={users} files={files} requests={requests} folders={folders} people={people} syncAllVisibleFolders={syncAllVisibleFolders} verifyAllFiles={verifyAllFiles} />}
+                  {page === "files" && <FilesPage user={user} folders={folders} files={files} people={people} addFile={addFile} deleteFile={deleteFile} downloadFile={downloadFile} syncDriveFolder={syncDriveFolder} notify={notify} />}
+                  {page === "requests" && <RequestsPage user={user} requests={requests} resolveRequest={resolveRequest} />}
+                  {page === "people-info" && <PeopleInfoPage user={user} users={users} people={people} peopleConfig={peopleConfig} addPerson={addPerson} updatePerson={updatePerson} removePerson={removePerson} savePeopleConfig={savePeopleConfig} />}
+                  {page === "org-chart" && <OrgChartPage user={user} people={people} updatePerson={updatePerson} />}
+                  {page === "time-tracking" && <TimeTrackingPage user={user} users={users} people={people} timeEntries={timeEntries} clockIn={clockIn} clockOut={clockOut} setUserTimeTrackingMode={setUserTimeTrackingMode} saveUserAttendanceRules={saveUserAttendanceRules} />}
+                  {page === "time-inout" && <TimeInOutPage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} deleteTimeEntry={deleteTimeEntry} />}
+                  {page === "attendance" && <AttendancePage user={user} users={users} people={people} timeEntries={timeEntries} groups={groups} updateTimeEntry={updateTimeEntry} createTimeEntry={createTimeEntry} deleteTimeEntry={deleteTimeEntry} setDayStatusOverride={setDayStatusOverride} clearDayStatusOverride={clearDayStatusOverride} applyBulkDayStatus={applyBulkDayStatus} />}
+                  {page === "intern-tracking" && <InternTrackingPage user={user} users={users} people={people} activityLogs={activityLogs} />}
+                  {page === "leave-requests" && <LeaveRequestsPage user={user} people={people} leaveRequests={leaveRequests} submitLeaveRequest={submitLeaveRequest} adminDecideLeave={adminDecideLeave} ownerDecideLeave={ownerDecideLeave} cancelLeaveRequest={cancelLeaveRequest} requestLeaveCancellation={requestLeaveCancellation} adminDecideCancel={adminDecideCancel} ownerDecideCancel={ownerDecideCancel} ownerCancelLeave={ownerCancelLeave} deleteLeaveRequest={deleteLeaveRequest} deleteLeaveRequestsBulk={deleteLeaveRequestsBulk} />}
+                  {page === "eod-reports" && <EodReportsPage user={user} users={users} reports={eodReports} createReport={d => addDocIn("eod-reports", d)} updateReport={(id, d) => updateDocIn("eod-reports", id, d)} deleteReport={id => deleteDocIn("eod-reports", id)} />}
+                  {page === "calendar" && <CalendarPage user={user} users={users} people={people} events={calendarEvents} createEvent={d => addDocIn("calendar-events", d)} updateEvent={(id, d) => updateDocIn("calendar-events", id, d)} deleteEvent={id => deleteDocIn("calendar-events", id)} notify={notify} />}
+                  {page === "meet-recordings" && <MeetRecordingsPage user={user} notify={notify} />}
+                  {page === "communication" && <CommunicationPage user={user} users={users} people={people} conversations={conversations} activeConversationId={activeConversationId} setActiveConversationId={setActiveConversationId} messages={messages} sendMessage={sendMessage} getOrCreateDirectConversation={getOrCreateDirectConversation} createGroupConversation={createGroupConversation} markConversationRead={markConversationRead} startCall={startCall} activeCall={activeCall} callConnecting={callConnecting} setCallConnecting={setCallConnecting} setToast={setToast} editMessage={editMessage} deleteMessage={deleteMessage} sendFileMessage={sendFileMessage} hideConversationForMe={hideConversationForMe} addGroupMembers={addGroupMembers} removeGroupMember={removeGroupMember} leaveGroupConversation={leaveGroupConversation} setMyPresenceStatus={setMyPresenceStatus} />}
+                  {page === "admin" && (
+                    <AdminSettings
+                      user={user} auth={auth} setAuth={persistAuth} users={users} people={people} addUserRequest={addUserRequest} removeUser={removeUser}
+                      updateUserRole={updateUserRole} requestRoleChange={requestRoleChange}
+                      groups={groups} addGroup={addGroup} restrictions={restrictions} setRestrictions={persistRestrictions}
+                      notif={notif} setNotif={persistNotif}
+                    />
+                  )}
+                </motion.div>
+              </AnimatePresence>
             </div>
           </div>
         </div>
       )}
-      {user && user.role !== "CLIENT" && activeOrbitWorkspaceId && (() => {
-        const activeWorkspace = orbitWorkspaces.find(w => w.id === activeOrbitWorkspaceId);
-        // The workspace may have been deleted by someone else, or its
-        // subscription hasn't caught up yet — bail out cleanly rather than
-        // render OrbitApp with nothing to show.
-        if (!activeWorkspace) return null;
-        return (
-          <OrbitWorkspaceView
-            user={user} users={users} workspace={activeWorkspace}
-            onExit={() => setActiveOrbitWorkspaceId(null)}
-            saveOrbitWorkspaceData={saveOrbitWorkspaceData}
-          />
-        );
-      })()}
       {user && user.role !== "CLIENT" && (
         <CallOverlay
           incomingCall={incomingCall} activeCall={activeCall} callConnecting={callConnecting}
@@ -6178,6 +6694,25 @@ export default function App() {
           onAnswer={answerIncomingCall} onDecline={declineIncomingCall} onEnd={() => endCall("ended")}
         />
       )}
+      {myProfileSettingsOpen && (
+        <MyProfileSettingsModal
+          user={myLiveUser}
+          onClose={() => setMyProfileSettingsOpen(false)}
+          onUpdateUser={async (avatarFile) => {
+            const ext = avatarFile.name.split(".").pop();
+            const url = await uploadFile(`avatars/${myLiveUser.id}-${Date.now()}.${ext}`, avatarFile);
+            await updateDocIn("users", myLiveUser.id, { avatar: url });
+          }}
+          onChangePassword={updateUserPassword}
+        />
+      )}
     </div>
   );
 }
+
+
+
+
+
+
+

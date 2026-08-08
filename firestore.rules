@@ -5,44 +5,49 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function myProfile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
     function myRole() { return signedIn() ? myProfile().data.role : null; }
-    function isOwner() { return myRole() == 'OWNER'; }
-    function isAdminOrOwner() { return myRole() == 'ADMIN' || myRole() == 'OWNER'; }
-    // An Admin the Owner has explicitly opted in to see monitoring data
-    // (Activity-level signal, Work-produced evidence, Screenshot check-ins
-    // — see the new Monitoring report page in §7 Time Tracking). Owner
-    // always has full access regardless of this flag; it only ever WIDENS
-    // access beyond Owner, never narrows it, and only for signed-in Admins.
-    function hasMonitoringAccess() { return isOwner() || (myRole() == 'ADMIN' && myProfile().data.canViewMonitoring == true); }
+    function isAdmin() { return myRole() == 'ADMIN'; }
 
     // Workspace-wide settings (auth config, notification config, restrictions)
     match /settings/{settingId} {
       allow read: if signedIn();
-      allow write: if isOwner();
+      allow write: if isAdmin();
     }
 
     // User profiles: everyone signed in can see the directory (needed to
-    // render names/roles in the UI); only the owner can create/edit/remove.
-    // Exception: anyone can update their own `lastActiveAt` heartbeat and
-    // `presenceStatus`/`statusText` (Communication's presence indicator and
-    // manual status picker) — otherwise this collection is owner-only.
+    // render names/roles in the UI); only the admin can create/edit/remove.
+    // Exception: anyone can update their own `lastActiveAt` heartbeat,
+    // `presenceStatus`/`statusText`, and `internStatus` — otherwise this collection is admin-only.
     match /users/{userId} {
       allow read: if signedIn();
-      allow create: if isOwner();
-      allow update: if isOwner() || (signedIn() && request.auth.uid == userId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt', 'presenceStatus', 'statusText']));
-      allow delete: if isOwner();
+      allow create: if isAdmin();
+      allow update: if isAdmin() || (signedIn() && request.auth.uid == userId && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt', 'presenceStatus', 'statusText', 'internStatus']));
+      allow delete: if isAdmin();
     }
 
-    // Groups: readable by anyone signed in, only the owner can manage them.
+    // Activity logs: stores hourly activity signals for the heartbeat dashboard.
+    // Users write their own logs, everyone can read, admins can delete.
+    match /activity-logs/{logId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.resource.data.id == request.auth.uid;
+      allow delete: if isAdmin();
+      
+      match /screenshots/{screenshotId} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && logId == request.auth.uid;
+        allow delete: if isAdmin();
+      }
+    }
+
+    // Groups: readable by anyone signed in, only the admin can manage them.
     match /groups/{groupId} {
       allow read: if signedIn();
-      allow write: if isOwner();
+      allow write: if isAdmin();
     }
 
-    // Access requests: admins create them, owner resolves them.
+    // Access requests: admins create and resolve them.
     match /requests/{requestId} {
-      allow read: if isAdminOrOwner();
-      allow create: if isAdminOrOwner();
-      allow update, delete: if isOwner();
+      allow read: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     // File metadata: everyone signed in can read (folder-level filtering
@@ -50,111 +55,95 @@ service cloud.firestore {
     match /files/{fileId} {
       allow read: if signedIn();
       allow create, delete: if signedIn() && myRole() != 'CLIENT';
-      allow update: if isAdminOrOwner();
+      allow update: if isAdmin();
     }
 
     // People directory: internal staff records, not visible to clients.
-    // Only the owner/admins can add, edit, or remove entries.
+    // Only admins can add, edit, or remove entries.
     match /people/{personId} {
       allow read: if signedIn() && myRole() != 'CLIENT';
-      allow write: if isAdminOrOwner();
+      allow write: if isAdmin();
     }
 
     // Time-tracking entries (clock in/out sessions). Everyone manages their
-    // own; only the owner can read or edit anyone else's. Clients never use
+    // own; only the admin can read or edit anyone else's. Clients never use
     // this feature at all, enforced both here and in the UI.
     match /time-entries/{entryId} {
-      allow read: if signedIn() && (resource.data.userId == request.auth.uid || hasMonitoringAccess());
-      allow create: if signedIn() && myRole() != 'CLIENT' && (request.resource.data.userId == request.auth.uid || isOwner());
-      allow update: if signedIn() && (resource.data.userId == request.auth.uid || isOwner());
-      allow delete: if isOwner();
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if signedIn() && myRole() != 'CLIENT' && (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAdmin();
     }
 
-    // Leave requests: an Employee/Admin files one for themselves (never the
-    // Owner, who has no personal schedule to take leave from). The
-    // Admin-then-Owner approval chain is enforced by the app via the
-    // status field (pending_admin -> pending_owner -> approved/denied) —
-    // this rule just gates who can read/write the underlying doc: the
-    // requester (to view their own and cancel it) or any Admin/Owner (to
-    // review and decide).
+    // EOD Reports: Employees create and read their own. Admins can read, update, delete all.
+    match /eod-reports/{reportId} {
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if signedIn() && myRole() != 'CLIENT' && (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // Calendar events: Admins have full access.
+    // Employees can read if type == 'company' or if they are attendees/organizer.
+    // Employees can create/update their own individual events, but only admins can create company events.
+    match /calendar-events/{eventId} {
+      allow read: if signedIn() && (
+        isAdmin() || 
+        resource.data.type == 'company' || 
+        request.auth.uid in resource.data.attendees || 
+        resource.data.organizerId == request.auth.uid
+      );
+      allow create: if signedIn() && (
+        isAdmin() || 
+        (request.resource.data.type != 'company' && request.resource.data.organizerId == request.auth.uid)
+      );
+      allow update: if signedIn() && (
+        isAdmin() || 
+        (resource.data.organizerId == request.auth.uid && request.resource.data.type != 'company' && resource.data.type != 'company')
+      );
+      allow delete: if signedIn() && (
+        isAdmin() || 
+        (resource.data.organizerId == request.auth.uid && resource.data.type != 'company')
+      );
+    }
+
+    // Leave requests: an Employee files one for themselves. The Admin approval chain is enforced.
     match /leave-requests/{requestId} {
-      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdminOrOwner());
-      allow create: if signedIn() && myRole() != 'CLIENT' && myRole() != 'OWNER' && request.resource.data.userId == request.auth.uid;
-      allow update: if signedIn() && (resource.data.userId == request.auth.uid || isAdminOrOwner());
-      allow delete: if isOwner();
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if signedIn() && myRole() != 'CLIENT' && myRole() != 'ADMIN' && request.resource.data.userId == request.auth.uid;
+      allow update: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAdmin();
     }
 
     // Communication: internal team chat + 1:1 video calls. Clients never
     // see this feature (enforced in the UI); the rules below additionally
     // block them from creating a conversation/call even if they tried.
 
-    // Conversations: only participants can read or write. Messages are a
-    // subcollection — since a message doc doesn't carry participantIds
-    // itself, its rules fetch the parent conversation doc once to check
-    // membership.
+    // Conversations: only participants can read or write.
     match /conversations/{conversationId} {
       allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
       allow create: if signedIn() && myRole() != 'CLIENT' && request.auth.uid in request.resource.data.participantIds;
       allow update: if signedIn() && request.auth.uid in resource.data.participantIds;
-      // Any current participant can delete the whole chat (all messages,
-      // then the conversation doc) for everyone — not Owner-only, since
-      // this is "delete this chat," not a moderation action.
       allow delete: if signedIn() && request.auth.uid in resource.data.participantIds;
 
       match /messages/{messageId} {
         allow read: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         allow create: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds && request.resource.data.senderId == request.auth.uid;
-        // Only the original sender can edit or delete their own message —
-        // the Owner can additionally delete any message for moderation.
-        // Editing can't be used to reassign who sent it.
         allow update: if signedIn() && request.auth.uid == resource.data.senderId && request.resource.data.senderId == resource.data.senderId;
-        allow delete: if signedIn() && (request.auth.uid == resource.data.senderId || isOwner());
+        allow delete: if signedIn() && (request.auth.uid == resource.data.senderId || isAdmin());
       }
     }
 
-    // Calls: only the caller and callee can read/write the call doc and
-    // its ICE-candidate subcollections (standard Firestore-as-signaling
-    // pattern for WebRTC — the actual audio/video never touches Firestore,
-    // only the connection-setup handshake does).
+    // Calls: only the caller and callee can read/write the call doc and its subcollections.
     match /calls/{callId} {
       allow read: if signedIn() && (request.auth.uid == resource.data.callerId || request.auth.uid == resource.data.calleeId);
       allow create: if signedIn() && myRole() != 'CLIENT' && request.auth.uid == request.resource.data.callerId;
       allow update: if signedIn() && (request.auth.uid == resource.data.callerId || request.auth.uid == resource.data.calleeId);
-      allow delete: if isOwner();
+      allow delete: if isAdmin();
 
       match /{subcollection}/{candidateId} {
         allow read, create: if signedIn() && (request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.callerId || request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.calleeId);
       }
-    }
-    // Workspace: Orbit project-management workspaces (see the "Workspace"
-    // sidebar folder). Clients never see this feature at all (enforced in
-    // the sidebar and here). Anyone else can read/edit an existing
-    // workspace's content — same treatment as most other internal
-    // collections (Employees included) — but only Admin/Owner can create a
-    // brand-new workspace or delete one entirely, per the explicit ask that
-    // added a Wing to add/delete workspaces.
-    match /orbit-workspaces/{workspaceId} {
-      allow read: if signedIn() && myRole() != 'CLIENT';
-      allow create: if signedIn() && isAdminOrOwner();
-      allow update: if signedIn() && myRole() != 'CLIENT';
-      allow delete: if isAdminOrOwner();
-    }
-
-    // Screenshot check-ins: a person can only ever write their OWN capture
-    // (create only — captures are immutable once saved, no update rule at
-    // all means updates are denied by default). Reading is Owner-only, not
-    // even Admin — this is the most sensitive tier of the Time Tracking
-    // presence features (see §7 in the history doc), so it deliberately
-    // has the narrowest read access of anything in this file. The app
-    // itself additionally never captures anything without the person
-    // explicitly granting screen-share permission through their browser's
-    // own picker each session — this rule is the data-access boundary,
-    // not the consent mechanism, which lives in the client (see
-    // ScreenshotConsentCard in App.jsx).
-    match /screenshot-checkins/{checkinId} {
-      allow read: if hasMonitoringAccess();
-      allow create: if signedIn() && myRole() != 'CLIENT' && request.resource.data.userId == request.auth.uid;
-      allow delete: if isOwner();
     }
   }
 }

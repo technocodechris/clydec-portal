@@ -1,7 +1,6 @@
-# Clydec Studio Portal — setup guide
+# Tago Life Portal — setup guide
 
-There's now a **single Owner** (you, the founder) baked into the rules —
-"OWNER" can no longer be assigned to anyone else through Admin settings.
+There is no longer an "Owner" role. The highest permission level is **Admin**, which gives full read/write access to everything. Access for lower roles (Employee, Client, Intern) is configured via a granular, per-user folder and panel access system.
 You manage Admins, Employees, and Clients from there as before.
 
 You can run file storage on **Firebase** or **Google Drive** — pick one
@@ -34,15 +33,15 @@ firebase deploy --only firestore:rules,storage:rules
 ```
 *(This repo doesn't include a `storage.rules` file — this project actually runs on Option B/Google Drive below, not Firebase Storage. If you're setting up Option A for real, `firebase init storage` generates a default `storage.rules` for you as part of that command.)*
 
-### 3. Create your first owner account
+### 3. Create your first Admin account
 Firestore starts empty — bootstrap yourself manually, once:
 1. **Authentication > Users > Add user** → your email + a password.
 2. Copy the **User UID** shown.
 3. **Firestore Database > Start collection** → ID `users` → document ID =
    that UID → fields: `email` (string), `name` (string), `role` (string,
-   value `OWNER`), `status` (string, value `ACTIVE`), `createdAt`
+   value `ADMIN`), `status` (string, value `ACTIVE`), `createdAt`
    (number, e.g. `1700000000000`).
-4. Log in with that email/password — you're the owner. Add everyone
+4. Log in with that email/password — you're the Admin. Add everyone
    else from **Admin settings > Users** — it creates their real account
    and emails them a password-setup link.
 
@@ -61,7 +60,7 @@ for service accounts, so a service account can't actually hold the files).
 3. **APIs & Services > OAuth consent screen** → set it up (External user
    type is fine for a single-owner tool) → add the Drive scope you'll
    use (`.../auth/drive` for full access, or `.../auth/drive.file` for
-   file-level-only access) → add your own Google account under **Test
+   file-level-only access). Also search "Calendar API" and check `.../auth/calendar.events` → add your own Google account under **Test
    users** for now.
 4. **APIs & Services > Credentials** → **Create credentials > OAuth
    client ID** → Application type **Web application** → add
@@ -74,7 +73,7 @@ for service accounts, so a service account can't actually hold the files).
 2. Click the gear icon (top right) → check **"Use your own OAuth
    credentials"** → paste the Client ID/secret from step 1.
 3. In the left panel, find **Drive API v3**, check the scope you
-   configured (e.g. `https://www.googleapis.com/auth/drive`) →
+   configured (e.g. `https://www.googleapis.com/auth/drive`). Then find **Google Calendar API v3** and check `https://www.googleapis.com/auth/calendar.events` →
    **Authorize APIs**.
 4. Sign in with the Google account whose Drive should hold the files
    (the founder's account) → allow it — you may see an "unverified app"
@@ -85,8 +84,7 @@ for service accounts, so a service account can't actually hold the files).
    tokens** → copy the **Refresh token** shown. This is `GDRIVE_REFRESH_TOKEN`.
 
 ### 3. Create Drive folders and get their IDs
-1. In your own Google Drive, create 4 folders: e.g. "Clydec Creative",
-   "Clydec Data", "Clydec Finance", "Clydec Client Aurora".
+1. In your own Google Drive, create 6 folders: "Operations & Admin", "Marketing Growth", "PR & Branding", "Multimedia & Content Studio", "Sales", and "Company Admin".
 2. Open each folder and copy the ID from the URL:
    `drive.google.com/drive/folders/`**`THIS_PART`**.
 3. No sharing step needed — it's all in your own account already.
@@ -157,17 +155,13 @@ npm run dev
 `vercel dev` instead of `npm run dev`, with a `.env` that includes the
 server-side vars — `vite dev` alone doesn't run `/api` functions.)
 
-## What changed from the original artifact
-- `window.storage` (Claude-artifact-only, doesn't exist outside claude.ai)
-  → replaced with real Firebase Auth + a swappable storage backend
-  (Firebase Storage or Google Drive) in `src/firebase.js` /
-  `src/driveStorage.js`.
-- Plaintext passwords in seed data → removed. Real accounts live in
-  Firebase Auth; Firestore only stores the profile (name/role/status).
-- Owner is now a fixed singleton (you) — it's no longer an assignable
-  role when adding users.
-- Adding a user creates a real account and emails them a
-  password-setup link, instead of a fake `temp1234` password.
+## Recent Feature Additions
+- **Storage**: Replaced `window.storage` with real Firebase Auth + a swappable storage backend (Firebase Storage or Google Drive) in `src/firebase.js` / `src/driveStorage.js`.
+- **Roles**: The Owner role has been removed. "ADMIN" is the highest permission level.
+- **EOD Reports**: Employees can submit a daily breakdown, and Admins can view all EOD reports grouped by Daily, Weekly, or Monthly views. EOD reports also feature a built-in commenting system for team communication.
+- **Activity & Presence Tracking**: Admins can track intern/employee "Working Now", "Idle", or "Offline" states. The portal captures screenshots of active users' views every 2 minutes using `html2canvas` for historical activity logs. A centralized dashboard visualizes activity metrics using `recharts`.
+- **Calendar & Google Meet**: Custom Calendar feature natively supports generating Google Meet links for huddles and company events, managing user RSVPs (Going, Maybe, Not Going), and generating/downloading `.ics` Calendar export files. Requires both Drive and Calendar API scopes.
+- **UI/UX & Theming**: The portal utilizes `framer-motion` for fluid page transitions and component animations. A built-in Light/Dark Mode toggle provides dynamic theming.
 
 ## Known limitation
 File *metadata* (name/size/uploader) in Firestore is readable by any
@@ -176,52 +170,4 @@ signed-in user; folder-level filtering happens in the UI. Actual file
 path, the `/api/drive-*` role checks for the Drive path). If clients
 seeing other projects' filenames is a concern, say so and I'll tighten
 `firestore.rules` to check folder membership per document.
-
-## Workspace (Orbit project-management workspaces)
-The "Workspace" sidebar folder holds one or more **Orbit Workspaces** —
-a full ClickUp/Asana-style project-management tool, merged in from a
-separate project (`src/orbit/OrbitApp.jsx`). Each workspace is grouped
-under one of the four Wings (same set Storage uses) and lives as its
-own document in the `orbit-workspaces` Firestore collection, with its
-entire content (Spaces/Lists/Tasks/Goals/Dashboards/Whiteboards/Docs/
-Forms/Chat/Automations) stored as one JSON blob in that doc's `data`
-field. Creating or deleting a workspace is Admin/Owner-only; anyone who
-can see the Workspace tab (everyone except Client) can open and work
-inside any existing one.
-
-- **Requires Tailwind CSS** (`tailwind.config.js`/`postcss.config.js`,
-  new this sync) — Orbit's UI is written in Tailwind utility classes,
-  unlike the rest of this portal (100% inline styles). Tailwind's
-  `content` glob is scoped to `src/orbit/**` and `preflight` is
-  disabled, so it can't affect the rest of the app's styling. Run
-  `npm install` again after pulling this sync to pick up the new
-  `devDependencies` (`tailwindcss`, `postcss`, `autoprefixer`).
-- **Team members are not managed per-workspace.** Orbit's own
-  add/rename/remove-member UI is disabled — the member list Orbit sees
-  is read live from this portal's real `users` (everyone except
-  Client), via `membersForOrbit()` in `App.jsx`. Manage who's on the
-  team in People Management, same as everywhere else in the portal.
-- **AI assist is disabled.** Orbit's "AI draft description" / "AI
-  suggest subtasks" buttons originally called `api.anthropic.com`
-  directly from the browser — that only works inside the Claude.ai
-  artifact sandbox (which auto-injects the connection with no exposed
-  key). A real deployment needs its own serverless route holding a
-  server-side `ANTHROPIC_API_KEY` (same pattern as `/api/drive-*.js`
-  for Google Drive) — not built yet. Clicking either button shows a
-  clear in-app error rather than silently failing or leaking a key.
-- **One JSON blob per workspace, not normalized collections.** Simple
-  to build and matches how the original Orbit artifact already shaped
-  its state, but means a whole workspace is read/written as one
-  document — Firestore's 1MiB-per-document limit is a real ceiling for
-  a single very large, very long-lived workspace (many tasks, big
-  whiteboards, big docs). Not a problem at normal usage levels; worth
-  splitting into subcollections (e.g. `orbit-workspaces/{id}/tasks`) if
-  a workspace ever grows large enough to approach it.
-- **Two people editing the same workspace at the same time** last-write-
-  wins on the whole `data` blob (autosaved 1.2s after the last change,
-  same debounce idea used elsewhere in this app for free-typed fields) —
-  there's no field-level merge. Fine for how a small team is likely to
-  use one Workspace, but flagged honestly rather than silently assumed
-  away.
-
 
